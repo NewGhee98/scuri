@@ -178,6 +178,13 @@ input:disabled {
   background: #f7f7f4;
 }
 
+.secondary-button.rearrange-active,
+.secondary-button.rearrange-active:hover {
+  border-color: #1f5f3d;
+  background: #1f5f3d;
+  color: #fff;
+}
+
 .primary-button:active,
 .secondary-button:active,
 .small-button:active {

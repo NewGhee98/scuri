@@ -10,7 +10,9 @@ import { LOCAL_PHOTO_SOURCE } from "@/lib/photo-sources";
 import {
   MAX_PROJECT_PAGES,
   getMissingPhotoCount,
+  getPhotoFillTargets,
   isPageComplete,
+  moveLayoutPhoto,
   moveProjectPage,
   moveProjectPageByOffset,
 } from "@/lib/project";
@@ -134,6 +136,7 @@ export function LayoutsApp() {
   const [exportItems, setExportItems] = useState<ExportItem[]>([]);
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
+  const [rearrangeMode, setRearrangeMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileTargetRef = useRef<{ pageId: string; frameId: string } | null>(null);
   const exportHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -306,6 +309,7 @@ export function LayoutsApp() {
   };
 
   const selectFormat = (nextFormatId: FormatId) => {
+    setRearrangeMode(false);
     setFormatId(nextFormatId);
     setActivePageId(null);
     setScreen("template");
@@ -315,6 +319,7 @@ export function LayoutsApp() {
     if (!formatId || nextTemplate.formatId !== formatId) return;
     if (activePage) {
       if (activePage.templateId === nextTemplate.id) {
+        setRearrangeMode(false);
         setScreen("editor");
         return;
       }
@@ -328,6 +333,7 @@ export function LayoutsApp() {
         selectedFrameId: nextTemplate.frames[0]?.id ?? null,
         photos: {},
       }));
+      setRearrangeMode(false);
       setScreen("editor");
       return;
     }
@@ -348,6 +354,7 @@ export function LayoutsApp() {
     };
     setPages((current) => [...current, page]);
     setActivePageId(page.id);
+    setRearrangeMode(false);
     setScreen("editor");
   };
 
@@ -357,33 +364,63 @@ export function LayoutsApp() {
     inputRef.current?.click();
   };
 
-  const receivePhoto = async (file: File | undefined) => {
+  const receivePhotos = async (files: File[]) => {
     const target = fileTargetRef.current;
-    if (!file || !target) return;
+    if (!files.length || !target) return;
+    const currentPage = pagesRef.current.find((page) => page.id === target.pageId);
+    if (!currentPage) return;
+    const currentTemplate = getTemplate(currentPage.templateId);
+    const targetFrameIds = getPhotoFillTargets(currentTemplate, currentPage.photos, target.frameId, files.length);
+    const selectedFiles = files.slice(0, targetFrameIds.length);
+    if (!selectedFiles.length) return;
     setBusy("image");
-    setNotice({ kind: "info", text: "Preparing photo…" });
+    setNotice({ kind: "info", text: selectedFiles.length === 1 ? "Preparing photo…" : `Preparing ${selectedFiles.length} photos…` });
+    const preparedAssets: PhotoAsset[] = [];
+    let refreshRecoveryAvailable = true;
     try {
-      validateImageFile(file);
-      const asset = await preparePhotoAsset(file, target.frameId);
-      try {
-        await savePhotoBlob(asset.blobKey, file);
-      } catch {
-        setNotice({ kind: "info", text: "Photo added, but refresh recovery is unavailable in this browser." });
+      selectedFiles.forEach(validateImageFile);
+      for (let index = 0; index < selectedFiles.length; index += 1) {
+        const file = selectedFiles[index];
+        const frameId = targetFrameIds[index];
+        const asset = await preparePhotoAsset(file, frameId);
+        preparedAssets.push(asset);
+        try {
+          await savePhotoBlob(asset.blobKey, file);
+        } catch {
+          refreshRecoveryAvailable = false;
+        }
       }
-      const currentPage = pagesRef.current.find((page) => page.id === target.pageId);
-      const previous = currentPage?.photos[target.frameId];
-      if (previous) {
+
+      const replacedPhotos = targetFrameIds
+        .map((frameId) => currentPage.photos[frameId])
+        .filter((photo): photo is PhotoAsset => Boolean(photo));
+      const additions = Object.fromEntries(preparedAssets.map((asset) => [asset.frameId, asset]));
+      updatePage(target.pageId, (page) => ({
+        ...page,
+        selectedFrameId: targetFrameIds[0],
+        photos: { ...page.photos, ...additions },
+      }));
+      for (const previous of replacedPhotos) {
         disposePhotoAsset(previous);
         void deletePhotoBlob(previous.blobKey).catch(() => undefined);
       }
-      updatePage(target.pageId, (page) => ({
-        ...page,
-        selectedFrameId: target.frameId,
-        photos: { ...page.photos, [target.frameId]: asset },
-      }));
-      setNotice({ kind: "success", text: "Photo added. Drag to reposition or pinch to zoom." });
+      if (preparedAssets.length > 1) setRearrangeMode(true);
+
+      const ignoredCount = files.length - preparedAssets.length;
+      const recoveryText = refreshRecoveryAvailable ? "" : " Refresh recovery is unavailable for the new photos in this browser.";
+      const ignoredText = ignoredCount ? ` ${ignoredCount} extra ${ignoredCount === 1 ? "photo was" : "photos were"} not added because the template is full.` : "";
+      setNotice({
+        kind: refreshRecoveryAvailable ? "success" : "info",
+        text: preparedAssets.length === 1
+          ? `Photo added. Drag to reposition or pinch to zoom.${ignoredText}${recoveryText}`
+          : `${preparedAssets.length} photos added. Drag tiles to rearrange them.${ignoredText}${recoveryText}`,
+      });
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "That photo could not be added." });
+      for (const asset of preparedAssets) {
+        disposePhotoAsset(asset);
+        void deletePhotoBlob(asset.blobKey).catch(() => undefined);
+      }
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Those photos could not be added." });
     } finally {
       setBusy(null);
       if (inputRef.current) inputRef.current.value = "";
@@ -396,6 +433,15 @@ export function LayoutsApp() {
       const photo = page.photos[frameId];
       return photo ? { ...page, photos: { ...page.photos, [frameId]: { ...photo, crop } } } : page;
     });
+  };
+
+  const movePhoto = (sourceFrameId: string, targetFrameId: string) => {
+    if (!activePage || sourceFrameId === targetFrameId) return;
+    updatePage(activePage.id, (page) => ({
+      ...page,
+      selectedFrameId: targetFrameId,
+      photos: moveLayoutPhoto(page.photos, sourceFrameId, targetFrameId),
+    }));
   };
 
   const removeSelected = () => {
@@ -428,10 +474,12 @@ export function LayoutsApp() {
     setPages([]);
     setFormatId(null);
     setActivePageId(null);
+    setRearrangeMode(false);
     setScreen("format");
   };
 
   const goBack = () => {
+    setRearrangeMode(false);
     if (screen === "template") setScreen(pages.length ? "project" : "format");
     else if (screen === "editor") setScreen("project");
     else if (screen === "export") setScreen("project");
@@ -440,6 +488,7 @@ export function LayoutsApp() {
 
   const openProject = () => {
     setDraggingPageId(null);
+    setRearrangeMode(false);
     setScreen("project");
   };
 
@@ -449,11 +498,13 @@ export function LayoutsApp() {
       return;
     }
     setActivePageId(null);
+    setRearrangeMode(false);
     setScreen("template");
   };
 
   const editPage = (pageId: string) => {
     setActivePageId(pageId);
+    setRearrangeMode(false);
     setScreen("editor");
   };
 
@@ -647,8 +698,9 @@ export function LayoutsApp() {
         ref={inputRef}
         className="sr-only"
         type="file"
+        multiple
         accept={LOCAL_PHOTO_SOURCE.accept}
-        onChange={(event) => void receivePhoto(event.target.files?.[0])}
+        onChange={(event) => void receivePhotos(Array.from(event.target.files ?? []))}
       />
 
       {screen === "format" ? (
@@ -785,9 +837,11 @@ export function LayoutsApp() {
               gutter={activePage.gutter}
               photos={activePage.photos}
               selectedFrameId={activePage.selectedFrameId}
+              rearrangeMode={rearrangeMode}
               onSelectFrame={(frameId) => updatePage(activePage.id, (page) => ({ ...page, selectedFrameId: frameId }))}
               onRequestPhoto={requestPhoto}
               onCropChange={updateCrop}
+              onMovePhoto={movePhoto}
             />
           </section>
           <aside className="control-panel" aria-label="Editing controls">
@@ -800,7 +854,9 @@ export function LayoutsApp() {
                 <h1 className="text-2xl font-medium tracking-[-0.035em]">Edit page</h1>
                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-600">{Object.keys(activePage.photos).length}/{template.frames.length}</span>
               </div>
-              <p className="mt-2 text-sm leading-5 text-neutral-600">Tap a frame, then drag the photo or pinch to zoom. Changes autosave.</p>
+              <p className="mt-2 text-sm leading-5 text-neutral-600">
+                {rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. You can select several photos at once."}
+              </p>
             </div>
 
             <div className="control-section">
@@ -827,6 +883,18 @@ export function LayoutsApp() {
                 <button className="small-button" type="button" disabled={!selectedPhoto} onClick={resetSelected}>Reset</button>
                 <button className="small-button danger" type="button" disabled={!selectedPhoto} onClick={removeSelected}>Remove</button>
               </div>
+              <button
+                className={`secondary-button mt-2 w-full ${rearrangeMode ? "rearrange-active" : ""}`}
+                type="button"
+                aria-pressed={rearrangeMode}
+                disabled={!Object.keys(activePage.photos).length || template.frames.length < 2}
+                onClick={() => setRearrangeMode((current) => !current)}
+              >
+                {rearrangeMode ? "Done rearranging" : "Rearrange photos"}
+              </button>
+              <p className="mt-2 text-[11px] leading-4 text-neutral-500">
+                Selecting multiple photos fills this tile first, then the other empty tiles.
+              </p>
             </div>
 
             <div className="control-section">
@@ -934,7 +1002,7 @@ export function LayoutsApp() {
         <div className="busy-overlay" aria-live="polite">
           <span className="loading-ring" aria-hidden="true" />
           <span>
-            {busy === "image" ? "Preparing photo…" : busy === "duplicate" ? "Duplicating page…" : exportProgress ? `Creating image ${exportProgress.current} of ${exportProgress.total}…` : "Preparing download…"}
+            {busy === "image" ? "Preparing photos…" : busy === "duplicate" ? "Duplicating page…" : exportProgress ? `Creating image ${exportProgress.current} of ${exportProgress.total}…` : "Preparing download…"}
           </span>
         </div>
       ) : null}

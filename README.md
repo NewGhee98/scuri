@@ -12,7 +12,8 @@ All image selection, composition and export happens in the browser. There is no 
 - Local multi-page projects with up to 20 ordered pages.
 - Autosaved page drafts, page duplication and explicit page readiness.
 - Touch drag reordering with accessible Earlier and Later controls.
-- Local selection from Apple Photos, iOS Files and desktop file pickers.
+- Single or multi-photo selection from Apple Photos, iOS Files and desktop file pickers.
+- Automatic multi-photo filling from the tapped tile, followed by drag-to-swap tile rearranging.
 - Fixed clipping frames with independent drag, pinch, mouse-wheel and slider zoom.
 - Cover fitting and constrained movement, so empty space cannot be dragged into a frame.
 - Replace, reset and remove controls for each photograph.
@@ -36,7 +37,7 @@ Use **Start new** to clear the active project, all its pages and its stored phot
 ### Project workflow
 
 1. Choose Post or Story. Every page in a project uses that output format.
-2. Choose a layout and fill the page. Changes autosave while editing.
+2. Choose a layout and fill the page. Select one photo for one tile, or select several to autofill the layout; use rearrange mode to drag photos between tiles. Changes autosave while editing.
 3. Save the page, then add, duplicate, edit, delete or reorder pages from the project overview.
 4. Export one ready page or export the complete ordered project.
 5. On iPhone or iPad, use **Save all to Photos / Share** and choose the multi-image save action in Apple’s share sheet. If file sharing is unavailable, use **Download ZIP to Files**.
@@ -61,7 +62,7 @@ npm test
 npm run build
 ```
 
-The unit tests cover format selection, export dimensions, template validation, normalised canvas scaling, cover-crop calculations, image-position constraints, zoom limits, page readiness, reordering and migration from the previous single-page storage format.
+The unit tests cover format selection, export dimensions, template validation, normalised canvas scaling, cover-crop calculations, image-position constraints, zoom limits, multi-photo fill order, tile swapping, page readiness, reordering and migration from the previous single-page storage format.
 
 ## Production
 
@@ -100,7 +101,7 @@ Repeat this on each device. The Home Screen icon launches Layouts in standalone 
 - `src/lib/image.ts` validates, decodes and downscales photographs for responsive editing.
 - `src/lib/photo-sources.ts` defines the current local picker and the extension point for a later Google Photos source.
 - `src/lib/storage.ts` stores project metadata and local image blobs.
-- `src/lib/project.ts` owns page readiness, page limits and reorder logic.
+- `src/lib/project.ts` owns page readiness, page limits, multi-photo fill order and reorder logic.
 - `src/lib/export.ts` redraws the composition from original image blobs at the exact output dimensions.
 - `src/components/editor-canvas.tsx` handles high-DPI rendering and touch, pointer, wheel and keyboard input.
 - `src/components/composition-thumbnail.tsx` renders live page thumbnails without uploading or flattening the project.

@@ -4,6 +4,8 @@ export const MAX_PROJECT_PAGES = 20;
 
 type PageWithPhotos = Pick<ProjectPage | StoredProjectPage, "photos">;
 
+type FramePhoto = { frameId: string };
+
 export function getPagePhotoCount(page: PageWithPhotos): number {
   return Object.keys(page.photos).length;
 }
@@ -14,6 +16,37 @@ export function getMissingPhotoCount(page: PageWithPhotos, template: TemplateDef
 
 export function isPageComplete(page: PageWithPhotos, template: TemplateDefinition): boolean {
   return getMissingPhotoCount(page, template) === 0;
+}
+
+export function getPhotoFillTargets(
+  template: TemplateDefinition,
+  photos: PageWithPhotos["photos"],
+  tappedFrameId: string,
+  selectedPhotoCount: number,
+): string[] {
+  if (selectedPhotoCount <= 0 || !template.frames.some((frame) => frame.id === tappedFrameId)) return [];
+  const otherFrameIds = template.frames.map((frame) => frame.id).filter((frameId) => frameId !== tappedFrameId);
+  const emptyFrameIds = otherFrameIds.filter((frameId) => !photos[frameId]);
+  const filledFrameIds = otherFrameIds.filter((frameId) => Boolean(photos[frameId]));
+  return [tappedFrameId, ...emptyFrameIds, ...filledFrameIds].slice(0, selectedPhotoCount);
+}
+
+export function moveLayoutPhoto<T extends FramePhoto>(
+  photos: Record<string, T>,
+  sourceFrameId: string,
+  targetFrameId: string,
+): Record<string, T> {
+  const sourcePhoto = photos[sourceFrameId];
+  if (!sourcePhoto || sourceFrameId === targetFrameId) return photos;
+
+  const targetPhoto = photos[targetFrameId];
+  const next = {
+    ...photos,
+    [targetFrameId]: { ...sourcePhoto, frameId: targetFrameId },
+  };
+  if (targetPhoto) next[sourceFrameId] = { ...targetPhoto, frameId: sourceFrameId };
+  else delete next[sourceFrameId];
+  return next;
 }
 
 export function moveProjectPage<T extends { id: string }>(pages: T[], sourceId: string, targetId: string): T[] {
