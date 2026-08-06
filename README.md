@@ -1,6 +1,6 @@
 # Layouts
 
-Layouts is a mobile-first, private photo-template editor for Instagram posts and stories. It is a focused alternative to the layout workflow in apps such as Unfold: choose a format, choose a template, add local photographs, adjust every crop and export a finished JPEG.
+Layouts is a mobile-first, private photo-template editor for Instagram posts and stories. It is a focused alternative to the layout workflow in apps such as Unfold: start a project, build and reorder several template pages, adjust every crop and export the completed set.
 
 All image selection, composition and export happens in the browser. There is no account, backend, database service, analytics or photo upload.
 
@@ -9,25 +9,38 @@ All image selection, composition and export happens in the browser. There is no 
 - Instagram portrait posts at **1080 × 1350 (4:5)**.
 - Instagram Stories at **1080 × 1920 (9:16)**.
 - Eight data-defined templates for each format, including one-, two-, three- and four-photo layouts.
-- Local selection from Apple Photos, iOS Files and desktop file pickers.
+- Local multi-page projects with up to 20 ordered pages.
+- Autosaved page drafts, page duplication and explicit page readiness.
+- Touch drag reordering with accessible Earlier and Later controls.
+- Single or multi-photo selection from Apple Photos, iOS Files and desktop file pickers.
+- Automatic multi-photo filling from the tapped tile, followed by drag-to-swap tile rearranging.
 - Fixed clipping frames with independent drag, pinch, mouse-wheel and slider zoom.
 - Cover fitting and constrained movement, so empty space cannot be dragged into a frame.
 - Replace, reset and remove controls for each photograph.
 - Adjustable background colour, borders and gutters.
-- High-quality, exact-size JPEG preview, download and Web Share support.
-- Local recovery of the active project after navigation or refresh.
+- High-quality, exact-size single-page or batch JPEG export and Web Share support.
+- Multi-image Apple share-sheet handoff plus a ZIP download fallback for Files.
+- Local recovery of the entire active project after navigation or refresh.
 - Installable PWA shell with standalone display, offline caching and iOS metadata.
 
 ## Privacy and browser storage
 
 Photos never leave the device. The application uses:
 
-- `localStorage` for lightweight project settings, crop positions and the selected layout.
-- IndexedDB for the original local image blobs needed to recover an unfinished project after a refresh.
+- `localStorage` for lightweight project settings, page order, crop positions and template choices.
+- IndexedDB for the local image blobs needed to recover every project page after a refresh.
 - Temporary object URLs for downscaled editing previews and generated exports. These are revoked when replaced or no longer needed.
 - The Cache API, through the service worker, for the application shell—not for user photographs.
 
-Use **Start new** to clear the active project and its stored photo blobs. Browser storage remains specific to the browser and device; an iPad project does not synchronise to an iPhone.
+Use **Start new** to clear the active project, all its pages and its stored photo blobs. The app automatically migrates a previously saved single composition into page 1 of a multi-page project. Browser storage remains specific to the browser and device; an iPad project does not synchronise to an iPhone.
+
+### Project workflow
+
+1. Choose Post or Story. Every page in a project uses that output format.
+2. Choose a layout and fill the page. Select one photo for one tile, or select several to autofill the layout; use rearrange mode to drag photos between tiles. Changes autosave while editing.
+3. Save the page, then add, duplicate, edit, delete or reorder pages from the project overview.
+4. Export one ready page or export the complete ordered project.
+5. On iPhone or iPad, use **Save all to Photos / Share** and choose the multi-image save action in Apple’s share sheet. If file sharing is unavailable, use **Download ZIP to Files**.
 
 ## Local development
 
@@ -49,7 +62,7 @@ npm test
 npm run build
 ```
 
-The unit tests cover format selection, export dimensions, template validation, normalised canvas scaling, cover-crop calculations, image-position constraints and zoom limits.
+The unit tests cover format selection, export dimensions, template validation, normalised canvas scaling, cover-crop calculations, image-position constraints, zoom limits, multi-photo fill order, tile swapping, page readiness, reordering and migration from the previous single-page storage format.
 
 ## Production
 
@@ -88,9 +101,12 @@ Repeat this on each device. The Home Screen icon launches Layouts in standalone 
 - `src/lib/image.ts` validates, decodes and downscales photographs for responsive editing.
 - `src/lib/photo-sources.ts` defines the current local picker and the extension point for a later Google Photos source.
 - `src/lib/storage.ts` stores project metadata and local image blobs.
+- `src/lib/project.ts` owns page readiness, page limits, multi-photo fill order and reorder logic.
 - `src/lib/export.ts` redraws the composition from original image blobs at the exact output dimensions.
 - `src/components/editor-canvas.tsx` handles high-DPI rendering and touch, pointer, wheel and keyboard input.
-- `src/components/layouts-app.tsx` owns the four-screen product flow and user-facing state.
+- `src/components/composition-thumbnail.tsx` renders live page thumbnails without uploading or flattening the project.
+- `src/components/project-page-card.tsx` provides page actions and touch reordering.
+- `src/components/layouts-app.tsx` owns the project, format, template, editor and export flows.
 
 The editor uses the browser’s maintained Canvas 2D API directly. That keeps the drawing/export model small, avoids server rendering of image data and prevents template frames from becoming draggable objects.
 
@@ -117,7 +133,9 @@ That single object is expanded for both current formats. The same editor, thumbn
 
 - V1 supports rectangular, non-rotated frames only.
 - There is no visual in-app template creator yet; templates are added as data in code.
+- The current release keeps one autosaved project at a time; **Start new** replaces it.
 - Projects do not synchronise between devices.
+- There is not yet a portable project backup/import file, so clearing Safari website data can remove the autosaved project.
 - HEIC availability depends on whether the browser can decode the selected file; the explicit supported types are JPEG, PNG and WebP.
 - iOS memory pressure can still affect unusually large source files. Editing uses a downscaled preview, while export decodes originals one frame at a time.
 - Browser share/download wording varies by iOS version. The generated JPEG preview remains available if the share sheet is unavailable.
@@ -125,8 +143,9 @@ That single object is expanded for both current formats. The same editor, thumbn
 
 ## Short roadmap
 
-1. Test export, refresh recovery and installation on physical iPhone and iPad hardware.
-2. Add a constrained visual template creator with duplicate, resize, alignment guides and local “My Templates”.
-3. Add JSON template import/export for moving layouts between devices without accounts.
-4. Add optional square and landscape formats through the existing format definition system.
-5. Consider an opt-in Google Photos source only after the local workflow is solid.
+1. Test multi-image share, refresh recovery, touch reordering and installation on physical iPhone and iPad hardware.
+2. Add a portable project backup/import file for moving complete projects between devices without accounts.
+3. Add a constrained visual template creator with duplicate, resize, alignment guides and local “My Templates”.
+4. Add JSON template import/export for moving custom layouts between devices.
+5. Add optional square and landscape formats through the existing format definition system.
+6. Consider an opt-in Google Photos source only after the local workflow is solid.

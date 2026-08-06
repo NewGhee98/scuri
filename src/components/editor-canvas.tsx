@@ -11,9 +11,11 @@ interface EditorCanvasProps {
   gutter: number;
   photos: Record<string, PhotoAsset>;
   selectedFrameId: string | null;
+  rearrangeMode: boolean;
   onSelectFrame: (frameId: string) => void;
   onRequestPhoto: (frameId: string) => void;
   onCropChange: (frameId: string, crop: CropState) => void;
+  onMovePhoto: (sourceFrameId: string, targetFrameId: string) => void;
 }
 
 interface Point {
@@ -47,9 +49,11 @@ export function EditorCanvas({
   gutter,
   photos,
   selectedFrameId,
+  rearrangeMode,
   onSelectFrame,
   onRequestPhoto,
   onCropChange,
+  onMovePhoto,
 }: EditorCanvasProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -57,8 +61,10 @@ export function EditorCanvas({
   const pointersRef = useRef(new Map<number, Point>());
   const dragRef = useRef<{ frameId: string; last: Point; distance: number } | null>(null);
   const pinchRef = useRef<{ frameId: string; startDistance: number; startZoom: number } | null>(null);
+  const swapDragRef = useRef<{ pointerId: number; sourceFrameId: string; targetFrameId: string } | null>(null);
   const [size, setSize] = useState({ width: 320, height: (320 * format.height) / format.width });
   const [imageRevision, setImageRevision] = useState(0);
+  const [swapTargetFrameId, setSwapTargetFrameId] = useState<string | null>(null);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -143,7 +149,13 @@ export function EditorCanvas({
       }
       context.restore();
 
-      if (selectedFrameId === frame.id) {
+      if (swapTargetFrameId === frame.id && swapDragRef.current?.sourceFrameId !== frame.id) {
+        context.save();
+        context.strokeStyle = "#1f8f55";
+        context.lineWidth = 5;
+        context.strokeRect(frame.x + 2.5, frame.y + 2.5, Math.max(0, frame.width - 5), Math.max(0, frame.height - 5));
+        context.restore();
+      } else if (selectedFrameId === frame.id) {
         context.save();
         context.strokeStyle = "#0a0a0a";
         context.lineWidth = 3;
@@ -152,7 +164,7 @@ export function EditorCanvas({
         context.restore();
       }
     }
-  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width]);
+  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId]);
 
   const canvasPoint = useCallback((event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -167,9 +179,17 @@ export function EditorCanvas({
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = canvasPoint(event);
     pointersRef.current.set(event.pointerId, point);
+    if (swapDragRef.current) return;
     const target = hitTest(frames, point);
     if (!target) return;
     onSelectFrame(target.id);
+    if (rearrangeMode && photos[target.id]) {
+      swapDragRef.current = { pointerId: event.pointerId, sourceFrameId: target.id, targetFrameId: target.id };
+      setSwapTargetFrameId(target.id);
+      dragRef.current = null;
+      pinchRef.current = null;
+      return;
+    }
     if (!photos[target.id]) {
       dragRef.current = { frameId: target.id, last: point, distance: 0 };
       return;
@@ -192,6 +212,13 @@ export function EditorCanvas({
     event.preventDefault();
     const point = canvasPoint(event);
     pointersRef.current.set(event.pointerId, point);
+    const swapDrag = swapDragRef.current;
+    if (swapDrag?.pointerId === event.pointerId) {
+      const target = hitTest(frames, point);
+      if (target) swapDrag.targetFrameId = target.id;
+      setSwapTargetFrameId(target?.id ?? null);
+      return;
+    }
     if (pointersRef.current.size >= 2 && pinchRef.current) {
       const photo = photos[pinchRef.current.frameId];
       if (!photo) return;
@@ -218,17 +245,27 @@ export function EditorCanvas({
     }
   };
 
-  const endPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+  const endPointer = (event: React.PointerEvent<HTMLCanvasElement>, commitSwap: boolean) => {
     event.preventDefault();
+    const swapDrag = swapDragRef.current;
+    if (commitSwap && swapDrag?.pointerId === event.pointerId && swapDrag.sourceFrameId !== swapDrag.targetFrameId) {
+      onMovePhoto(swapDrag.sourceFrameId, swapDrag.targetFrameId);
+    }
     const drag = dragRef.current;
     if (drag && drag.distance < 6 && !photos[drag.frameId]) onRequestPhoto(drag.frameId);
     pointersRef.current.delete(event.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (pointersRef.current.size === 0) dragRef.current = null;
+    if (swapDrag?.pointerId === event.pointerId) {
+      swapDragRef.current = null;
+      setSwapTargetFrameId(null);
+    }
+    if (pointersRef.current.size === 0) {
+      dragRef.current = null;
+    }
   };
 
   const handleWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
-    if (!selectedFrameId || !photos[selectedFrameId]) return;
+    if (rearrangeMode || !selectedFrameId || !photos[selectedFrameId]) return;
     event.preventDefault();
     const photo = photos[selectedFrameId];
     onCropChange(selectedFrameId, setCropZoom(photo.crop, photo.crop.zoom * (event.deltaY > 0 ? 0.94 : 1.06)));
@@ -240,6 +277,14 @@ export function EditorCanvas({
     const target = frames.find((frame) => frame.id === selectedFrameId);
     if (!photo) {
       if (event.key === "Enter" || event.key === " ") onRequestPhoto(selectedFrameId);
+      return;
+    }
+    if (rearrangeMode && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      const currentIndex = frames.findIndex((frame) => frame.id === selectedFrameId);
+      const offset = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+      const nextFrame = frames[currentIndex + offset];
+      if (nextFrame) onMovePhoto(selectedFrameId, nextFrame.id);
       return;
     }
     if (event.key === "+" || event.key === "=") {
@@ -264,15 +309,17 @@ export function EditorCanvas({
     <div ref={shellRef} className="flex min-h-[340px] w-full items-center justify-center overflow-hidden">
       <canvas
         ref={canvasRef}
-        className="block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4"
-        aria-label="Photo layout canvas. Tap a frame to select it, drag to reposition, and pinch to zoom."
+        className={`block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4 ${rearrangeMode ? "cursor-grab" : ""}`}
+        aria-label={rearrangeMode
+          ? "Photo layout canvas in rearrange mode. Drag a filled frame onto another frame to swap or move its photo."
+          : "Photo layout canvas. Tap a frame to select it, drag to reposition, and pinch to zoom."}
         role="application"
         tabIndex={0}
         onKeyDown={handleKeyDown}
-        onPointerCancel={endPointer}
+        onPointerCancel={(event) => endPointer(event, false)}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={endPointer}
+        onPointerUp={(event) => endPointer(event, true)}
         onWheel={handleWheel}
       />
     </div>

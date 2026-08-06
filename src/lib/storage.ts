@@ -1,6 +1,7 @@
-import type { StoredProject } from "./types";
+import type { LegacyStoredProject, StoredProject } from "./types";
 
-const PROJECT_KEY = "layouts.current-project.v1";
+const PROJECT_KEY = "layouts.current-project.v2";
+const LEGACY_PROJECT_KEY = "layouts.current-project.v1";
 const DB_NAME = "layouts-local-photos";
 const DB_VERSION = 1;
 const STORE_NAME = "photos";
@@ -66,12 +67,46 @@ export function saveProject(project: StoredProject): void {
   localStorage.setItem(PROJECT_KEY, JSON.stringify(project));
 }
 
+export function migrateLegacyProject(project: LegacyStoredProject): StoredProject | null {
+  if (!project.formatId || !project.templateId || typeof project.photos !== "object") return null;
+  const now = project.updatedAt || new Date().toISOString();
+  const pageId = crypto.randomUUID();
+  return {
+    version: 2,
+    id: crypto.randomUUID(),
+    name: "My project",
+    screen: project.screen === "export" ? "project" : project.screen,
+    formatId: project.formatId,
+    activePageId: pageId,
+    pages: [
+      {
+        id: pageId,
+        templateId: project.templateId,
+        background: project.background,
+        gutter: project.gutter,
+        selectedFrameId: project.selectedFrameId,
+        photos: project.photos,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 export function loadProject(): StoredProject | null {
-  const raw = localStorage.getItem(PROJECT_KEY);
+  const raw = localStorage.getItem(PROJECT_KEY) ?? localStorage.getItem(LEGACY_PROJECT_KEY);
   if (!raw) return null;
   try {
-    const project = JSON.parse(raw) as StoredProject;
-    if (project.version !== 1 || typeof project.photos !== "object") return null;
+    const project = JSON.parse(raw) as StoredProject | LegacyStoredProject;
+    if (project.version === 1) return migrateLegacyProject(project);
+    if (
+      project.version !== 2 ||
+      !Array.isArray(project.pages) ||
+      typeof project.name !== "string" ||
+      project.pages.some((page) => typeof page.photos !== "object")
+    ) return null;
     return project;
   } catch {
     return null;
@@ -80,4 +115,5 @@ export function loadProject(): StoredProject | null {
 
 export function clearSavedProject(): void {
   localStorage.removeItem(PROJECT_KEY);
+  localStorage.removeItem(LEGACY_PROJECT_KEY);
 }
