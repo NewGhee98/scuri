@@ -79,6 +79,7 @@ export function LayoutsApp() {
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileTargetRef = useRef<string | null>(null);
+  const exportHeadingRef = useRef<HTMLHeadingElement>(null);
   const photosRef = useRef(photos);
 
   const format = formatId ? getFormat(formatId) : null;
@@ -208,6 +209,15 @@ export function LayoutsApp() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    if (screen !== "export" || !exportUrl) return;
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: "instant" });
+      exportHeadingRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [exportUrl, screen]);
+
   const selectFormat = (nextFormatId: FormatId) => {
     if (hasPhotos && nextFormatId !== formatId && !window.confirm("Change format and discard the photographs in this project?")) return;
     if (hasPhotos && nextFormatId !== formatId) void clearRuntimePhotos(photos);
@@ -328,7 +338,7 @@ export function LayoutsApp() {
       setExportBlob(blob);
       setExportUrl(URL.createObjectURL(blob));
       setScreen("export");
-      setNotice({ kind: "success", text: "High-quality JPEG created." });
+      setNotice({ kind: "success", text: "JPEG ready — tap Save to Photos / Share to finish." });
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : "Export failed. Try closing other apps and exporting again." });
     } finally {
@@ -351,11 +361,13 @@ export function LayoutsApp() {
     if (!exportBlob || !format) return;
     const file = new File([exportBlob], createExportFilename(format), { type: "image/jpeg" });
     if (!("share" in navigator) || !("canShare" in navigator) || !navigator.canShare({ files: [file] })) {
-      setNotice({ kind: "info", text: "Sharing is unavailable here. Use Download instead." });
+      downloadExport();
+      setNotice({ kind: "info", text: "The share sheet is unavailable, so the JPEG was opened or downloaded instead." });
       return;
     }
     try {
       await navigator.share({ files: [file], title: `${PRODUCT.name} export` });
+      setNotice({ kind: "success", text: "Share sheet opened. Choose Save Image to add the JPEG to Photos." });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setNotice({ kind: "error", text: "The share sheet could not be opened. Use Download instead." });
@@ -544,21 +556,21 @@ export function LayoutsApp() {
       {screen === "export" && format && exportUrl ? (
         <main className="screen-shell max-w-[1000px] py-7 sm:py-10">
           <div className="grid items-start gap-7 md:grid-cols-[minmax(0,1fr)_320px]">
-            <section className="rounded-[20px] bg-[#e8e8e4] p-3 sm:p-7">
-              {/* eslint-disable-next-line @next/next/no-img-element -- object URL is generated locally at runtime */}
-              <img className="mx-auto max-h-[70dvh] w-auto max-w-full shadow-[0_16px_50px_rgba(0,0,0,0.14)]" src={exportUrl} alt="Final exported photo composition" />
-            </section>
-            <aside className="rounded-[20px] bg-white p-5 shadow-[0_1px_0_rgba(0,0,0,0.05)] sm:p-6">
+            <aside className="rounded-[20px] bg-white p-5 shadow-[0_1px_0_rgba(0,0,0,0.05)] sm:p-6 md:col-start-2 md:row-start-1">
               <p className="eyebrow">Ready to save</p>
-              <h1 className="mt-2 text-3xl font-medium tracking-[-0.04em]">Your JPEG is ready.</h1>
+              <h1 ref={exportHeadingRef} className="mt-2 text-3xl font-medium tracking-[-0.04em] outline-none" tabIndex={-1}>Your JPEG is ready.</h1>
               <p className="mt-3 text-sm leading-6 text-neutral-600">{format.width} × {format.height}px · high-quality JPEG</p>
               <div className="mt-6 grid gap-2">
-                <button className="primary-button" type="button" onClick={() => void shareExport()}>Share or save image</button>
-                <button className="secondary-button" type="button" onClick={downloadExport}>Download JPEG</button>
+                <button className="primary-button" type="button" onClick={() => void shareExport()}>Save to Photos / Share</button>
+                <button className="secondary-button" type="button" onClick={downloadExport}>Download to Files</button>
                 <button className="text-button mt-2 justify-center" type="button" onClick={() => setScreen("editor")}>Keep editing</button>
               </div>
-              <p className="mt-5 rounded-xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">On iPhone or iPad, choose <strong>Save Image</strong> in the share sheet to add it to Apple Photos.</p>
+              <p className="mt-5 rounded-xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">Tap the black button, then choose <strong>Save Image</strong> in Apple’s share sheet. If it is unavailable, press and hold the preview below and choose <strong>Save to Photos</strong>.</p>
             </aside>
+            <section className="rounded-[20px] bg-[#e8e8e4] p-3 sm:p-7 md:col-start-1 md:row-start-1">
+              {/* eslint-disable-next-line @next/next/no-img-element -- object URL is generated locally at runtime */}
+              <img className="mx-auto max-h-[70dvh] w-auto max-w-full shadow-[0_16px_50px_rgba(0,0,0,0.14)]" src={exportUrl} alt="Final exported photo composition. On iPhone or iPad, press and hold to save it." />
+            </section>
           </div>
         </main>
       ) : null}
