@@ -50,7 +50,29 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
   });
 }
 
-export function createExportFilename(format: CanvasFormat): string {
+export function createExportFilename(format: CanvasFormat, pageNumber?: number): string {
   const stamp = new Date().toISOString().slice(0, 10);
-  return `layouts-${format.shortLabel.toLowerCase()}-${stamp}.jpg`;
+  const page = pageNumber ? `-${String(pageNumber).padStart(2, "0")}` : "";
+  return `layouts-${format.shortLabel.toLowerCase()}-${stamp}${page}.jpg`;
+}
+
+export async function createExportZip(
+  files: Array<{ filename: string; blob: Blob }>,
+  projectName: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const { zipSync } = await import("fflate");
+  const entries: Record<string, Uint8Array> = {};
+  for (const file of files) entries[file.filename] = new Uint8Array(await file.blob.arrayBuffer());
+  const zipped = zipSync(entries, { level: 0 });
+  const zipBuffer = new ArrayBuffer(zipped.byteLength);
+  new Uint8Array(zipBuffer).set(zipped);
+  const safeName = projectName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "layouts-project";
+  return {
+    blob: new Blob([zipBuffer], { type: "application/zip" }),
+    filename: `${safeName}-${new Date().toISOString().slice(0, 10)}.zip`,
+  };
 }

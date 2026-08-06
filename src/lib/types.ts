@@ -62,11 +62,45 @@ export interface StoredPhotoAsset {
   crop: CropState;
 }
 
-export type AppScreen = "format" | "template" | "editor" | "export";
+export type AppScreen = "project" | "format" | "template" | "editor" | "export";
+
+export interface ProjectPage {
+  id: string;
+  templateId: string;
+  background: string;
+  gutter: number;
+  selectedFrameId: string | null;
+  photos: Record<string, PhotoAsset>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredProjectPage {
+  id: string;
+  templateId: string;
+  background: string;
+  gutter: number;
+  selectedFrameId: string | null;
+  photos: Record<string, StoredPhotoAsset>;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface StoredProject {
-  version: 1;
+  version: 2;
+  id: string;
+  name: string;
   screen: AppScreen;
+  formatId: FormatId | null;
+  activePageId: string | null;
+  pages: StoredProjectPage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LegacyStoredProject {
+  version: 1;
+  screen: Exclude<AppScreen, "project">;
   formatId: FormatId | null;
   templateId: string | null;
   background: string;
