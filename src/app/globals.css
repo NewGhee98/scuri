@@ -37,6 +37,13 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
+.ios-gesture-surface {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 button:focus-visible,
 input:focus-visible {
   outline: 2px solid #111;
