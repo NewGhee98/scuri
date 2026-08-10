@@ -121,7 +121,7 @@ function isStoredProject(project: unknown): project is StoredProject {
   return value.version === 3 &&
     typeof value.id === "string" &&
     typeof value.name === "string" &&
-    (value.formatId === "instagram-post" || value.formatId === "instagram-story") &&
+    (value.formatId === "instagram-post" || value.formatId === "instagram-square" || value.formatId === "instagram-story") &&
     Array.isArray(value.pages) &&
     value.pages.every((page) => page && typeof page.photos === "object") &&
     typeof value.createdAt === "string" &&

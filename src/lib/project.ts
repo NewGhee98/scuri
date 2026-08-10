@@ -16,6 +16,8 @@ export function sortProjectsByLastEdited<T extends { updatedAt: string }>(projec
 
 export function getBackScreen(screen: AppScreen): AppScreen {
   if (screen === "projects") return "projects";
+  if (screen === "templates") return "templates";
+  if (screen === "template-format" || screen === "template-editor") return "templates";
   if (screen === "project" || screen === "format") return "projects";
   return "project";
 }

@@ -26,6 +26,7 @@ export function TemplateThumbnail({ template, selected = false }: TemplateThumbn
             y={frame.y}
             width={frame.width}
             height={frame.height}
+            rx={frame.cornerRadius}
             fill={index % 2 ? "#c8c8c6" : "#dededb"}
           />
           <circle

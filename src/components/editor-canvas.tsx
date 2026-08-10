@@ -124,7 +124,7 @@ export function EditorCanvas({
       const photo = photos[frame.id];
       context.save();
       context.beginPath();
-      context.rect(frame.x, frame.y, frame.width, frame.height);
+      context.roundRect(frame.x, frame.y, frame.width, frame.height, frame.cornerRadius);
       context.clip();
       if (photo) {
         const image = imageCacheRef.current.get(photo.previewUrl);
@@ -153,14 +153,18 @@ export function EditorCanvas({
         context.save();
         context.strokeStyle = "#1f8f55";
         context.lineWidth = 5;
-        context.strokeRect(frame.x + 2.5, frame.y + 2.5, Math.max(0, frame.width - 5), Math.max(0, frame.height - 5));
+        context.beginPath();
+        context.roundRect(frame.x + 2.5, frame.y + 2.5, Math.max(0, frame.width - 5), Math.max(0, frame.height - 5), frame.cornerRadius);
+        context.stroke();
         context.restore();
       } else if (selectedFrameId === frame.id) {
         context.save();
         context.strokeStyle = "#0a0a0a";
         context.lineWidth = 3;
         context.setLineDash([8, 5]);
-        context.strokeRect(frame.x + 1.5, frame.y + 1.5, Math.max(0, frame.width - 3), Math.max(0, frame.height - 3));
+        context.beginPath();
+        context.roundRect(frame.x + 1.5, frame.y + 1.5, Math.max(0, frame.width - 3), Math.max(0, frame.height - 3), frame.cornerRadius);
+        context.stroke();
         context.restore();
       }
     }

@@ -1,12 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 import { PRODUCT } from "@/config/product";
 import { DEFAULT_CROP, MAX_ZOOM, MIN_ZOOM, setCropZoom } from "@/lib/crop";
 import { createExportFilename, createExportZip, renderComposition } from "@/lib/export";
 import { FORMATS, getFormat } from "@/lib/formats";
 import { disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/image";
 import { LOCAL_PHOTO_SOURCE } from "@/lib/photo-sources";
+import {
+  cacheCustomTemplates,
+  copyAsCustomTemplate,
+  createBlankCustomTemplate,
+  deleteCloudTemplate,
+  getTemplateCloudClient,
+  getTemplateCloudUser,
+  isTemplateCloudConfigured,
+  loadCachedCustomTemplates,
+  loadCloudTemplates,
+  mergeTemplateLibraries,
+  saveCloudTemplate,
+  sendTemplateMagicLink,
+  signOutTemplateCloud,
+} from "@/lib/custom-templates";
 import {
   MAX_PROJECT_PAGES,
   getDefaultProjectName,
@@ -27,10 +43,11 @@ import {
   savePhotoBlob,
   saveProjects,
 } from "@/lib/storage";
-import { getTemplate, getTemplatesForFormat } from "@/lib/templates";
+import { getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
 import type {
   AppScreen,
   CropState,
+  CustomTemplate,
   FormatId,
   PhotoAsset,
   ProjectPage,
@@ -42,6 +59,7 @@ import { EditorCanvas } from "./editor-canvas";
 import { ProjectLibraryCard } from "./project-library-card";
 import { ProjectPageCard } from "./project-page-card";
 import { TemplateThumbnail } from "./template-thumbnail";
+import { TemplateDesigner } from "./template-designer";
 
 type Notice = { kind: "error" | "success" | "info"; text: string } | null;
 type BusyState = "image" | "export" | "duplicate" | "project" | null;
@@ -59,17 +77,25 @@ function Header({
   projectCount,
   onBack,
   onProjects,
+  onTemplates,
   onNew,
+  templatesSynced,
 }: {
   screen: AppScreen;
   pageCount: number;
   projectCount: number;
   onBack: () => void;
   onProjects: () => void;
+  onTemplates: () => void;
   onNew: () => void;
+  templatesSynced: boolean;
 }) {
+  const templatesScreen = screen === "templates" || screen === "template-format" || screen === "template-editor";
   const subtitle =
     screen === "projects" ? `${projectCount} ${projectCount === 1 ? "project" : "projects"}` :
+    screen === "templates" ? "Reusable photo layouts" :
+    screen === "template-format" ? "Choose a template format" :
+    screen === "template-editor" ? "Design a photo layout" :
     screen === "format" ? "Choose a project format" :
     screen === "template" ? "Choose a layout" :
     screen === "editor" ? "Edit project page" :
@@ -80,7 +106,7 @@ function Header({
     <header className="app-header">
       <div className="mx-auto flex h-full w-full max-w-[1240px] items-center justify-between px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          {screen !== "projects" ? (
+          {screen !== "projects" && screen !== "templates" ? (
             <button className="icon-button" type="button" onClick={onBack} aria-label="Go back">
               <span aria-hidden="true">←</span>
             </button>
@@ -94,7 +120,10 @@ function Header({
         </div>
         <nav className="flex items-center gap-2" aria-label="Main navigation">
           <button className={`nav-button ${screen === "projects" ? "active" : ""}`} type="button" onClick={onProjects}>Projects</button>
-          {screen === "projects" ? <button className="primary-button header-new-button" type="button" onClick={onNew}>+ New</button> : null}
+          <button className={`nav-button ${templatesScreen ? "active" : ""}`} type="button" onClick={onTemplates}>
+            Templates{templatesSynced ? <span className="nav-sync-dot" title="Templates synced" /> : null}
+          </button>
+          {screen === "projects" || screen === "templates" ? <button className="primary-button header-new-button" type="button" onClick={onNew}>+ New</button> : null}
         </nav>
       </div>
     </header>
@@ -105,6 +134,7 @@ function serializePage(page: ProjectPage): StoredProjectPage {
   return {
     id: page.id,
     templateId: page.templateId,
+    templateSnapshot: page.templateSnapshot,
     background: page.background,
     gutter: page.gutter,
     selectedFrameId: page.selectedFrameId,
@@ -143,25 +173,106 @@ export function LayoutsApp() {
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [rearrangeMode, setRearrangeMode] = useState(false);
+  const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
+  const [templateDraft, setTemplateDraft] = useState<CustomTemplate | null>(null);
+  const [templateFilter, setTemplateFilter] = useState<FormatId | "all">("all");
+  const [templateUser, setTemplateUser] = useState<User | null>(null);
+  const [templateCloudBusy, setTemplateCloudBusy] = useState(false);
+  const [showTemplateSignIn, setShowTemplateSignIn] = useState(false);
+  const [signInEmail, setSignInEmail] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const fileTargetRef = useRef<{ pageId: string; frameId: string } | null>(null);
   const exportHeadingRef = useRef<HTMLHeadingElement>(null);
   const pagesRef = useRef(pages);
   const exportItemsRef = useRef(exportItems);
+  const customTemplatesRef = useRef(customTemplates);
+  const templateUserRef = useRef<User | null>(null);
+  const templateSyncTimersRef = useRef(new Map<string, number>());
 
   const format = formatId ? getFormat(formatId) : null;
-  const templates = formatId ? getTemplatesForFormat(formatId) : [];
+  const templates = formatId ? getTemplatesForFormat(formatId, customTemplates) : [];
   const activePage = pages.find((page) => page.id === activePageId) ?? null;
-  const template = activePage ? getTemplate(activePage.templateId) : null;
+  const resolvePageTemplate = useCallback((page: Pick<ProjectPage, "templateId" | "templateSnapshot">): TemplateDefinition => (
+    page.templateSnapshot ?? getTemplate(page.templateId, customTemplates)
+  ), [customTemplates]);
+  const template = activePage ? resolvePageTemplate(activePage) : null;
   const selectedPhoto = activePage?.selectedFrameId ? activePage.photos[activePage.selectedFrameId] : undefined;
   const missingPhotoCount = activePage && template ? getMissingPhotoCount(activePage, template) : 0;
-  const completePageCount = pages.reduce((count, page) => count + (isPageComplete(page, getTemplate(page.templateId)) ? 1 : 0), 0);
+  const completePageCount = pages.reduce((count, page) => count + (isPageComplete(page, resolvePageTemplate(page)) ? 1 : 0), 0);
   const incompletePageCount = pages.length - completePageCount;
   const hasAnyPhotos = pages.some((page) => Object.keys(page.photos).length > 0);
+  const templateCloudConfigured = isTemplateCloudConfigured();
+  const templateLibrarySynced = Boolean(templateUser) && customTemplates.every((item) => item.syncState === "synced");
+
+  const replaceCustomTemplates = useCallback((next: CustomTemplate[]) => {
+    const sorted = [...next].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    customTemplatesRef.current = sorted;
+    setCustomTemplates(sorted);
+    cacheCustomTemplates(sorted);
+  }, []);
+
+  const syncTemplateCloud = useCallback(async () => {
+    if (!isTemplateCloudConfigured()) return;
+    const user = await getTemplateCloudUser();
+    templateUserRef.current = user;
+    setTemplateUser(user);
+    if (!user) return;
+    const local = customTemplatesRef.current;
+    const remote = await loadCloudTemplates();
+    let merged = mergeTemplateLibraries(local, remote);
+    for (const template of merged) {
+      const remoteVersion = remote.find((item) => item.id === template.id);
+      const needsUpload = !remoteVersion ||
+        (template.syncState !== "synced" && Date.parse(template.updatedAt) > Date.parse(remoteVersion.updatedAt));
+      if (!needsUpload) continue;
+      try {
+        const saved = await saveCloudTemplate({ ...template, syncState: "pending" });
+        merged = merged.map((item) => item.id === saved.id ? saved : item);
+      } catch {
+        merged = merged.map((item) => item.id === template.id ? { ...item, syncState: "error" } : item);
+      }
+    }
+    replaceCustomTemplates(merged);
+  }, [replaceCustomTemplates]);
+
+  const saveTemplateDraftLocally = useCallback((draft: CustomTemplate) => {
+    const nextDraft = {
+      ...draft,
+      syncState: draft.syncState === "synced" ? "pending" as const : draft.syncState,
+    };
+    const next = [nextDraft, ...customTemplatesRef.current.filter((item) => item.id !== nextDraft.id)];
+    replaceCustomTemplates(next);
+    setTemplateDraft(nextDraft);
+    const existingTimer = templateSyncTimersRef.current.get(nextDraft.id);
+    if (existingTimer) window.clearTimeout(existingTimer);
+    if (isTemplateCloudConfigured() && templateUserRef.current) {
+      const timer = window.setTimeout(() => {
+        templateSyncTimersRef.current.delete(nextDraft.id);
+        void saveCloudTemplate({ ...nextDraft, syncState: "pending" }).then((saved) => {
+          const current = customTemplatesRef.current.find((item) => item.id === saved.id);
+          if (!current || current.updatedAt !== saved.updatedAt || current.status !== saved.status) return;
+          replaceCustomTemplates([saved, ...customTemplatesRef.current.filter((item) => item.id !== saved.id)]);
+        }).catch(() => {
+          const current = customTemplatesRef.current.find((item) => item.id === nextDraft.id);
+          if (!current || current.updatedAt !== nextDraft.updatedAt) return;
+          replaceCustomTemplates(customTemplatesRef.current.map((item) => item.id === nextDraft.id ? { ...item, syncState: "error" } : item));
+        });
+      }, 700);
+      templateSyncTimersRef.current.set(nextDraft.id, timer);
+    }
+  }, [replaceCustomTemplates]);
 
   useEffect(() => {
     pagesRef.current = pages;
   }, [pages]);
+
+  useEffect(() => {
+    customTemplatesRef.current = customTemplates;
+  }, [customTemplates]);
+
+  useEffect(() => {
+    templateUserRef.current = templateUser;
+  }, [templateUser]);
 
   useEffect(() => {
     exportItemsRef.current = exportItems;
@@ -208,7 +319,7 @@ export function LayoutsApp() {
     const restoredFormat = getFormat(project.formatId);
     const restoredPages: ProjectPage[] = [];
     for (const storedPage of project.pages) {
-      const restoredTemplate = getTemplate(storedPage.templateId);
+      const restoredTemplate = storedPage.templateSnapshot ?? getTemplate(storedPage.templateId, customTemplatesRef.current);
       if (restoredTemplate.formatId !== restoredFormat.id) continue;
       const restoredPhotos: Record<string, PhotoAsset> = {};
       for (const item of Object.values(storedPage.photos)) {
@@ -232,6 +343,9 @@ export function LayoutsApp() {
       try {
         const saved = sortProjectsByLastEdited(loadProjects());
         setProjects(saved);
+        const savedTemplates = loadCachedCustomTemplates();
+        customTemplatesRef.current = savedTemplates;
+        setCustomTemplates(savedTemplates);
         clearLegacySavedProject();
       } catch {
         setNotice({ kind: "error", text: "Your saved projects could not be restored in this browser." });
@@ -243,9 +357,32 @@ export function LayoutsApp() {
   }, []);
 
   useEffect(() => {
+    const client = getTemplateCloudClient();
+    if (!client) return;
+    const initialSync = window.setTimeout(() => {
+      void syncTemplateCloud().catch(() => {
+        setNotice({ kind: "error", text: "Cloud templates could not be loaded. Your local drafts are unchanged." });
+      });
+    }, 0);
+    const { data } = client.auth.onAuthStateChange((_event, session) => {
+      templateUserRef.current = session?.user ?? null;
+      setTemplateUser(session?.user ?? null);
+      if (session?.user) {
+        window.setTimeout(() => void syncTemplateCloud().catch(() => undefined), 0);
+      }
+    });
+    return () => {
+      window.clearTimeout(initialSync);
+      data.subscription.unsubscribe();
+    };
+  }, [syncTemplateCloud]);
+
+  useEffect(() => {
+    const templateSyncTimers = templateSyncTimersRef.current;
     return () => {
       pagesRef.current.forEach(disposePagePreviews);
       exportItemsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
+      templateSyncTimers.forEach((timer) => window.clearTimeout(timer));
     };
   }, []);
 
@@ -364,6 +501,7 @@ export function LayoutsApp() {
       updatePage(activePage.id, (page) => ({
         ...page,
         templateId: nextTemplate.id,
+        templateSnapshot: { ...nextTemplate, frames: nextTemplate.frames.map((frame) => ({ ...frame })) },
         background: nextTemplate.defaultBackground,
         gutter: nextTemplate.defaultGutter,
         selectedFrameId: nextTemplate.frames[0]?.id ?? null,
@@ -381,6 +519,7 @@ export function LayoutsApp() {
     const page: ProjectPage = {
       id: crypto.randomUUID(),
       templateId: nextTemplate.id,
+      templateSnapshot: { ...nextTemplate, frames: nextTemplate.frames.map((frame) => ({ ...frame })) },
       background: nextTemplate.defaultBackground,
       gutter: nextTemplate.defaultGutter,
       selectedFrameId: nextTemplate.frames[0]?.id ?? null,
@@ -406,7 +545,7 @@ export function LayoutsApp() {
     if (!files.length || !target) return;
     const currentPage = pagesRef.current.find((page) => page.id === target.pageId);
     if (!currentPage) return;
-    const currentTemplate = getTemplate(currentPage.templateId);
+    const currentTemplate = resolvePageTemplate(currentPage);
     const targetFrameIds = getPhotoFillTargets(currentTemplate, currentPage.photos, target.frameId, files.length);
     const selectedFiles = files.slice(0, targetFrameIds.length);
     if (!selectedFiles.length) return;
@@ -499,6 +638,120 @@ export function LayoutsApp() {
     if (activePage?.selectedFrameId && selectedPhoto) updateCrop(activePage.selectedFrameId, { ...DEFAULT_CROP });
   };
 
+  const openTemplates = () => {
+    persistActiveProject();
+    clearExportItems();
+    setTemplateDraft(null);
+    setScreen("templates");
+  };
+
+  const beginNewTemplate = () => {
+    persistActiveProject();
+    setTemplateDraft(null);
+    setScreen("template-format");
+  };
+
+  const selectTemplateFormat = (nextFormatId: FormatId) => {
+    const draft = createBlankCustomTemplate(nextFormatId);
+    saveTemplateDraftLocally(draft);
+    setTemplateDraft(draft);
+    setScreen("template-editor");
+  };
+
+  const editLibraryTemplate = (source: TemplateDefinition | CustomTemplate) => {
+    if ("source" in source && source.source === "custom") {
+      setTemplateDraft(source);
+    } else {
+      const draft = copyAsCustomTemplate(source, customTemplatesRef.current.map((item) => item.name));
+      saveTemplateDraftLocally(draft);
+      setTemplateDraft(draft);
+    }
+    setScreen("template-editor");
+  };
+
+  const duplicateLibraryTemplate = (source: TemplateDefinition | CustomTemplate) => {
+    const draft = copyAsCustomTemplate(source, customTemplatesRef.current.map((item) => item.name));
+    saveTemplateDraftLocally(draft);
+    setTemplateDraft(draft);
+    setScreen("template-editor");
+  };
+
+  const saveDesignedTemplate = async (draft: CustomTemplate) => {
+    const pending = { ...draft, status: "saved" as const, syncState: "pending" as const };
+    saveTemplateDraftLocally(pending);
+    if (!templateCloudConfigured) {
+      setNotice({ kind: "error", text: "The template is saved on this device, but cloud storage must be connected before it can sync across devices." });
+      return;
+    }
+    if (!templateUser) {
+      setShowTemplateSignIn(true);
+      setNotice({ kind: "info", text: "Your template is ready locally. Sign in to save it permanently across devices." });
+      return;
+    }
+    setTemplateCloudBusy(true);
+    try {
+      const saved = await saveCloudTemplate(pending);
+      replaceCustomTemplates([saved, ...customTemplatesRef.current.filter((item) => item.id !== saved.id)]);
+      setTemplateDraft(null);
+      setScreen("templates");
+      setNotice({ kind: "success", text: "Template saved to the cloud and available on your signed-in devices." });
+    } catch {
+      replaceCustomTemplates(customTemplatesRef.current.map((item) => item.id === pending.id ? { ...item, syncState: "error" } : item));
+      setNotice({ kind: "error", text: "The template is safe on this device but could not reach the cloud. Try again when online." });
+    } finally {
+      setTemplateCloudBusy(false);
+    }
+  };
+
+  const deleteLibraryTemplate = async (templateId: string) => {
+    const target = customTemplatesRef.current.find((item) => item.id === templateId);
+    if (!target || !window.confirm(`Delete “${target.name}” permanently? Existing project pages will keep their saved layout.`)) return;
+    if (templateCloudConfigured && !templateUser && target.syncState !== "local") {
+      setShowTemplateSignIn(true);
+      setNotice({ kind: "info", text: "Sign in first so deletion is applied permanently to every device." });
+      return;
+    }
+    const next = customTemplatesRef.current.filter((item) => item.id !== templateId);
+    replaceCustomTemplates(next);
+    if (templateUser && templateCloudConfigured) {
+      try {
+        await deleteCloudTemplate(templateId);
+        setNotice({ kind: "success", text: "Template deleted. Existing project pages are unchanged." });
+      } catch {
+        replaceCustomTemplates([target, ...next]);
+        setNotice({ kind: "error", text: "The cloud template could not be deleted, so it was restored." });
+      }
+    } else {
+      setNotice({ kind: "success", text: "Local template deleted. Existing project pages are unchanged." });
+    }
+  };
+
+  const requestTemplateMagicLink = async () => {
+    const email = signInEmail.trim();
+    if (!email) return;
+    setTemplateCloudBusy(true);
+    try {
+      await sendTemplateMagicLink(email);
+      setShowTemplateSignIn(false);
+      setNotice({ kind: "success", text: `Sign-in link sent to ${email}. Open it on this device to finish.` });
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "The sign-in link could not be sent." });
+    } finally {
+      setTemplateCloudBusy(false);
+    }
+  };
+
+  const signOutTemplates = async () => {
+    try {
+      await signOutTemplateCloud();
+      templateUserRef.current = null;
+      setTemplateUser(null);
+      setNotice({ kind: "success", text: "Signed out. Synced templates remain cached on this device." });
+    } catch {
+      setNotice({ kind: "error", text: "Could not sign out. Try again." });
+    }
+  };
+
   const beginNewProject = () => {
     persistActiveProject();
     clearExportItems();
@@ -509,6 +762,11 @@ export function LayoutsApp() {
 
   const goBack = () => {
     setRearrangeMode(false);
+    if (screen === "template-format" || screen === "template-editor") {
+      setTemplateDraft(null);
+      setScreen("templates");
+      return;
+    }
     const nextScreen = getBackScreen(screen);
     if (nextScreen === "projects") {
       clearExportItems();
@@ -660,12 +918,12 @@ export function LayoutsApp() {
     const requestedPages = pageIds ? pages.filter((page) => pageIds.includes(page.id)) : pages;
     const selectedPages = pageIds
       ? requestedPages
-      : requestedPages.filter((page) => isPageComplete(page, getTemplate(page.templateId)));
+      : requestedPages.filter((page) => isPageComplete(page, resolvePageTemplate(page)));
     if (!selectedPages.length) {
       setNotice({ kind: "error", text: pages.length ? "Complete at least one page before exporting." : "Add a page before exporting." });
       return;
     }
-    const incomplete = pageIds ? selectedPages.find((page) => !isPageComplete(page, getTemplate(page.templateId))) : undefined;
+    const incomplete = pageIds ? selectedPages.find((page) => !isPageComplete(page, resolvePageTemplate(page))) : undefined;
     if (incomplete) {
       const pageNumber = pages.findIndex((page) => page.id === incomplete.id) + 1;
       setNotice({ kind: "error", text: `Finish page ${pageNumber} before exporting.` });
@@ -682,7 +940,7 @@ export function LayoutsApp() {
         setExportProgress({ current: index + 1, total: selectedPages.length });
         const blob = await renderComposition({
           format,
-          template: getTemplate(page.templateId),
+          template: resolvePageTemplate(page),
           background: page.background,
           gutter: page.gutter,
           photos: page.photos,
@@ -789,7 +1047,9 @@ export function LayoutsApp() {
         projectCount={projects.length}
         onBack={goBack}
         onProjects={openProjects}
-        onNew={beginNewProject}
+        onTemplates={openTemplates}
+        onNew={screen === "templates" ? beginNewTemplate : beginNewProject}
+        templatesSynced={templateLibrarySynced}
       />
       <input
         ref={inputRef}
@@ -799,6 +1059,149 @@ export function LayoutsApp() {
         accept={LOCAL_PHOTO_SOURCE.accept}
         onChange={(event) => void receivePhotos(Array.from(event.target.files ?? []))}
       />
+
+      {screen === "templates" ? (
+        <main className="screen-shell max-w-[1180px] py-8 sm:py-12">
+          <section className="flex flex-wrap items-end justify-between gap-5">
+            <div>
+              <p className="eyebrow">Reusable layouts</p>
+              <h1 className="mt-2 text-[clamp(2.4rem,7vw,4.8rem)] font-medium leading-[0.95] tracking-[-0.055em]">Templates</h1>
+              <p className="mt-4 max-w-[620px] text-sm leading-6 text-neutral-600">Build photo-frame layouts once, then use them in any project with the same format.</p>
+            </div>
+            <button className="primary-button" type="button" onClick={beginNewTemplate}>+ Create template</button>
+          </section>
+
+          <section className="account-banner mt-7" aria-label="Template cloud status">
+            <div>
+              <p className="text-sm font-semibold">
+                {!templateCloudConfigured ? "Cloud connection required" : templateUser ? `Synced as ${templateUser.email ?? "your account"}` : "Sign in for permanent cross-device templates"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-neutral-500">
+                {!templateCloudConfigured
+                  ? "The editor works now, but Supabase must be connected before a template can sync to iPhone, iPad and desktop."
+                  : templateUser
+                    ? templateLibrarySynced ? "Every saved template is backed up to the cloud." : "Some local changes are waiting to sync."
+                    : "Use the same email on every device. Drafts remain cached locally until you sign in."}
+              </p>
+            </div>
+            {templateCloudConfigured ? (
+              templateUser ? (
+                <div className="flex gap-2">
+                  <button className="secondary-button" type="button" disabled={templateCloudBusy} onClick={() => void syncTemplateCloud()}>Sync now</button>
+                  <button className="text-button" type="button" onClick={() => void signOutTemplates()}>Sign out</button>
+                </div>
+              ) : <button className="secondary-button" type="button" onClick={() => setShowTemplateSignIn(true)}>Sign in by email</button>
+            ) : <span className="template-status pending">Setup pending</span>}
+          </section>
+
+          <div className="mt-7 flex flex-wrap gap-2" aria-label="Filter templates by format">
+            <button className={`nav-button ${templateFilter === "all" ? "active" : ""}`} type="button" onClick={() => setTemplateFilter("all")}>All</button>
+            {FORMATS.map((item) => (
+              <button key={item.id} className={`nav-button ${templateFilter === item.id ? "active" : ""}`} type="button" onClick={() => setTemplateFilter(item.id)}>{item.shortLabel}</button>
+            ))}
+          </div>
+
+          <section className="mt-8" aria-labelledby="my-templates-heading">
+            <div className="flex items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Cloud library</p>
+                <h2 id="my-templates-heading" className="mt-2 text-2xl font-medium tracking-[-0.035em]">My templates</h2>
+              </div>
+              <span className="text-xs text-neutral-500">
+                {customTemplates.filter((item) => item.status === "saved").length} saved · {customTemplates.filter((item) => item.status === "draft").length} drafts
+              </span>
+            </div>
+            {customTemplates.filter((item) => templateFilter === "all" || item.formatId === templateFilter).length ? (
+              <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-5 lg:grid-cols-4">
+                {customTemplates.filter((item) => templateFilter === "all" || item.formatId === templateFilter).map((item) => (
+                  <article key={item.id} className="template-library-card">
+                    <button className="project-library-open" type="button" onClick={() => editLibraryTemplate(item)}>
+                      <span className="template-preview" style={{ aspectRatio: `${item.canvasWidth}/${item.canvasHeight}` }}><TemplateThumbnail template={item} /></span>
+                      <span className="block p-3 text-left">
+                        <span className="block truncate text-sm font-semibold">{item.name}</span>
+                        <span className="mt-1 block text-xs text-neutral-500">{getFormat(item.formatId).shortLabel} · {item.frames.length} frames</span>
+                      </span>
+                    </button>
+                    <div className="flex items-center justify-between gap-2 px-3 pb-3">
+                      <span className={`template-status ${item.syncState}`}>
+                        {item.status === "draft" ? (item.syncState === "synced" ? "Cloud draft" : "Draft") : item.syncState === "synced" ? "Cloud saved" : item.syncState === "error" ? "Sync failed" : "Waiting to sync"}
+                      </span>
+                      <div className="flex gap-1">
+                        <button className="card-action" type="button" onClick={() => duplicateLibraryTemplate(item)}>Copy</button>
+                        <button className="card-action danger" type="button" onClick={() => void deleteLibraryTemplate(item.id)}>Delete</button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-5 rounded-[18px] border border-dashed border-black/15 bg-white/40 p-8 text-center">
+                <p className="text-sm font-semibold">No custom templates in this view.</p>
+                <button className="primary-button mt-4" type="button" onClick={beginNewTemplate}>Create your first template</button>
+              </div>
+            )}
+          </section>
+
+          <section className="mt-11" aria-labelledby="built-in-templates-heading">
+            <p className="eyebrow">Scuri originals</p>
+            <h2 id="built-in-templates-heading" className="mt-2 text-2xl font-medium tracking-[-0.035em]">Built-in templates</h2>
+            <p className="mt-2 text-sm text-neutral-600">Edit or duplicate one to create your own copy. The original always stays available.</p>
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-5 lg:grid-cols-4">
+              {TEMPLATES.filter((item) => templateFilter === "all" || item.formatId === templateFilter).map((item) => (
+                <article key={item.id} className="template-library-card">
+                  <button className="project-library-open" type="button" onClick={() => editLibraryTemplate(item)}>
+                    <span className="template-preview" style={{ aspectRatio: `${item.canvasWidth}/${item.canvasHeight}` }}><TemplateThumbnail template={item} /></span>
+                    <span className="block p-3 text-left">
+                      <span className="block truncate text-sm font-semibold">{item.name}</span>
+                      <span className="mt-1 block text-xs text-neutral-500">{getFormat(item.formatId).shortLabel} · {item.frames.length} frames</span>
+                    </span>
+                  </button>
+                  <div className="grid grid-cols-2 gap-2 px-3 pb-3">
+                    <button className="card-action" type="button" onClick={() => editLibraryTemplate(item)}>Edit copy</button>
+                    <button className="card-action" type="button" onClick={() => duplicateLibraryTemplate(item)}>Duplicate</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </main>
+      ) : null}
+
+      {screen === "template-format" ? (
+        <main className="screen-shell max-w-[1040px]">
+          <section className="pt-9 sm:pt-14">
+            <p className="eyebrow">New template</p>
+            <h1 className="mt-3 max-w-[720px] text-[clamp(2.2rem,7vw,4.6rem)] font-medium leading-[0.95] tracking-[-0.055em]">Choose the canvas format.</h1>
+            <p className="mt-5 max-w-[570px] text-[15px] leading-6 text-neutral-600">The format stays fixed after you add the first frame. The layout can then be reused in matching projects.</p>
+          </section>
+          <section className="mt-9 grid gap-3 pb-12 sm:mt-12 sm:grid-cols-3" aria-label="Template formats">
+            {formatCards.map((item) => (
+              <button key={item.id} className="format-card group" type="button" onClick={() => selectTemplateFormat(item.id)}>
+                <span className="format-ratio" style={{ aspectRatio: `${item.width}/${item.height}`, width: item.id === "instagram-story" ? 44 : 58 }} aria-hidden="true" />
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block text-lg font-semibold tracking-[-0.025em]">{item.name}</span>
+                  <span className="mt-1 block text-sm text-neutral-500">{item.aspectRatio}</span>
+                </span>
+                <span className="text-xl" aria-hidden="true">→</span>
+              </button>
+            ))}
+          </section>
+        </main>
+      ) : null}
+
+      {screen === "template-editor" && templateDraft ? (
+        <TemplateDesigner
+          key={templateDraft.id}
+          initialTemplate={templateDraft}
+          saving={templateCloudBusy}
+          onCancel={() => {
+            setTemplateDraft(null);
+            setScreen("templates");
+          }}
+          onDraftChange={saveTemplateDraftLocally}
+          onSave={(draft) => void saveDesignedTemplate(draft)}
+        />
+      ) : null}
 
       {screen === "projects" ? (
         <main className="screen-shell max-w-[1120px] py-8 sm:py-12">
@@ -918,7 +1321,7 @@ export function LayoutsApp() {
                     page={page}
                     pageNumber={index + 1}
                     pageCount={pages.length}
-                    template={getTemplate(page.templateId)}
+                    template={resolvePageTemplate(page)}
                     dragging={draggingPageId === page.id}
                     onDragStart={setDraggingPageId}
                     onDragOver={dragPageOver}
@@ -1118,6 +1521,38 @@ export function LayoutsApp() {
             </section>
           </div>
         </main>
+      ) : null}
+
+      {showTemplateSignIn ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowTemplateSignIn(false)}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="template-sign-in-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="eyebrow">Cross-device templates</p>
+                <h2 id="template-sign-in-title" className="mt-2 text-2xl font-medium tracking-[-0.035em]">Sign in by email</h2>
+              </div>
+              <button className="icon-button" type="button" aria-label="Close sign-in" onClick={() => setShowTemplateSignIn(false)}>×</button>
+            </div>
+            <p className="mt-4 text-sm leading-6 text-neutral-600">We’ll email you a secure sign-in link. Use the same address on your iPhone, iPad and desktop.</p>
+            <label className="control-label mt-5 block" htmlFor="template-email">Email address</label>
+            <input
+              id="template-email"
+              className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              value={signInEmail}
+              onChange={(event) => setSignInEmail(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void requestTemplateMagicLink();
+              }}
+            />
+            <button className="primary-button mt-4 w-full" type="button" disabled={!signInEmail.trim() || templateCloudBusy} onClick={() => void requestTemplateMagicLink()}>
+              {templateCloudBusy ? "Sending link…" : "Email me a sign-in link"}
+            </button>
+            <p className="mt-4 text-xs leading-5 text-neutral-500">Projects and photographs remain on this device in the templates-first release.</p>
+          </section>
+        </div>
       ) : null}
 
       {showInstallHelp ? (

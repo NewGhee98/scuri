@@ -3,7 +3,7 @@ import { coverPlacement, moveCrop, resolveFrames, setCropZoom } from "../crop";
 import { getTemplatesForFormat } from "../templates";
 import type { ResolvedFrame } from "../types";
 
-const target: ResolvedFrame = { id: "frame", x: 0, y: 0, width: 400, height: 500 };
+const target: ResolvedFrame = { id: "frame", x: 0, y: 0, width: 400, height: 500, cornerRadius: 0 };
 
 describe("cover crop calculations", () => {
   it("scales and centres a landscape image to cover a portrait frame", () => {

@@ -1,5 +1,5 @@
 import { FORMATS, getFormat } from "./formats";
-import type { FormatId, NormalizedFrame, TemplateDefinition } from "./types";
+import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
 
 const frame = (id: string, x: number, y: number, width: number, height: number): NormalizedFrame => ({
   id,
@@ -93,12 +93,16 @@ export const TEMPLATES: readonly TemplateDefinition[] = FORMATS.flatMap((format)
   })),
 );
 
-export function getTemplatesForFormat(formatId: FormatId): TemplateDefinition[] {
-  return TEMPLATES.filter((template) => template.formatId === formatId);
+export function getTemplatesForFormat(formatId: FormatId, customTemplates: readonly CustomTemplate[] = []): TemplateDefinition[] {
+  return [
+    ...TEMPLATES.filter((template) => template.formatId === formatId),
+    ...customTemplates.filter((template) => template.status === "saved" && template.formatId === formatId),
+  ];
 }
 
-export function getTemplate(templateId: string): TemplateDefinition {
-  const template = TEMPLATES.find((candidate) => candidate.id === templateId);
+export function getTemplate(templateId: string, customTemplates: readonly CustomTemplate[] = []): TemplateDefinition {
+  const template = TEMPLATES.find((candidate) => candidate.id === templateId) ??
+    customTemplates.find((candidate) => candidate.id === templateId);
   if (!template) {
     throw new Error(`Unknown template: ${templateId}`);
   }
@@ -126,6 +130,9 @@ export function validateTemplate(template: TemplateDefinition): string[] {
     }
     if (item.x + item.width > 1.000001 || item.y + item.height > 1.000001) {
       errors.push(`${item.id} falls outside the canvas.`);
+    }
+    if ((item.cornerRadius ?? 0) < 0 || (item.cornerRadius ?? 0) > 0.5) {
+      errors.push(`${item.id} has an invalid corner radius.`);
     }
   }
   return errors;

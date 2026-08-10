@@ -24,11 +24,11 @@ function formatEditedDate(value: string): string {
 
 export function ProjectLibraryCard({ format, project, onOpen, onDelete }: ProjectLibraryCardProps) {
   const completePages = useMemo(
-    () => project.pages.filter((page) => isPageComplete(page, getTemplate(page.templateId))),
+    () => project.pages.filter((page) => isPageComplete(page, page.templateSnapshot ?? getTemplate(page.templateId))),
     [project.pages],
   );
   const coverPage = completePages[0] ?? project.pages[0] ?? null;
-  const coverTemplate = coverPage ? getTemplate(coverPage.templateId) : null;
+  const coverTemplate = coverPage ? coverPage.templateSnapshot ?? getTemplate(coverPage.templateId) : null;
   const [hydratedPage, setHydratedPage] = useState<ProjectPage | null>(null);
 
   useEffect(() => {

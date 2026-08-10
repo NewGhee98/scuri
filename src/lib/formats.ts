@@ -11,6 +11,15 @@ export const FORMATS: readonly CanvasFormat[] = [
     description: "Portrait feed post",
   },
   {
+    id: "instagram-square",
+    name: "Instagram Square",
+    shortLabel: "Square",
+    aspectRatio: "1:1",
+    width: 1080,
+    height: 1080,
+    description: "Square feed post",
+  },
+  {
     id: "instagram-story",
     name: "Instagram Story",
     shortLabel: "Story",
