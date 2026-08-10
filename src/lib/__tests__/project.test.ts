@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  getDefaultProjectName,
+  getBackScreen,
   getMissingPhotoCount,
   getPhotoFillTargets,
   isPageComplete,
   moveLayoutPhoto,
   moveProjectPage,
   moveProjectPageByOffset,
+  sortProjectsByLastEdited,
 } from "../project";
 import type { ProjectPage, TemplateDefinition } from "../types";
 
@@ -37,6 +40,28 @@ function page(id: string, photoIds: string[] = []): ProjectPage {
 }
 
 describe("project pages", () => {
+  it("creates a unique default project name", () => {
+    expect(getDefaultProjectName([])).toBe("Untitled project");
+    expect(getDefaultProjectName(["Untitled project", "Holiday", "Untitled project 2"])).toBe("Untitled project 3");
+  });
+
+  it("sorts projects by content edit time without mutating the source", () => {
+    const projects = [
+      { id: "older", updatedAt: "2026-08-08T10:00:00.000Z" },
+      { id: "newer", updatedAt: "2026-08-10T10:00:00.000Z" },
+    ];
+    expect(sortProjectsByLastEdited(projects).map((item) => item.id)).toEqual(["newer", "older"]);
+    expect(projects.map((item) => item.id)).toEqual(["older", "newer"]);
+  });
+
+  it("returns to the correct level of the navigation hierarchy", () => {
+    expect(getBackScreen("editor")).toBe("project");
+    expect(getBackScreen("template")).toBe("project");
+    expect(getBackScreen("export")).toBe("project");
+    expect(getBackScreen("project")).toBe("projects");
+    expect(getBackScreen("format")).toBe("projects");
+  });
+
   it("reports missing photographs and page readiness", () => {
     expect(getMissingPhotoCount(page("a", ["one"]), template)).toBe(1);
     expect(isPageComplete(page("a", ["one"]), template)).toBe(false);

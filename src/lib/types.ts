@@ -62,7 +62,7 @@ export interface StoredPhotoAsset {
   crop: CropState;
 }
 
-export type AppScreen = "project" | "format" | "template" | "editor" | "export";
+export type AppScreen = "projects" | "project" | "format" | "template" | "editor" | "export";
 
 export interface ProjectPage {
   id: string;
@@ -87,10 +87,26 @@ export interface StoredProjectPage {
 }
 
 export interface StoredProject {
+  version: 3;
+  id: string;
+  name: string;
+  formatId: FormatId;
+  activePageId: string | null;
+  pages: StoredProjectPage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredProjectLibrary {
+  version: 1;
+  projects: StoredProject[];
+}
+
+export interface LegacyStoredMultiPageProject {
   version: 2;
   id: string;
   name: string;
-  screen: AppScreen;
+  screen: Exclude<AppScreen, "projects">;
   formatId: FormatId | null;
   activePageId: string | null;
   pages: StoredProjectPage[];
@@ -100,7 +116,7 @@ export interface StoredProject {
 
 export interface LegacyStoredProject {
   version: 1;
-  screen: Exclude<AppScreen, "project">;
+  screen: Exclude<AppScreen, "project" | "projects">;
   formatId: FormatId | null;
   templateId: string | null;
   background: string;

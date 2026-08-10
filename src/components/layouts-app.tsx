@@ -9,20 +9,23 @@ import { disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/i
 import { LOCAL_PHOTO_SOURCE } from "@/lib/photo-sources";
 import {
   MAX_PROJECT_PAGES,
+  getDefaultProjectName,
+  getBackScreen,
   getMissingPhotoCount,
   getPhotoFillTargets,
   isPageComplete,
   moveLayoutPhoto,
   moveProjectPage,
   moveProjectPageByOffset,
+  sortProjectsByLastEdited,
 } from "@/lib/project";
 import {
-  clearSavedProject,
+  clearLegacySavedProject,
   deletePhotoBlob,
   loadPhotoBlob,
-  loadProject,
+  loadProjects,
   savePhotoBlob,
-  saveProject,
+  saveProjects,
 } from "@/lib/storage";
 import { getTemplate, getTemplatesForFormat } from "@/lib/templates";
 import type {
@@ -36,11 +39,12 @@ import type {
   TemplateDefinition,
 } from "@/lib/types";
 import { EditorCanvas } from "./editor-canvas";
+import { ProjectLibraryCard } from "./project-library-card";
 import { ProjectPageCard } from "./project-page-card";
 import { TemplateThumbnail } from "./template-thumbnail";
 
 type Notice = { kind: "error" | "success" | "info"; text: string } | null;
-type BusyState = "image" | "export" | "duplicate" | null;
+type BusyState = "image" | "export" | "duplicate" | "project" | null;
 type ExportItem = { pageId: string; pageNumber: number; blob: Blob; url: string; filename: string };
 
 const BACKGROUNDS = ["#ffffff", "#f3f1ec", "#d9d6cf", "#1b1b1b", "#c9d2cc", "#e1d2c6"];
@@ -52,18 +56,21 @@ function now(): string {
 function Header({
   screen,
   pageCount,
+  projectCount,
   onBack,
-  onProject,
+  onProjects,
   onNew,
 }: {
   screen: AppScreen;
   pageCount: number;
+  projectCount: number;
   onBack: () => void;
-  onProject: () => void;
+  onProjects: () => void;
   onNew: () => void;
 }) {
   const subtitle =
-    screen === "format" ? "Private photo projects" :
+    screen === "projects" ? `${projectCount} ${projectCount === 1 ? "project" : "projects"}` :
+    screen === "format" ? "Choose a project format" :
     screen === "template" ? "Choose a layout" :
     screen === "editor" ? "Edit project page" :
     screen === "project" ? `${pageCount} ${pageCount === 1 ? "page" : "pages"}` :
@@ -73,7 +80,7 @@ function Header({
     <header className="app-header">
       <div className="mx-auto flex h-full w-full max-w-[1240px] items-center justify-between px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          {screen !== "format" ? (
+          {screen !== "projects" ? (
             <button className="icon-button" type="button" onClick={onBack} aria-label="Go back">
               <span aria-hidden="true">←</span>
             </button>
@@ -85,13 +92,10 @@ function Header({
             <p className="truncate text-[11px] text-neutral-500">{subtitle}</p>
           </div>
         </div>
-        {pageCount > 0 ? (
-          screen === "project" ? (
-            <button className="text-button" type="button" onClick={onNew}>Start new</button>
-          ) : (
-            <button className="text-button" type="button" onClick={onProject}>Project ({pageCount})</button>
-          )
-        ) : null}
+        <nav className="flex items-center gap-2" aria-label="Main navigation">
+          <button className={`nav-button ${screen === "projects" ? "active" : ""}`} type="button" onClick={onProjects}>Projects</button>
+          {screen === "projects" ? <button className="primary-button header-new-button" type="button" onClick={onNew}>+ New</button> : null}
+        </nav>
       </div>
     </header>
   );
@@ -122,10 +126,12 @@ function serializePage(page: ProjectPage): StoredProjectPage {
 }
 
 export function LayoutsApp() {
-  const [screen, setScreen] = useState<AppScreen>("format");
+  const [screen, setScreen] = useState<AppScreen>("projects");
+  const [projects, setProjects] = useState<StoredProject[]>([]);
   const [projectId, setProjectId] = useState("");
-  const [projectName, setProjectName] = useState("My project");
+  const [projectName, setProjectName] = useState("Untitled project");
   const [projectCreatedAt, setProjectCreatedAt] = useState("");
+  const [projectUpdatedAt, setProjectUpdatedAt] = useState("");
   const [formatId, setFormatId] = useState<FormatId | null>(null);
   const [pages, setPages] = useState<ProjectPage[]>([]);
   const [activePageId, setActivePageId] = useState<string | null>(null);
@@ -186,70 +192,54 @@ export function LayoutsApp() {
     for (const page of projectPages) await deletePagePhotos(page);
   };
 
+  const deleteStoredProjectPhotos = async (project: StoredProject) => {
+    for (const page of project.pages) {
+      for (const photo of Object.values(page.photos)) {
+        try {
+          await deletePhotoBlob(photo.blobKey);
+        } catch {
+          // Project metadata can still be removed if a stored blob is already missing.
+        }
+      }
+    }
+  };
+
+  const hydrateProjectPages = async (project: StoredProject): Promise<ProjectPage[]> => {
+    const restoredFormat = getFormat(project.formatId);
+    const restoredPages: ProjectPage[] = [];
+    for (const storedPage of project.pages) {
+      const restoredTemplate = getTemplate(storedPage.templateId);
+      if (restoredTemplate.formatId !== restoredFormat.id) continue;
+      const restoredPhotos: Record<string, PhotoAsset> = {};
+      for (const item of Object.values(storedPage.photos)) {
+        const blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        if (!blob || !restoredTemplate.frames.some((frame) => frame.id === item.frameId)) continue;
+        try {
+          const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
+          asset.crop = item.crop;
+          restoredPhotos[item.frameId] = asset;
+        } catch {
+          // A single damaged stored photo should not prevent the rest of the project opening.
+        }
+      }
+      restoredPages.push({ ...storedPage, photos: restoredPhotos });
+    }
+    return restoredPages;
+  };
+
   useEffect(() => {
-    let cancelled = false;
-    const restore = async () => {
-      const saved = loadProject();
-      if (!saved) {
-        if (!cancelled) {
-          const createdAt = now();
-          setProjectId(crypto.randomUUID());
-          setProjectCreatedAt(createdAt);
-          setReady(true);
-        }
-        return;
-      }
+    const restore = () => {
       try {
-        const restoredFormat = saved.formatId ? getFormat(saved.formatId) : null;
-        const restoredPages: ProjectPage[] = [];
-        for (const storedPage of saved.pages) {
-          const restoredTemplate = getTemplate(storedPage.templateId);
-          if (!restoredFormat || restoredTemplate.formatId !== restoredFormat.id) continue;
-          const restoredPhotos: Record<string, PhotoAsset> = {};
-          for (const item of Object.values(storedPage.photos)) {
-            const blob = await loadPhotoBlob(item.blobKey);
-            if (!blob || !restoredTemplate.frames.some((frame) => frame.id === item.frameId)) continue;
-            try {
-              const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
-              asset.crop = item.crop;
-              restoredPhotos[item.frameId] = asset;
-            } catch {
-              // A single damaged stored photo should not prevent the rest of the project opening.
-            }
-          }
-          restoredPages.push({ ...storedPage, photos: restoredPhotos });
-        }
-        if (cancelled) {
-          restoredPages.forEach(disposePagePreviews);
-          return;
-        }
-        const restoredActiveId = restoredPages.some((page) => page.id === saved.activePageId)
-          ? saved.activePageId
-          : restoredPages[0]?.id ?? null;
-        let restoredScreen = saved.screen === "export" ? "project" : saved.screen;
-        if (restoredScreen === "editor" && !restoredActiveId) restoredScreen = restoredPages.length ? "project" : "format";
-        if (restoredScreen === "project" && !restoredFormat) restoredScreen = "format";
-        setProjectId(saved.id || crypto.randomUUID());
-        setProjectName(saved.name || "My project");
-        setProjectCreatedAt(saved.createdAt || saved.updatedAt || now());
-        setFormatId(restoredFormat?.id ?? null);
-        setPages(restoredPages);
-        setActivePageId(restoredActiveId);
-        setScreen(restoredScreen);
-        if (restoredPages.length) setNotice({ kind: "info", text: `${restoredPages.length === 1 ? "Your project was" : "Your project pages were"} restored on this device.` });
+        const saved = sortProjectsByLastEdited(loadProjects());
+        setProjects(saved);
+        clearLegacySavedProject();
       } catch {
-        clearSavedProject();
-        setProjectId(crypto.randomUUID());
-        setProjectCreatedAt(now());
-        setNotice({ kind: "error", text: "The previous project could not be restored. You can start a new one." });
+        setNotice({ kind: "error", text: "Your saved projects could not be restored in this browser." });
       } finally {
-        if (!cancelled) setReady(true);
+        setReady(true);
       }
     };
-    void restore();
-    return () => {
-      cancelled = true;
-    };
+    restore();
   }, []);
 
   useEffect(() => {
@@ -260,27 +250,30 @@ export function LayoutsApp() {
   }, []);
 
   useEffect(() => {
-    if (!ready || !projectId) return;
+    if (!ready || !projectId || !formatId) return;
     const timer = window.setTimeout(() => {
       const saved: StoredProject = {
-        version: 2,
+        version: 3,
         id: projectId,
-        name: projectName.trim() || "My project",
-        screen,
+        name: projectName.trim() || "Untitled project",
         formatId,
         activePageId,
         pages: pages.map(serializePage),
         createdAt: projectCreatedAt || now(),
-        updatedAt: now(),
+        updatedAt: projectUpdatedAt || projectCreatedAt || now(),
       };
       try {
-        saveProject(saved);
+        setProjects((current) => {
+          const next = sortProjectsByLastEdited([...current.filter((project) => project.id !== saved.id), saved]);
+          saveProjects(next);
+          return next;
+        });
       } catch {
         setNotice({ kind: "error", text: "This project could not be autosaved in this browser." });
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [activePageId, formatId, pages, projectCreatedAt, projectId, projectName, ready, screen]);
+  }, [activePageId, formatId, pages, projectCreatedAt, projectId, projectName, projectUpdatedAt, ready]);
 
   useEffect(() => {
     if (!hasAnyPhotos) return;
@@ -305,14 +298,57 @@ export function LayoutsApp() {
   }, [exportItems.length, screen]);
 
   const updatePage = (pageId: string, updater: (page: ProjectPage) => ProjectPage) => {
+    setProjectUpdatedAt(now());
     setPages((current) => current.map((page) => page.id === pageId ? { ...updater(page), updatedAt: now() } : page));
   };
 
+  const persistActiveProject = (): StoredProject[] => {
+    if (!projectId || !formatId) return projects;
+    const saved: StoredProject = {
+      version: 3,
+      id: projectId,
+      name: projectName.trim() || "Untitled project",
+      formatId,
+      activePageId,
+      pages: pages.map(serializePage),
+      createdAt: projectCreatedAt || now(),
+      updatedAt: projectUpdatedAt || projectCreatedAt || now(),
+    };
+    const next = sortProjectsByLastEdited([...projects.filter((project) => project.id !== saved.id), saved]);
+    saveProjects(next);
+    setProjects(next);
+    return next;
+  };
+
   const selectFormat = (nextFormatId: FormatId) => {
+    const savedProjects = persistActiveProject();
+    const createdAt = now();
+    const id = crypto.randomUUID();
+    const name = getDefaultProjectName(savedProjects.map((project) => project.name));
+    const project: StoredProject = {
+      version: 3,
+      id,
+      name,
+      formatId: nextFormatId,
+      activePageId: null,
+      pages: [],
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const nextProjects = sortProjectsByLastEdited([project, ...savedProjects]);
+    saveProjects(nextProjects);
+    pagesRef.current.forEach(disposePagePreviews);
+    pagesRef.current = [];
+    setProjects(nextProjects);
+    setProjectId(id);
+    setProjectName(name);
+    setProjectCreatedAt(createdAt);
+    setProjectUpdatedAt(createdAt);
     setRearrangeMode(false);
     setFormatId(nextFormatId);
     setActivePageId(null);
-    setScreen("template");
+    setPages([]);
+    setScreen("project");
   };
 
   const selectTemplate = async (nextTemplate: TemplateDefinition) => {
@@ -353,6 +389,7 @@ export function LayoutsApp() {
       updatedAt: createdAt,
     };
     setPages((current) => [...current, page]);
+    setProjectUpdatedAt(createdAt);
     setActivePageId(page.id);
     setRearrangeMode(false);
     setScreen("editor");
@@ -462,17 +499,9 @@ export function LayoutsApp() {
     if (activePage?.selectedFrameId && selectedPhoto) updateCrop(activePage.selectedFrameId, { ...DEFAULT_CROP });
   };
 
-  const startNew = async () => {
-    if (pages.length && !window.confirm("Start a new project and remove every page and photograph in this one?")) return;
-    await deleteAllProjectPhotos(pages);
+  const beginNewProject = () => {
+    persistActiveProject();
     clearExportItems();
-    clearSavedProject();
-    const createdAt = now();
-    setProjectId(crypto.randomUUID());
-    setProjectCreatedAt(createdAt);
-    setProjectName("My project");
-    setPages([]);
-    setFormatId(null);
     setActivePageId(null);
     setRearrangeMode(false);
     setScreen("format");
@@ -480,16 +509,74 @@ export function LayoutsApp() {
 
   const goBack = () => {
     setRearrangeMode(false);
-    if (screen === "template") setScreen(pages.length ? "project" : "format");
-    else if (screen === "editor") setScreen("project");
-    else if (screen === "export") setScreen("project");
-    else if (screen === "project" && !pages.length) setScreen("format");
+    const nextScreen = getBackScreen(screen);
+    if (nextScreen === "projects") {
+      clearExportItems();
+    }
+    setScreen(nextScreen);
   };
 
-  const openProject = () => {
+  const openProjects = () => {
     setDraggingPageId(null);
     setRearrangeMode(false);
-    setScreen("project");
+    clearExportItems();
+    setScreen("projects");
+  };
+
+  const openStoredProject = async (id: string) => {
+    const savedProjects = persistActiveProject();
+    const stored = savedProjects.find((project) => project.id === id);
+    if (!stored) return;
+    if (projectId === id && formatId === stored.formatId) {
+      setScreen("project");
+      return;
+    }
+    setBusy("project");
+    clearExportItems();
+    try {
+      const restoredPages = await hydrateProjectPages(stored);
+      pagesRef.current.forEach(disposePagePreviews);
+      pagesRef.current = restoredPages;
+      const restoredActiveId = restoredPages.some((page) => page.id === stored.activePageId)
+        ? stored.activePageId
+        : restoredPages[0]?.id ?? null;
+      setProjectId(stored.id);
+      setProjectName(stored.name);
+      setProjectCreatedAt(stored.createdAt);
+      setProjectUpdatedAt(stored.updatedAt);
+      setFormatId(stored.formatId);
+      setPages(restoredPages);
+      setActivePageId(restoredActiveId);
+      setRearrangeMode(false);
+      setScreen("project");
+    } catch {
+      setNotice({ kind: "error", text: "This project could not be opened. Its saved record is unchanged." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteProject = async (id: string) => {
+    const savedProjects = persistActiveProject();
+    const project = savedProjects.find((item) => item.id === id);
+    if (!project || !window.confirm(`Delete “${project.name}” and all of its photographs permanently?`)) return;
+    if (projectId === id) {
+      await deleteAllProjectPhotos(pagesRef.current);
+      pagesRef.current = [];
+      setProjectId("");
+      setProjectName("Untitled project");
+      setProjectCreatedAt("");
+      setProjectUpdatedAt("");
+      setFormatId(null);
+      setPages([]);
+      setActivePageId(null);
+    } else {
+      await deleteStoredProjectPhotos(project);
+    }
+    const next = savedProjects.filter((item) => item.id !== id);
+    setProjects(next);
+    saveProjects(next);
+    setNotice({ kind: "success", text: "Project deleted permanently." });
   };
 
   const addPage = () => {
@@ -538,6 +625,7 @@ export function LayoutsApp() {
         next.splice(index + 1, 0, duplicate);
         return next;
       });
+      setProjectUpdatedAt(now());
       setNotice({ kind: "success", text: "Page duplicated." });
     } catch {
       await deletePagePhotos({ ...source, photos: clonedPhotos });
@@ -552,26 +640,32 @@ export function LayoutsApp() {
     if (!page || !window.confirm("Delete this page and its photographs from the project?")) return;
     await deletePagePhotos(page);
     setPages((current) => current.filter((item) => item.id !== pageId));
+    setProjectUpdatedAt(now());
     if (activePageId === pageId) setActivePageId(null);
     setNotice({ kind: "success", text: "Page deleted." });
   };
 
   const movePage = (pageId: string, offset: -1 | 1) => {
     setPages((current) => moveProjectPageByOffset(current, pageId, offset));
+    setProjectUpdatedAt(now());
   };
 
   const dragPageOver = (sourceId: string, targetId: string) => {
     setPages((current) => moveProjectPage(current, sourceId, targetId));
+    setProjectUpdatedAt(now());
   };
 
   const exportPages = async (pageIds?: string[]) => {
     if (!format) return;
-    const selectedPages = pageIds ? pages.filter((page) => pageIds.includes(page.id)) : pages;
+    const requestedPages = pageIds ? pages.filter((page) => pageIds.includes(page.id)) : pages;
+    const selectedPages = pageIds
+      ? requestedPages
+      : requestedPages.filter((page) => isPageComplete(page, getTemplate(page.templateId)));
     if (!selectedPages.length) {
-      setNotice({ kind: "error", text: "Add a page before exporting." });
+      setNotice({ kind: "error", text: pages.length ? "Complete at least one page before exporting." : "Add a page before exporting." });
       return;
     }
-    const incomplete = selectedPages.find((page) => !isPageComplete(page, getTemplate(page.templateId)));
+    const incomplete = pageIds ? selectedPages.find((page) => !isPageComplete(page, getTemplate(page.templateId))) : undefined;
     if (incomplete) {
       const pageNumber = pages.findIndex((page) => page.id === incomplete.id) + 1;
       setNotice({ kind: "error", text: `Finish page ${pageNumber} before exporting.` });
@@ -606,7 +700,9 @@ export function LayoutsApp() {
       setScreen("export");
       setNotice({
         kind: "success",
-        text: created.length === 1 ? "JPEG ready — tap Save to Photos / Share to finish." : `${created.length} JPEGs ready — tap Save all to Photos / Share to finish.`,
+        text: created.length === 1
+          ? "JPEG ready — tap Save to Photos / Share to finish."
+          : `${created.length} JPEGs ready in project order — tap Save all to Photos / Share to finish.`,
       });
     } catch (error) {
       created.forEach((item) => URL.revokeObjectURL(item.url));
@@ -690,9 +786,10 @@ export function LayoutsApp() {
       <Header
         screen={screen}
         pageCount={pages.length}
+        projectCount={projects.length}
         onBack={goBack}
-        onProject={openProject}
-        onNew={() => void startNew()}
+        onProjects={openProjects}
+        onNew={beginNewProject}
       />
       <input
         ref={inputRef}
@@ -703,15 +800,52 @@ export function LayoutsApp() {
         onChange={(event) => void receivePhotos(Array.from(event.target.files ?? []))}
       />
 
+      {screen === "projects" ? (
+        <main className="screen-shell max-w-[1120px] py-8 sm:py-12">
+          <section className="flex flex-wrap items-end justify-between gap-5">
+            <div>
+              <p className="eyebrow">Your workspace</p>
+              <h1 className="mt-2 text-[clamp(2.4rem,7vw,4.8rem)] font-medium leading-[0.95] tracking-[-0.055em]">Projects</h1>
+              <p className="mt-4 max-w-[560px] text-sm leading-6 text-neutral-600">Open a project to edit, reorder and export its pages. Everything stays privately on this device.</p>
+            </div>
+            <button className="primary-button" type="button" onClick={beginNewProject}>+ New project</button>
+          </section>
+
+          {projects.length ? (
+            <section className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Saved projects">
+              {sortProjectsByLastEdited(projects).map((project) => (
+                <ProjectLibraryCard
+                  key={project.id}
+                  format={getFormat(project.formatId)}
+                  project={project}
+                  onOpen={(id) => void openStoredProject(id)}
+                  onDelete={(id) => void deleteProject(id)}
+                />
+              ))}
+            </section>
+          ) : (
+            <section className="project-empty mt-9">
+              <div className="empty-page-stack" aria-hidden="true"><span /><span /><span /></div>
+              <h2 className="mt-6 text-2xl font-medium tracking-[-0.035em]">No projects yet.</h2>
+              <p className="mt-2 max-w-[420px] text-sm leading-6 text-neutral-600">Create a project, choose one Instagram format, then build its pages.</p>
+              <button className="primary-button mt-5" type="button" onClick={beginNewProject}>Create first project</button>
+            </section>
+          )}
+          <button className="mt-8 text-sm font-medium underline decoration-neutral-300 underline-offset-4" type="button" onClick={() => setShowInstallHelp(true)}>
+            Install on iPhone or iPad
+          </button>
+        </main>
+      ) : null}
+
       {screen === "format" ? (
         <main className="screen-shell max-w-[920px]">
           <section className="pt-9 sm:pt-14">
-            <p className="eyebrow">Start a project</p>
+            <p className="eyebrow">New project</p>
             <h1 className="mt-3 max-w-[680px] text-[clamp(2.2rem,7vw,4.6rem)] font-medium leading-[0.95] tracking-[-0.055em]">
-              Build a set of layouts, then export them together.
+              Choose one format for this project.
             </h1>
             <p className="mt-5 max-w-[560px] text-[15px] leading-6 text-neutral-600 sm:text-base">
-              Add, edit and reorder pages. Your photographs and unfinished project stay privately on this device.
+              Every page in the project will use this Instagram format. You can start adding layouts from the empty project page next.
             </p>
           </section>
           <section className="mt-9 grid gap-3 sm:mt-12 sm:grid-cols-2" aria-label="Instagram formats">
@@ -748,20 +882,31 @@ export function LayoutsApp() {
                 className="project-name-input mt-2"
                 value={projectName}
                 maxLength={60}
-                onChange={(event) => setProjectName(event.target.value)}
-                onBlur={() => !projectName.trim() && setProjectName("My project")}
+                onChange={(event) => {
+                  setProjectName(event.target.value);
+                  setProjectUpdatedAt(now());
+                }}
+                onBlur={() => {
+                  if (projectName.trim()) return;
+                  setProjectName(getDefaultProjectName(projects.filter((project) => project.id !== projectId).map((project) => project.name)));
+                  setProjectUpdatedAt(now());
+                }}
               />
               <p className="mt-2 text-sm text-neutral-600">
                 {pages.length ? `${completePageCount} of ${pages.length} ready to export` : "Choose a layout to add your first page."}
               </p>
             </div>
             <div className="grid w-full gap-2 sm:w-auto sm:min-w-[210px]">
-              <button className="primary-button" type="button" disabled={!pages.length || Boolean(incompletePageCount) || busy !== null} onClick={() => void exportPages()}>
-                {!pages.length ? "Add a page first" : incompletePageCount ? `Finish ${incompletePageCount} ${incompletePageCount === 1 ? "page" : "pages"}` : `Export all ${pages.length}`}
+              <button className="primary-button" type="button" disabled={!completePageCount || busy !== null} onClick={() => void exportPages()}>
+                {!pages.length ? "Add a page first" : !completePageCount ? "Complete a page to export" : `Export all ${completePageCount}`}
               </button>
               <button className="secondary-button" type="button" disabled={pages.length >= MAX_PROJECT_PAGES || busy !== null} onClick={addPage}>+ Add page</button>
             </div>
           </section>
+
+          {incompletePageCount > 0 && completePageCount > 0 ? (
+            <p className="mt-3 text-right text-xs text-neutral-500">Export all will skip {incompletePageCount} unfinished {incompletePageCount === 1 ? "page" : "pages"}.</p>
+          ) : null}
 
           {pages.length ? (
             <>
@@ -1002,7 +1147,7 @@ export function LayoutsApp() {
         <div className="busy-overlay" aria-live="polite">
           <span className="loading-ring" aria-hidden="true" />
           <span>
-            {busy === "image" ? "Preparing photos…" : busy === "duplicate" ? "Duplicating page…" : exportProgress ? `Creating image ${exportProgress.current} of ${exportProgress.total}…` : "Preparing download…"}
+            {busy === "project" ? "Opening project…" : busy === "image" ? "Preparing photos…" : busy === "duplicate" ? "Duplicating page…" : exportProgress ? `Creating image ${exportProgress.current} of ${exportProgress.total}…` : "Preparing download…"}
           </span>
         </div>
       ) : null}

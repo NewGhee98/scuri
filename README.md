@@ -9,7 +9,7 @@ All image selection, composition and export happens in the browser. There is no 
 - Instagram portrait posts at **1080 × 1350 (4:5)**.
 - Instagram Stories at **1080 × 1920 (9:16)**.
 - Eight data-defined templates for each format, including one-, two-, three- and four-photo layouts.
-- Local multi-page projects with up to 20 ordered pages.
+- A local project library, with up to 20 ordered pages per project.
 - Autosaved page drafts, page duplication and explicit page readiness.
 - Touch drag reordering with accessible Earlier and Later controls.
 - Single or multi-photo selection from Apple Photos, iOS Files and desktop file pickers.
@@ -20,7 +20,7 @@ All image selection, composition and export happens in the browser. There is no 
 - Adjustable background colour, borders and gutters.
 - High-quality, exact-size single-page or batch JPEG export and Web Share support.
 - Multi-image Apple share-sheet handoff plus a ZIP download fallback for Files.
-- Local recovery of the entire active project after navigation or refresh.
+- Local recovery of every project after navigation or refresh.
 - Installable PWA shell with standalone display, offline caching and iOS metadata.
 
 ## Privacy and browser storage
@@ -32,14 +32,14 @@ Photos never leave the device. The application uses:
 - Temporary object URLs for downscaled editing previews and generated exports. These are revoked when replaced or no longer needed.
 - The Cache API, through the service worker, for the application shell—not for user photographs.
 
-Use **Start new** to clear the active project, all its pages and its stored photo blobs. The app automatically migrates a previously saved single composition into page 1 of a multi-page project. Browser storage remains specific to the browser and device; an iPad project does not synchronise to an iPhone.
+Delete a project from the Projects overview to permanently remove its pages and stored photo blobs. The app automatically migrates the previous single-project record into the new project library. Browser storage remains specific to the browser and device; an iPad project does not synchronise to an iPhone.
 
 ### Project workflow
 
-1. Choose Post or Story. Every page in a project uses that output format.
+1. Open the Projects overview, create a project and choose Post or Story. Every page in that project uses the chosen output format.
 2. Choose a layout and fill the page. Select one photo for one tile, or select several to autofill the layout; use rearrange mode to drag photos between tiles. Changes autosave while editing.
-3. Save the page, then add, duplicate, edit, delete or reorder pages from the project overview.
-4. Export one ready page or export the complete ordered project.
+3. Save the page, then add, duplicate, edit, delete or reorder pages from its project page.
+4. Export one ready page or use **Export all** to export every completed page in order; drafts are skipped.
 5. On iPhone or iPad, use **Save all to Photos / Share** and choose the multi-image save action in Apple’s share sheet. If file sharing is unavailable, use **Download ZIP to Files**.
 
 ## Local development
@@ -100,13 +100,14 @@ Repeat this on each device. The Home Screen icon launches Layouts in standalone 
 - `src/lib/crop.ts` owns pure scaling, cover-fit, zoom and movement-constraint maths.
 - `src/lib/image.ts` validates, decodes and downscales photographs for responsive editing.
 - `src/lib/photo-sources.ts` defines the current local picker and the extension point for a later Google Photos source.
-- `src/lib/storage.ts` stores project metadata and local image blobs.
+- `src/lib/storage.ts` stores the project library metadata and local image blobs.
 - `src/lib/project.ts` owns page readiness, page limits, multi-photo fill order and reorder logic.
 - `src/lib/export.ts` redraws the composition from original image blobs at the exact output dimensions.
 - `src/components/editor-canvas.tsx` handles high-DPI rendering and touch, pointer, wheel and keyboard input.
 - `src/components/composition-thumbnail.tsx` renders live page thumbnails without uploading or flattening the project.
 - `src/components/project-page-card.tsx` provides page actions and touch reordering.
-- `src/components/layouts-app.tsx` owns the project, format, template, editor and export flows.
+- `src/components/project-library-card.tsx` provides project previews, metadata and library actions.
+- `src/components/layouts-app.tsx` owns the project library, project, format, template, editor and export flows.
 
 The editor uses the browser’s maintained Canvas 2D API directly. That keeps the drawing/export model small, avoids server rendering of image data and prevents template frames from becoming draggable objects.
 
@@ -133,7 +134,6 @@ That single object is expanded for both current formats. The same editor, thumbn
 
 - V1 supports rectangular, non-rotated frames only.
 - There is no visual in-app template creator yet; templates are added as data in code.
-- The current release keeps one autosaved project at a time; **Start new** replaces it.
 - Projects do not synchronise between devices.
 - There is not yet a portable project backup/import file, so clearing Safari website data can remove the autosaved project.
 - HEIC availability depends on whether the browser can decode the selected file; the explicit supported types are JPEG, PNG and WebP.

@@ -1,6 +1,24 @@
-import type { ProjectPage, StoredProjectPage, TemplateDefinition } from "./types";
+import type { AppScreen, ProjectPage, StoredProjectPage, TemplateDefinition } from "./types";
 
 export const MAX_PROJECT_PAGES = 20;
+
+export function getDefaultProjectName(projectNames: string[]): string {
+  const names = new Set(projectNames.map((name) => name.trim().toLowerCase()));
+  if (!names.has("untitled project")) return "Untitled project";
+  let suffix = 2;
+  while (names.has(`untitled project ${suffix}`)) suffix += 1;
+  return `Untitled project ${suffix}`;
+}
+
+export function sortProjectsByLastEdited<T extends { updatedAt: string }>(projects: T[]): T[] {
+  return [...projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function getBackScreen(screen: AppScreen): AppScreen {
+  if (screen === "projects") return "projects";
+  if (screen === "project" || screen === "format") return "projects";
+  return "project";
+}
 
 type PageWithPhotos = Pick<ProjectPage | StoredProjectPage, "photos">;
 
