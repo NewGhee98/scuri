@@ -309,12 +309,15 @@ export function EditorCanvas({
     <div ref={shellRef} className="flex min-h-[340px] w-full items-center justify-center overflow-hidden">
       <canvas
         ref={canvasRef}
-        className={`block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4 ${rearrangeMode ? "cursor-grab" : ""}`}
+        className={`ios-gesture-surface block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4 ${rearrangeMode ? "cursor-grab" : ""}`}
         aria-label={rearrangeMode
           ? "Photo layout canvas in rearrange mode. Drag a filled frame onto another frame to swap or move its photo."
           : "Photo layout canvas. Tap a frame to select it, drag to reposition, and pinch to zoom."}
         role="application"
         tabIndex={0}
+        draggable={false}
+        onContextMenu={(event) => event.preventDefault()}
+        onDragStart={(event) => event.preventDefault()}
         onKeyDown={handleKeyDown}
         onPointerCancel={(event) => endPointer(event, false)}
         onPointerDown={handlePointerDown}
