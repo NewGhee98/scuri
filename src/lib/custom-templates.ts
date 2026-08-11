@@ -194,9 +194,12 @@ function rowToTemplate(row: TemplateRow): CustomTemplate {
 export async function getTemplateCloudUser(): Promise<User | null> {
   const client = getTemplateCloudClient();
   if (!client) return null;
-  const { data, error } = await client.auth.getUser();
+  // This value is used only to restore the client UI. Supabase persists and
+  // refreshes the session in browser storage; database authorization remains
+  // enforced by the access token and the templates table's RLS policies.
+  const { data, error } = await client.auth.getSession();
   if (error) return null;
-  return data.user;
+  return data.session?.user ?? null;
 }
 
 export async function sendTemplateMagicLink(email: string): Promise<void> {

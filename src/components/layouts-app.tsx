@@ -179,6 +179,7 @@ export function LayoutsApp() {
   const [templateDraft, setTemplateDraft] = useState<CustomTemplate | null>(null);
   const [templateFilter, setTemplateFilter] = useState<FormatId | "all">("all");
   const [templateUser, setTemplateUser] = useState<User | null>(null);
+  const [templateAuthReady, setTemplateAuthReady] = useState(() => !isTemplateCloudConfigured());
   const [templateCloudBusy, setTemplateCloudBusy] = useState(false);
   const [showTemplateSignIn, setShowTemplateSignIn] = useState(false);
   const [signInEmail, setSignInEmail] = useState("");
@@ -218,6 +219,7 @@ export function LayoutsApp() {
     const user = await getTemplateCloudUser();
     templateUserRef.current = user;
     setTemplateUser(user);
+    setTemplateAuthReady(true);
     if (!user) return null;
     const local = customTemplatesRef.current;
     const remote = await loadCloudTemplates();
@@ -387,11 +389,12 @@ export function LayoutsApp() {
     const initialSync = window.setTimeout(() => {
       void syncTemplateCloud().catch(() => {
         setNotice({ kind: "error", text: "Cloud templates could not be loaded. Your local drafts are unchanged." });
-      });
+      }).finally(() => setTemplateAuthReady(true));
     }, 0);
     const { data } = client.auth.onAuthStateChange((_event, session) => {
       templateUserRef.current = session?.user ?? null;
       setTemplateUser(session?.user ?? null);
+      setTemplateAuthReady(true);
       if (session?.user) {
         window.setTimeout(() => void syncTemplateCloud().catch(() => undefined), 0);
       }
@@ -1099,18 +1102,28 @@ export function LayoutsApp() {
           <section className="account-banner mt-7" aria-label="Template cloud status">
             <div>
               <p className="text-sm font-semibold">
-                {!templateCloudConfigured ? "Cloud connection required" : templateUser ? `Synced as ${templateUser.email ?? "your account"}` : "Sign in for permanent cross-device templates"}
+                {!templateCloudConfigured
+                  ? "Cloud connection required"
+                  : !templateAuthReady
+                    ? "Restoring your saved sign-in…"
+                    : templateUser
+                      ? `Synced as ${templateUser.email ?? "your account"}`
+                      : "Sign in for permanent cross-device templates"}
               </p>
               <p className="mt-1 text-xs leading-5 text-neutral-500">
                 {!templateCloudConfigured
                   ? "The editor works now, but Supabase must be connected before a template can sync to iPhone, iPad and desktop."
-                  : templateUser
-                    ? templateLibrarySynced ? "Every saved template is backed up to the cloud." : "Some local changes are waiting to sync."
-                    : "Use the same email on every device. Drafts remain cached locally until you sign in."}
+                  : !templateAuthReady
+                    ? "Scuri is checking this browser for your existing session."
+                    : templateUser
+                      ? templateLibrarySynced
+                        ? "Every saved template is backed up to the cloud. This device stays signed in."
+                        : "Some local changes are waiting to sync. This device stays signed in."
+                      : "Use the same email on every device. You only need to sign in once on each browser or installed app."}
               </p>
             </div>
             {templateCloudConfigured ? (
-              templateUser ? (
+              !templateAuthReady ? <span className="template-status pending">Checking…</span> : templateUser ? (
                 <div className="flex gap-2">
                   <button className="secondary-button" type="button" disabled={templateCloudBusy} onClick={() => void manuallySyncTemplates()}>
                     {templateCloudBusy ? "Syncing…" : "Sync now"}
@@ -1561,6 +1574,7 @@ export function LayoutsApp() {
               <button className="icon-button" type="button" aria-label="Close sign-in" onClick={() => setShowTemplateSignIn(false)}>×</button>
             </div>
             <p className="mt-4 text-sm leading-6 text-neutral-600">We’ll email you a secure sign-in link. Use the same address on your iPhone, iPad and desktop.</p>
+            <p className="mt-2 text-xs leading-5 text-neutral-500">You only need the link once for this browser or installed app. Scuri will restore and refresh the session automatically on future visits.</p>
             <label className="control-label mt-5 block" htmlFor="template-email">Email address</label>
             <input
               id="template-email"
