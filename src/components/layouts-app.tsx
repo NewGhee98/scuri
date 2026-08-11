@@ -11,14 +11,15 @@ import { LOCAL_PHOTO_SOURCE } from "@/lib/photo-sources";
 import {
   cacheCustomTemplates,
   copyAsCustomTemplate,
+  createTemplateSyncPlan,
   createBlankCustomTemplate,
   deleteCloudTemplate,
+  describeTemplateSync,
   getTemplateCloudClient,
   getTemplateCloudUser,
   isTemplateCloudConfigured,
   loadCachedCustomTemplates,
   loadCloudTemplates,
-  mergeTemplateLibraries,
   saveCloudTemplate,
   sendTemplateMagicLink,
   signOutTemplateCloud,
@@ -55,6 +56,7 @@ import type {
   StoredProjectPage,
   TemplateDefinition,
 } from "@/lib/types";
+import type { TemplateSyncSummary } from "@/lib/custom-templates";
 import { EditorCanvas } from "./editor-canvas";
 import { ProjectLibraryCard } from "./project-library-card";
 import { ProjectPageCard } from "./project-page-card";
@@ -211,29 +213,52 @@ export function LayoutsApp() {
     cacheCustomTemplates(sorted);
   }, []);
 
-  const syncTemplateCloud = useCallback(async () => {
-    if (!isTemplateCloudConfigured()) return;
+  const syncTemplateCloud = useCallback(async (): Promise<TemplateSyncSummary | null> => {
+    if (!isTemplateCloudConfigured()) return null;
     const user = await getTemplateCloudUser();
     templateUserRef.current = user;
     setTemplateUser(user);
-    if (!user) return;
+    if (!user) return null;
     const local = customTemplatesRef.current;
     const remote = await loadCloudTemplates();
-    let merged = mergeTemplateLibraries(local, remote);
-    for (const template of merged) {
-      const remoteVersion = remote.find((item) => item.id === template.id);
-      const needsUpload = !remoteVersion ||
-        (template.syncState !== "synced" && Date.parse(template.updatedAt) > Date.parse(remoteVersion.updatedAt));
-      if (!needsUpload) continue;
+    const plan = createTemplateSyncPlan(local, remote);
+    let merged = plan.templates;
+    let uploaded = 0;
+    let failed = 0;
+    for (const template of plan.uploads) {
       try {
         const saved = await saveCloudTemplate({ ...template, syncState: "pending" });
         merged = merged.map((item) => item.id === saved.id ? saved : item);
+        uploaded += 1;
       } catch {
         merged = merged.map((item) => item.id === template.id ? { ...item, syncState: "error" } : item);
+        failed += 1;
       }
     }
     replaceCustomTemplates(merged);
+    return { uploaded, downloaded: plan.downloaded, removed: plan.removed, failed };
   }, [replaceCustomTemplates]);
+
+  const manuallySyncTemplates = async () => {
+    if (templateCloudBusy) return;
+    setTemplateCloudBusy(true);
+    setNotice(null);
+    try {
+      const summary = await syncTemplateCloud();
+      if (!summary) {
+        setNotice({ kind: "info", text: "Sign in before syncing templates across devices." });
+        return;
+      }
+      setNotice({
+        kind: summary.failed > 0 ? "error" : "success",
+        text: describeTemplateSync(summary),
+      });
+    } catch {
+      setNotice({ kind: "error", text: "Cloud sync could not be completed. Your local templates are unchanged." });
+    } finally {
+      setTemplateCloudBusy(false);
+    }
+  };
 
   const saveTemplateDraftLocally = useCallback((draft: CustomTemplate) => {
     const nextDraft = {
@@ -1087,8 +1112,10 @@ export function LayoutsApp() {
             {templateCloudConfigured ? (
               templateUser ? (
                 <div className="flex gap-2">
-                  <button className="secondary-button" type="button" disabled={templateCloudBusy} onClick={() => void syncTemplateCloud()}>Sync now</button>
-                  <button className="text-button" type="button" onClick={() => void signOutTemplates()}>Sign out</button>
+                  <button className="secondary-button" type="button" disabled={templateCloudBusy} onClick={() => void manuallySyncTemplates()}>
+                    {templateCloudBusy ? "Syncing…" : "Sync now"}
+                  </button>
+                  <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => void signOutTemplates()}>Sign out</button>
                 </div>
               ) : <button className="secondary-button" type="button" onClick={() => setShowTemplateSignIn(true)}>Sign in by email</button>
             ) : <span className="template-status pending">Setup pending</span>}

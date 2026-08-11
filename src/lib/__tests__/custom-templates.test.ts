@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   copyAsCustomTemplate,
   createBlankCustomTemplate,
+  createTemplateSyncPlan,
+  describeTemplateSync,
   mergeTemplateLibraries,
 } from "../custom-templates";
 import { getTemplate } from "../templates";
@@ -47,5 +49,31 @@ describe("custom template library", () => {
       syncState: "synced",
     };
     expect(mergeTemplateLibraries([base], [remote])[0].name).toBe("Cloud collage");
+  });
+
+  it("uploads unsynced local work but applies cloud deletion to previously synced work", () => {
+    const unsynced = {
+      ...createBlankCustomTemplate("instagram-square"),
+      id: "local-draft",
+      syncState: "pending" as const,
+    };
+    const deletedElsewhere = {
+      ...createBlankCustomTemplate("instagram-square"),
+      id: "cloud-deleted",
+      syncState: "synced" as const,
+    };
+
+    const plan = createTemplateSyncPlan([unsynced, deletedElsewhere], []);
+
+    expect(plan.uploads.map((template) => template.id)).toEqual(["local-draft"]);
+    expect(plan.templates.map((template) => template.id)).toEqual(["local-draft"]);
+    expect(plan.removed).toBe(1);
+  });
+
+  it("describes both a no-op sync and transferred changes", () => {
+    expect(describeTemplateSync({ uploaded: 0, downloaded: 0, removed: 0, failed: 0 }))
+      .toBe("Templates are already up to date.");
+    expect(describeTemplateSync({ uploaded: 1, downloaded: 2, removed: 1, failed: 0 }))
+      .toBe("Sync complete: 1 template uploaded, 2 cloud changes downloaded, 1 cloud deletion applied.");
   });
 });

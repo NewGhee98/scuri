@@ -23,6 +23,20 @@ interface TemplateRow {
   updated_at: string;
 }
 
+export interface TemplateSyncSummary {
+  uploaded: number;
+  downloaded: number;
+  removed: number;
+  failed: number;
+}
+
+export interface TemplateSyncPlan {
+  templates: CustomTemplate[];
+  uploads: CustomTemplate[];
+  downloaded: number;
+  removed: number;
+}
+
 let browserClient: SupabaseClient | null = null;
 
 export function isTemplateCloudConfigured(): boolean {
@@ -259,4 +273,52 @@ export function mergeTemplateLibraries(
     }
   }
   return [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function createTemplateSyncPlan(
+  localTemplates: readonly CustomTemplate[],
+  cloudTemplates: readonly CustomTemplate[],
+): TemplateSyncPlan {
+  const localById = new Map(localTemplates.map((template) => [template.id, template]));
+  const cloudById = new Map(cloudTemplates.map((template) => [template.id, template]));
+  const removed = localTemplates.filter((template) => (
+    template.syncState === "synced" && !cloudById.has(template.id)
+  )).length;
+  const retainedLocal = localTemplates.filter((template) => (
+    template.syncState !== "synced" || cloudById.has(template.id)
+  ));
+  const templates = mergeTemplateLibraries(retainedLocal, cloudTemplates);
+  const uploads = templates.filter((template) => {
+    const cloud = cloudById.get(template.id);
+    if (!cloud) return template.syncState !== "synced";
+    return template.syncState !== "synced" && Date.parse(template.updatedAt) > Date.parse(cloud.updatedAt);
+  });
+  const downloaded = cloudTemplates.filter((cloud) => {
+    const local = localById.get(cloud.id);
+    if (!local) return true;
+    const cloudWins = Date.parse(cloud.updatedAt) >= Date.parse(local.updatedAt) || local.syncState === "synced";
+    return cloudWins && (cloud.updatedAt !== local.updatedAt || local.syncState !== "synced");
+  }).length;
+
+  return { templates, uploads, downloaded, removed };
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function describeTemplateSync(summary: TemplateSyncSummary): string {
+  if (summary.failed > 0) {
+    const successfulChanges = summary.uploaded + summary.downloaded + summary.removed;
+    const prefix = successfulChanges > 0 ? "Sync partly completed, but" : "Sync failed:";
+    return `${prefix} ${countLabel(summary.failed, "template")} could not be saved to the cloud. Your local copy is unchanged.`;
+  }
+
+  const changes = [
+    summary.uploaded ? `${countLabel(summary.uploaded, "template")} uploaded` : null,
+    summary.downloaded ? `${countLabel(summary.downloaded, "cloud change")} downloaded` : null,
+    summary.removed ? `${countLabel(summary.removed, "cloud deletion")} applied` : null,
+  ].filter((item): item is string => Boolean(item));
+
+  return changes.length > 0 ? `Sync complete: ${changes.join(", ")}.` : "Templates are already up to date.";
 }
