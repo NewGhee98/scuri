@@ -108,4 +108,28 @@ describe("project storage migration", () => {
     expect(loadProjects()).toEqual(projects);
     vi.unstubAllGlobals();
   });
+
+  it("propagates a failed migration write so legacy data is not treated as migrated", () => {
+    const values = stubLocalStorage();
+    vi.stubGlobal("crypto", { randomUUID: vi.fn().mockReturnValueOnce("page-id").mockReturnValueOnce("project-id") });
+    const legacy: LegacyStoredProject = {
+      version: 1,
+      screen: "editor",
+      formatId: "instagram-post",
+      templateId: "instagram-post-full-frame",
+      background: "#ffffff",
+      gutter: 0,
+      selectedFrameId: null,
+      photos: {},
+      updatedAt: "2026-08-06T00:00:00.000Z",
+    };
+    values.set("layouts.current-project.v1", JSON.stringify(legacy));
+    vi.mocked(localStorage.setItem).mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+
+    expect(() => loadProjects()).toThrow("Quota exceeded");
+    expect(values.get("layouts.current-project.v1")).toBe(JSON.stringify(legacy));
+    vi.unstubAllGlobals();
+  });
 });
