@@ -30,7 +30,7 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
       const placement = coverPlacement(decoded.width, decoded.height, frame, photo.crop);
       context.save();
       context.beginPath();
-      context.rect(frame.x, frame.y, frame.width, frame.height);
+      context.roundRect(frame.x, frame.y, frame.width, frame.height, frame.cornerRadius);
       context.clip();
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = "high";

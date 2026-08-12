@@ -50,7 +50,7 @@ export function CompositionThumbnail({ format, page, template }: CompositionThum
       const photo = page.photos[frame.id];
       context.save();
       context.beginPath();
-      context.rect(frame.x, frame.y, frame.width, frame.height);
+      context.roundRect(frame.x, frame.y, frame.width, frame.height, frame.cornerRadius);
       context.clip();
       if (photo) {
         const image = cacheRef.current.get(photo.previewUrl);

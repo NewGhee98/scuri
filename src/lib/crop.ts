@@ -29,6 +29,10 @@ export function resolveFrames(
       y: cellY + insetY,
       width: Math.max(1, cellWidth - insetX * 2),
       height: Math.max(1, cellHeight - insetY * 2),
+      cornerRadius: Math.min(Math.max(0, item.cornerRadius ?? 0), 0.5) * Math.min(
+        Math.max(1, cellWidth - insetX * 2),
+        Math.max(1, cellHeight - insetY * 2),
+      ),
     };
   });
 }

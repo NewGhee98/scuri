@@ -1,4 +1,4 @@
-export type FormatId = "instagram-post" | "instagram-story";
+export type FormatId = "instagram-post" | "instagram-square" | "instagram-story";
 
 export interface CanvasFormat {
   id: FormatId;
@@ -16,6 +16,8 @@ export interface NormalizedFrame {
   y: number;
   width: number;
   height: number;
+  cornerRadius?: number;
+  aspectRatioLocked?: boolean;
 }
 
 export interface TemplateDefinition {
@@ -36,6 +38,18 @@ export interface ResolvedFrame {
   y: number;
   width: number;
   height: number;
+  cornerRadius: number;
+}
+
+export type TemplateSyncState = "local" | "pending" | "synced" | "error";
+
+export interface CustomTemplate extends TemplateDefinition {
+  source: "custom";
+  status: "draft" | "saved";
+  sourceTemplateId?: string;
+  createdAt: string;
+  updatedAt: string;
+  syncState: TemplateSyncState;
 }
 
 export interface CropState {
@@ -62,11 +76,21 @@ export interface StoredPhotoAsset {
   crop: CropState;
 }
 
-export type AppScreen = "project" | "format" | "template" | "editor" | "export";
+export type AppScreen =
+  | "projects"
+  | "project"
+  | "format"
+  | "template"
+  | "editor"
+  | "export"
+  | "templates"
+  | "template-format"
+  | "template-editor";
 
 export interface ProjectPage {
   id: string;
   templateId: string;
+  templateSnapshot?: TemplateDefinition;
   background: string;
   gutter: number;
   selectedFrameId: string | null;
@@ -78,6 +102,7 @@ export interface ProjectPage {
 export interface StoredProjectPage {
   id: string;
   templateId: string;
+  templateSnapshot?: TemplateDefinition;
   background: string;
   gutter: number;
   selectedFrameId: string | null;
@@ -87,10 +112,26 @@ export interface StoredProjectPage {
 }
 
 export interface StoredProject {
+  version: 3;
+  id: string;
+  name: string;
+  formatId: FormatId;
+  activePageId: string | null;
+  pages: StoredProjectPage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredProjectLibrary {
+  version: 1;
+  projects: StoredProject[];
+}
+
+export interface LegacyStoredMultiPageProject {
   version: 2;
   id: string;
   name: string;
-  screen: AppScreen;
+  screen: Exclude<AppScreen, "projects">;
   formatId: FormatId | null;
   activePageId: string | null;
   pages: StoredProjectPage[];
@@ -100,7 +141,7 @@ export interface StoredProject {
 
 export interface LegacyStoredProject {
   version: 1;
-  screen: Exclude<AppScreen, "project">;
+  screen: Exclude<AppScreen, "project" | "projects">;
   formatId: FormatId | null;
   templateId: string | null;
   background: string;

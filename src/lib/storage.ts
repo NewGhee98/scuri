@@ -1,5 +1,11 @@
-import type { LegacyStoredProject, StoredProject } from "./types";
+import type {
+  LegacyStoredMultiPageProject,
+  LegacyStoredProject,
+  StoredProject,
+  StoredProjectLibrary,
+} from "./types";
 
+const PROJECTS_KEY = "layouts.projects.v1";
 const PROJECT_KEY = "layouts.current-project.v2";
 const LEGACY_PROJECT_KEY = "layouts.current-project.v1";
 const DB_NAME = "layouts-local-photos";
@@ -63,8 +69,9 @@ export async function deletePhotoBlob(key: string): Promise<void> {
   });
 }
 
-export function saveProject(project: StoredProject): void {
-  localStorage.setItem(PROJECT_KEY, JSON.stringify(project));
+export function saveProjects(projects: StoredProject[]): void {
+  const library: StoredProjectLibrary = { version: 1, projects };
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(library));
 }
 
 export function migrateLegacyProject(project: LegacyStoredProject): StoredProject | null {
@@ -72,10 +79,9 @@ export function migrateLegacyProject(project: LegacyStoredProject): StoredProjec
   const now = project.updatedAt || new Date().toISOString();
   const pageId = crypto.randomUUID();
   return {
-    version: 2,
+    version: 3,
     id: crypto.randomUUID(),
     name: "My project",
-    screen: project.screen === "export" ? "project" : project.screen,
     formatId: project.formatId,
     activePageId: pageId,
     pages: [
@@ -95,25 +101,65 @@ export function migrateLegacyProject(project: LegacyStoredProject): StoredProjec
   };
 }
 
-export function loadProject(): StoredProject | null {
-  const raw = localStorage.getItem(PROJECT_KEY) ?? localStorage.getItem(LEGACY_PROJECT_KEY);
-  if (!raw) return null;
-  try {
-    const project = JSON.parse(raw) as StoredProject | LegacyStoredProject;
-    if (project.version === 1) return migrateLegacyProject(project);
-    if (
-      project.version !== 2 ||
-      !Array.isArray(project.pages) ||
-      typeof project.name !== "string" ||
-      project.pages.some((page) => typeof page.photos !== "object")
-    ) return null;
-    return project;
-  } catch {
-    return null;
-  }
+export function migrateMultiPageProject(project: LegacyStoredMultiPageProject): StoredProject | null {
+  if (!project.formatId || !Array.isArray(project.pages) || typeof project.name !== "string") return null;
+  return {
+    version: 3,
+    id: project.id || crypto.randomUUID(),
+    name: project.name.trim() || "Untitled project",
+    formatId: project.formatId,
+    activePageId: project.activePageId,
+    pages: project.pages,
+    createdAt: project.createdAt || project.updatedAt || new Date().toISOString(),
+    updatedAt: project.updatedAt || new Date().toISOString(),
+  };
 }
 
-export function clearSavedProject(): void {
+function isStoredProject(project: unknown): project is StoredProject {
+  if (!project || typeof project !== "object") return false;
+  const value = project as Partial<StoredProject>;
+  return value.version === 3 &&
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    (value.formatId === "instagram-post" || value.formatId === "instagram-square" || value.formatId === "instagram-story") &&
+    Array.isArray(value.pages) &&
+    value.pages.every((page) => page && typeof page.photos === "object") &&
+    typeof value.createdAt === "string" &&
+    typeof value.updatedAt === "string";
+}
+
+export function loadProjects(): StoredProject[] {
+  const libraryRaw = localStorage.getItem(PROJECTS_KEY);
+  if (libraryRaw) {
+    try {
+      const library = JSON.parse(libraryRaw) as StoredProjectLibrary;
+      if (library.version !== 1 || !Array.isArray(library.projects)) return [];
+      return library.projects.filter(isStoredProject);
+    } catch {
+      return [];
+    }
+  }
+
+  const raw = localStorage.getItem(PROJECT_KEY) ?? localStorage.getItem(LEGACY_PROJECT_KEY);
+  if (!raw) return [];
+
+  let project: LegacyStoredMultiPageProject | LegacyStoredProject;
+  try {
+    project = JSON.parse(raw) as LegacyStoredMultiPageProject | LegacyStoredProject;
+  } catch {
+    return [];
+  }
+
+  const migrated = project.version === 1 ? migrateLegacyProject(project) : migrateMultiPageProject(project);
+  if (!migrated) return [];
+
+  // Do not swallow a failed write here: the caller must know migration did not
+  // persist so it does not clear the legacy keys and lose the only saved copy.
+  saveProjects([migrated]);
+  return [migrated];
+}
+
+export function clearLegacySavedProject(): void {
   localStorage.removeItem(PROJECT_KEY);
   localStorage.removeItem(LEGACY_PROJECT_KEY);
 }
