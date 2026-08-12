@@ -1,7 +1,8 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
+import { resolveFrames } from "./crop";
 import { getFormat } from "./formats";
 import { validateTemplate } from "./templates";
-import type { CustomTemplate, FormatId, NormalizedFrame } from "./types";
+import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
 
 const CUSTOM_TEMPLATES_KEY = "layouts.custom-templates.v1";
 
@@ -132,17 +133,26 @@ export function createBlankCustomTemplate(formatId: FormatId, name = "Untitled t
   };
 }
 
+function materializeTemplateFrames(template: TemplateDefinition): NormalizedFrame[] {
+  const resolved = resolveFrames(template, template.defaultGutter);
+  return resolved.map((frame, index) => {
+    const original = template.frames[index];
+    return {
+      id: crypto.randomUUID(),
+      x: frame.x / template.canvasWidth,
+      y: frame.y / template.canvasHeight,
+      width: frame.width / template.canvasWidth,
+      height: frame.height / template.canvasHeight,
+      cornerRadius: Math.min(frame.width, frame.height) > 0
+        ? frame.cornerRadius / Math.min(frame.width, frame.height)
+        : 0,
+      aspectRatioLocked: original.aspectRatioLocked,
+    };
+  });
+}
+
 export function copyAsCustomTemplate(
-  template: Pick<CustomTemplate, keyof CustomTemplate> | {
-    id: string;
-    name: string;
-    formatId: FormatId;
-    canvasWidth: number;
-    canvasHeight: number;
-    defaultBackground: string;
-    defaultGutter: number;
-    frames: NormalizedFrame[];
-  },
+  template: TemplateDefinition,
   existingNames: readonly string[],
 ): CustomTemplate {
   const baseName = `${template.name} copy`;
@@ -161,7 +171,7 @@ export function copyAsCustomTemplate(
     canvasHeight: template.canvasHeight,
     defaultBackground: template.defaultBackground,
     defaultGutter: 0,
-    frames: template.frames.map((frame) => ({ ...frame, id: crypto.randomUUID() })),
+    frames: materializeTemplateFrames(template),
     source: "custom",
     status: "draft",
     sourceTemplateId: template.id,
