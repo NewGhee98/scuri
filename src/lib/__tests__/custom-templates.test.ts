@@ -6,6 +6,7 @@ import {
   describeTemplateSync,
   mergeTemplateLibraries,
 } from "../custom-templates";
+import { resolveFrames } from "../crop";
 import { getTemplate } from "../templates";
 import type { CustomTemplate } from "../types";
 
@@ -31,6 +32,22 @@ describe("custom template library", () => {
     expect(copy.sourceTemplateId).toBe(source.id);
     expect(copy.frames).toHaveLength(source.frames.length);
     expect(copy.frames.map((frame) => frame.id)).not.toEqual(source.frames.map((frame) => frame.id));
+  });
+
+  it("materializes built-in gutter and inset spacing when making a custom copy", () => {
+    const source = getTemplate("instagram-post-wide-border");
+    const copy = copyAsCustomTemplate(source, []);
+    const sourceFrames = resolveFrames(source, source.defaultGutter);
+    const copiedFrames = resolveFrames(copy, copy.defaultGutter);
+
+    expect(copy.defaultGutter).toBe(0);
+    expect(copiedFrames).toHaveLength(sourceFrames.length);
+    copiedFrames.forEach((frame, index) => {
+      expect(frame.x).toBeCloseTo(sourceFrames[index].x, 5);
+      expect(frame.y).toBeCloseTo(sourceFrames[index].y, 5);
+      expect(frame.width).toBeCloseTo(sourceFrames[index].width, 5);
+      expect(frame.height).toBeCloseTo(sourceFrames[index].height, 5);
+    });
   });
 
   it("keeps a newer pending local edit when merging cloud data", () => {
