@@ -142,15 +142,21 @@ export function loadProjects(): StoredProject[] {
 
   const raw = localStorage.getItem(PROJECT_KEY) ?? localStorage.getItem(LEGACY_PROJECT_KEY);
   if (!raw) return [];
+
+  let project: LegacyStoredMultiPageProject | LegacyStoredProject;
   try {
-    const project = JSON.parse(raw) as LegacyStoredMultiPageProject | LegacyStoredProject;
-    const migrated = project.version === 1 ? migrateLegacyProject(project) : migrateMultiPageProject(project);
-    if (!migrated) return [];
-    saveProjects([migrated]);
-    return [migrated];
+    project = JSON.parse(raw) as LegacyStoredMultiPageProject | LegacyStoredProject;
   } catch {
     return [];
   }
+
+  const migrated = project.version === 1 ? migrateLegacyProject(project) : migrateMultiPageProject(project);
+  if (!migrated) return [];
+
+  // Do not swallow a failed write here: the caller must know migration did not
+  // persist so it does not clear the legacy keys and lose the only saved copy.
+  saveProjects([migrated]);
+  return [migrated];
 }
 
 export function clearLegacySavedProject(): void {
