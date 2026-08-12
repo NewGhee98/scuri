@@ -63,7 +63,7 @@ Copy `.env.example` to `.env.local` and add the two Supabase public values if yo
 ## Template cloud setup
 
 1. Create or connect a Supabase project through the Vercel Marketplace.
-2. Run `supabase/migrations/20260810_create_templates.sql` in the Supabase SQL editor.
+2. Apply the SQL files in `supabase/migrations/` in timestamp order.
 3. Add these variables to Vercel Preview and Production:
 
 ```bash
