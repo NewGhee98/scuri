@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-08-12_
+_Last updated: 2026-08-30_
 
 ## How to use this file
 
@@ -92,6 +92,10 @@ Current UI has shown states including:
 ### Curated editorial starter pack
 
 On 2026-08-30, PR #7 added six built-in templates derived from the user's own Instagram carousel visual language: **Rounded stories**, **Travel notes**, **Editorial portrait**, **Formal gathering**, **Night frames**, and **Quiet landscape**. These are available for every supported output format and complement the original utility layouts with warm-white, rounded, editorial compositions.
+
+### Template library filters
+
+On 2026-08-30, PR #8 added compact filters to the Templates library. Users can combine the existing output-format selector with an **exact photo-count** filter (for example, `2`) and **corner treatment** filters: **Rounded**, **Straight**, or **Mixed**. The library automatically includes relevant counts from custom templates and offers a one-click clear action.
 
 ### Upcoming template feature
 
