@@ -89,6 +89,10 @@ Current UI has shown states including:
 - `Sign in for permanent cross-device templates` once the app could see Supabase configuration.
 - `Synced as <user>` after successful email authentication.
 
+### Curated editorial starter pack
+
+On 2026-08-30, PR #7 added six built-in templates derived from the user's own Instagram carousel visual language: **Rounded stories**, **Travel notes**, **Editorial portrait**, **Formal gathering**, **Night frames**, and **Quiet landscape**. These are available for every supported output format and complement the original utility layouts with warm-white, rounded, editorial compositions.
+
 ### Upcoming template feature
 
 - Allow images to be **resized / repositioned within a frame**.
