@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getTemplatesForFormat, TEMPLATES, validateTemplate } from "../templates";
+import { filterTemplates, getTemplateEdgeStyle, getTemplatesForFormat, TEMPLATES, validateTemplate } from "../templates";
 import type { TemplateDefinition } from "../types";
 
 describe("template library", () => {
@@ -14,6 +14,33 @@ describe("template library", () => {
   it("includes a three-image post template", () => {
     const templates = getTemplatesForFormat("instagram-post");
     expect(templates.some((template) => template.frames.length === 3)).toBe(true);
+  });
+
+  it("filters templates by exact photo count and corner style", () => {
+    const postTemplates = getTemplatesForFormat("instagram-post");
+    const roundedThreePhotoTemplates = filterTemplates(postTemplates, {
+      formatId: "all",
+      photoCount: 3,
+      edgeStyle: "rounded",
+    });
+
+    expect(roundedThreePhotoTemplates.map((template) => template.name)).toEqual([
+      "Rounded stories",
+      "Night frames",
+    ]);
+    expect(filterTemplates(postTemplates, { formatId: "all", photoCount: 2, edgeStyle: "straight" }))
+      .toHaveLength(2);
+  });
+
+  it("identifies rounded, straight and mixed frame treatments", () => {
+    expect(getTemplateEdgeStyle(TEMPLATES.find((template) => template.id === "instagram-post-rounded-stories")!)).toBe("rounded");
+    expect(getTemplateEdgeStyle(TEMPLATES.find((template) => template.id === "instagram-post-full-frame")!)).toBe("straight");
+    expect(getTemplateEdgeStyle({
+      frames: [
+        { id: "rounded", x: 0, y: 0, width: 0.5, height: 1, cornerRadius: 0.1 },
+        { id: "straight", x: 0.5, y: 0, width: 0.5, height: 1 },
+      ],
+    })).toBe("mixed");
   });
 
   it("combines saved custom layouts with matching built-ins", () => {
