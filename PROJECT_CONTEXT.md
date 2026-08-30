@@ -9,10 +9,22 @@ This is the handoff / source-of-truth context for future Scuri chats and coding 
 At the start of a new Scuri chat:
 
 1. Read this file first.
-2. Verify any **live** GitHub, Vercel, or Supabase state before acting; branch heads, deployment IDs, PR status, environment variables, and migration state can change.
-3. Preserve the product decisions below unless the user explicitly changes them.
-4. After a meaningful release, architecture change, migration, or product decision, update this file.
-5. Never paste secret keys, database passwords, JWT secrets, service-role keys, or access tokens into chat or commit them to Git.
+2. Read `CURRENT_TASK.md` next. If it is non-empty, there is unfinished work from a previous session (possibly a different agent — ChatGPT/Codex, Claude, or other) that should be resumed before starting anything new. See "Handoff between sessions / agents" below.
+3. Verify any **live** GitHub, Vercel, or Supabase state before acting; branch heads, deployment IDs, PR status, environment variables, and migration state can change.
+4. Preserve the product decisions below unless the user explicitly changes them.
+5. After a meaningful release, architecture change, migration, or product decision, update this file.
+6. Never paste secret keys, database passwords, JWT secrets, service-role keys, or access tokens into chat or commit them to Git.
+
+---
+
+## Handoff between sessions / agents
+
+Scuri work may be picked up by different chats and different coding agents (ChatGPT/Codex, Claude, or others) within a single task, and a session can end abruptly — for example by running out of tokens — without warning. `CURRENT_TASK.md` exists to make that handoff reliable.
+
+- `CURRENT_TASK.md` holds only the **currently active task**: what it is, what's been done so far, what's left, and any decisions or blockers.
+- **Update it after every discrete unit of work** — after each file edit, test run, or meaningful decision — rather than on a timer. Context/token limits can be hit unpredictably, so "did I just finish a step" is a safer trigger than "has some time passed."
+- When a task is fully done, verified, and (if applicable) merged, **clear `CURRENT_TASK.md` back to its empty template**. It must not be left accumulating history — that would make it expensive to read every session for no benefit. Durable outcomes belong in this file's own dated "Release status" sections instead, not in `CURRENT_TASK.md`.
+- A non-empty `CURRENT_TASK.md` at the start of a session means: resume that work first, or explicitly confirm with the user that it should be abandoned/cleared before starting something new.
 
 ---
 
@@ -310,6 +322,7 @@ Continue adding new ideas to the **Scuri — Upcoming Features** document and pe
 Before making changes:
 
 - Read this file.
+- Read `CURRENT_TASK.md` and resume any unfinished work recorded there first.
 - Inspect the current repository and deployment state rather than relying on stale commit IDs.
 - Prefer small, reviewable PRs and Preview deployments.
 - Preserve existing user data and local drafts during cloud-sync changes.
@@ -317,3 +330,4 @@ Before making changes:
 - Do not weaken RLS as a shortcut.
 - Treat iPad/desktop as the primary interaction target, while keeping iPhone behaviour usable.
 - Cloud template persistence across devices is a non-negotiable acceptance criterion.
+- Update `CURRENT_TASK.md` after every discrete unit of work, and clear it once the task is done — see "Handoff between sessions / agents" above.
