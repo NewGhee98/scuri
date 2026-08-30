@@ -1,12 +1,13 @@
 import { FORMATS, getFormat } from "./formats";
 import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
 
-const frame = (id: string, x: number, y: number, width: number, height: number): NormalizedFrame => ({
+const frame = (id: string, x: number, y: number, width: number, height: number, cornerRadius?: number): NormalizedFrame => ({
   id,
   x,
   y,
   width,
   height,
+  cornerRadius,
 });
 
 const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier"> & { slug: string }> = [
@@ -77,6 +78,63 @@ const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames
       frame("photo-4", 0.64, 0.72, 0.36, 0.28),
     ],
   },
+  {
+    slug: "rounded-stories",
+    name: "Rounded stories",
+    defaultGutter: 34,
+    frames: [
+      frame("photo-1", 0, 0, 1, 0.32, 0.11),
+      frame("photo-2", 0, 0.32, 1, 0.36, 0.11),
+      frame("photo-3", 0, 0.68, 1, 0.32, 0.11),
+    ],
+  },
+  {
+    slug: "travel-notes",
+    name: "Travel notes",
+    defaultGutter: 34,
+    frames: [
+      frame("photo-1", 0, 0, 0.4, 0.42, 0.12),
+      frame("photo-2", 0, 0.42, 0.4, 0.4, 0.12),
+      frame("photo-3", 0.4, 0, 0.6, 0.82, 0.12),
+      frame("photo-4", 0, 0.82, 1, 0.18, 0.1),
+    ],
+  },
+  {
+    slug: "editorial-portrait",
+    name: "Editorial portrait",
+    defaultGutter: 42,
+    frames: [frame("photo-1", 0, 0, 1, 1, 0.08)],
+  },
+  {
+    slug: "formal-gathering",
+    name: "Formal gathering",
+    defaultGutter: 34,
+    frames: [
+      frame("photo-1", 0, 0, 1, 0.2, 0.1),
+      frame("photo-2", 0, 0.2, 0.42, 0.26, 0.12),
+      frame("photo-3", 0.42, 0.2, 0.58, 0.26, 0.12),
+      frame("photo-4", 0, 0.46, 0.68, 0.54, 0.12),
+      frame("photo-5", 0.68, 0.46, 0.32, 0.27, 0.12),
+      frame("photo-6", 0.68, 0.73, 0.32, 0.27, 0.12),
+    ],
+  },
+  {
+    slug: "night-frames",
+    name: "Night frames",
+    defaultGutter: 34,
+    frames: [
+      frame("photo-1", 0, 0, 1, 0.3, 0.06),
+      frame("photo-2", 0, 0.3, 1, 0.38, 0.06),
+      frame("photo-3", 0, 0.68, 1, 0.32, 0.06),
+    ],
+  },
+  {
+    slug: "quiet-landscape",
+    name: "Quiet landscape",
+    defaultGutter: 72,
+    frames: [frame("photo-1", 0, 0, 1, 1)],
+  },
+
 ];
 
 export const TEMPLATES: readonly TemplateDefinition[] = FORMATS.flatMap((format) =>

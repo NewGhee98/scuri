@@ -3,11 +3,11 @@ import { getTemplatesForFormat, TEMPLATES, validateTemplate } from "../templates
 import type { TemplateDefinition } from "../types";
 
 describe("template library", () => {
-  it("contains eight valid templates for each format", () => {
-    expect(TEMPLATES).toHaveLength(24);
-    expect(getTemplatesForFormat("instagram-post")).toHaveLength(8);
-    expect(getTemplatesForFormat("instagram-square")).toHaveLength(8);
-    expect(getTemplatesForFormat("instagram-story")).toHaveLength(8);
+  it("contains fourteen valid templates for each format", () => {
+    expect(TEMPLATES).toHaveLength(42);
+    expect(getTemplatesForFormat("instagram-post")).toHaveLength(14);
+    expect(getTemplatesForFormat("instagram-square")).toHaveLength(14);
+    expect(getTemplatesForFormat("instagram-story")).toHaveLength(14);
     for (const template of TEMPLATES) expect(validateTemplate(template)).toEqual([]);
   });
 
@@ -38,8 +38,8 @@ describe("template library", () => {
       updatedAt: "2026-08-10T00:00:00.000Z",
       syncState: "synced",
     };
-    expect(getTemplatesForFormat("instagram-post", [custom])).toHaveLength(9);
-    expect(getTemplatesForFormat("instagram-story", [custom])).toHaveLength(8);
+    expect(getTemplatesForFormat("instagram-post", [custom])).toHaveLength(15);
+    expect(getTemplatesForFormat("instagram-story", [custom])).toHaveLength(14);
   });
 
   it("reports invalid frame geometry and duplicate IDs", () => {
