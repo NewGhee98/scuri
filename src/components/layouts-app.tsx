@@ -44,7 +44,7 @@ import {
   savePhotoBlob,
   saveProjects,
 } from "@/lib/storage";
-import { getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
+import { filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
 import type {
   AppScreen,
   CropState,
@@ -178,6 +178,8 @@ export function LayoutsApp() {
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
   const [templateDraft, setTemplateDraft] = useState<CustomTemplate | null>(null);
   const [templateFilter, setTemplateFilter] = useState<FormatId | "all">("all");
+  const [templatePhotoCountFilter, setTemplatePhotoCountFilter] = useState<number | "all">("all");
+  const [templateEdgeFilter, setTemplateEdgeFilter] = useState<"all" | "rounded" | "straight" | "mixed">("all");
   const [templateUser, setTemplateUser] = useState<User | null>(null);
   const [templateAuthReady, setTemplateAuthReady] = useState(() => !isTemplateCloudConfigured());
   const [templateCloudBusy, setTemplateCloudBusy] = useState(false);
@@ -194,6 +196,17 @@ export function LayoutsApp() {
 
   const format = formatId ? getFormat(formatId) : null;
   const templates = formatId ? getTemplatesForFormat(formatId, customTemplates) : [];
+  const templateFilters = useMemo(
+    () => ({ formatId: templateFilter, photoCount: templatePhotoCountFilter, edgeStyle: templateEdgeFilter } as const),
+    [templateEdgeFilter, templateFilter, templatePhotoCountFilter],
+  );
+  const filteredCustomTemplates = useMemo(() => filterTemplates(customTemplates, templateFilters), [customTemplates, templateFilters]);
+  const filteredBuiltInTemplates = useMemo(() => filterTemplates(TEMPLATES, templateFilters), [templateFilters]);
+  const templatePhotoCounts = useMemo(
+    () => Array.from(new Set([...TEMPLATES, ...customTemplates].map((item) => item.frames.length))).filter((count) => count > 0).sort((a, b) => a - b),
+    [customTemplates],
+  );
+  const hasActiveTemplateFilters = templateFilter !== "all" || templatePhotoCountFilter !== "all" || templateEdgeFilter !== "all";
   const activePage = pages.find((page) => page.id === activePageId) ?? null;
   const resolvePageTemplate = useCallback((page: Pick<ProjectPage, "templateId" | "templateSnapshot">): TemplateDefinition => (
     page.templateSnapshot ?? getTemplate(page.templateId, customTemplates)
@@ -1141,6 +1154,40 @@ export function LayoutsApp() {
             ))}
           </div>
 
+          <section className="mt-5 rounded-[18px] border border-black/10 bg-white/45 p-4 sm:p-5" aria-labelledby="template-filters-heading">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 id="template-filters-heading" className="text-sm font-semibold">Filter templates</h2>
+              {hasActiveTemplateFilters ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => {
+                    setTemplateFilter("all");
+                    setTemplatePhotoCountFilter("all");
+                    setTemplateEdgeFilter("all");
+                  }}
+                >
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-xs font-medium text-neutral-600">Photos</span>
+              <button className={`nav-button ${templatePhotoCountFilter === "all" ? "active" : ""}`} type="button" onClick={() => setTemplatePhotoCountFilter("all")}>All</button>
+              {templatePhotoCounts.map((count) => (
+                <button key={count} className={`nav-button ${templatePhotoCountFilter === count ? "active" : ""}`} type="button" onClick={() => setTemplatePhotoCountFilter(count)}>{count}</button>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-xs font-medium text-neutral-600">Corners</span>
+              {(["all", "rounded", "straight", "mixed"] as const).map((edgeStyle) => (
+                <button key={edgeStyle} className={`nav-button ${templateEdgeFilter === edgeStyle ? "active" : ""}`} type="button" onClick={() => setTemplateEdgeFilter(edgeStyle)}>
+                  {edgeStyle === "all" ? "All" : edgeStyle[0].toUpperCase() + edgeStyle.slice(1)}
+                </button>
+              ))}
+            </div>
+          </section>
+
           <section className="mt-8" aria-labelledby="my-templates-heading">
             <div className="flex items-end justify-between gap-4">
               <div>
@@ -1151,9 +1198,9 @@ export function LayoutsApp() {
                 {customTemplates.filter((item) => item.status === "saved").length} saved · {customTemplates.filter((item) => item.status === "draft").length} drafts
               </span>
             </div>
-            {customTemplates.filter((item) => templateFilter === "all" || item.formatId === templateFilter).length ? (
+            {filteredCustomTemplates.length ? (
               <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-5 lg:grid-cols-4">
-                {customTemplates.filter((item) => templateFilter === "all" || item.formatId === templateFilter).map((item) => (
+                {filteredCustomTemplates.map((item) => (
                   <article key={item.id} className="template-library-card">
                     <button className="project-library-open" type="button" onClick={() => editLibraryTemplate(item)}>
                       <span className="template-preview" style={{ aspectRatio: `${item.canvasWidth}/${item.canvasHeight}` }}><TemplateThumbnail template={item} /></span>
@@ -1176,7 +1223,7 @@ export function LayoutsApp() {
               </div>
             ) : (
               <div className="mt-5 rounded-[18px] border border-dashed border-black/15 bg-white/40 p-8 text-center">
-                <p className="text-sm font-semibold">No custom templates in this view.</p>
+                <p className="text-sm font-semibold">No custom templates match these filters.</p>
                 <button className="primary-button mt-4" type="button" onClick={beginNewTemplate}>Create your first template</button>
               </div>
             )}
@@ -1187,7 +1234,7 @@ export function LayoutsApp() {
             <h2 id="built-in-templates-heading" className="mt-2 text-2xl font-medium tracking-[-0.035em]">Built-in templates</h2>
             <p className="mt-2 text-sm text-neutral-600">Edit or duplicate one to create your own copy. The original always stays available.</p>
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-5 lg:grid-cols-4">
-              {TEMPLATES.filter((item) => templateFilter === "all" || item.formatId === templateFilter).map((item) => (
+              {filteredBuiltInTemplates.map((item) => (
                 <article key={item.id} className="template-library-card">
                   <button className="project-library-open" type="button" onClick={() => editLibraryTemplate(item)}>
                     <span className="template-preview" style={{ aspectRatio: `${item.canvasWidth}/${item.canvasHeight}` }}><TemplateThumbnail template={item} /></span>
