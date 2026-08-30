@@ -1,6 +1,14 @@
 import { FORMATS, getFormat } from "./formats";
 import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
 
+export type TemplateEdgeStyle = "rounded" | "straight" | "mixed";
+
+export type TemplateLibraryFilters = {
+  formatId: FormatId | "all";
+  photoCount: number | "all";
+  edgeStyle: TemplateEdgeStyle | "all";
+};
+
 const frame = (id: string, x: number, y: number, width: number, height: number, cornerRadius?: number): NormalizedFrame => ({
   id,
   x,
@@ -156,6 +164,24 @@ export function getTemplatesForFormat(formatId: FormatId, customTemplates: reado
     ...TEMPLATES.filter((template) => template.formatId === formatId),
     ...customTemplates.filter((template) => template.status === "saved" && template.formatId === formatId),
   ];
+}
+
+export function getTemplateEdgeStyle(template: Pick<TemplateDefinition, "frames">): TemplateEdgeStyle {
+  const roundedFrameCount = template.frames.filter((item) => (item.cornerRadius ?? 0) > 0).length;
+  if (roundedFrameCount === 0) return "straight";
+  if (roundedFrameCount === template.frames.length) return "rounded";
+  return "mixed";
+}
+
+export function filterTemplates<T extends TemplateDefinition>(
+  templates: readonly T[],
+  filters: TemplateLibraryFilters,
+): T[] {
+  return templates.filter((template) => (
+    (filters.formatId === "all" || template.formatId === filters.formatId) &&
+    (filters.photoCount === "all" || template.frames.length === filters.photoCount) &&
+    (filters.edgeStyle === "all" || getTemplateEdgeStyle(template) === filters.edgeStyle)
+  ));
 }
 
 export function getTemplate(templateId: string, customTemplates: readonly CustomTemplate[] = []): TemplateDefinition {
