@@ -56,6 +56,7 @@ create index if not exists projects_owner_updated_idx
 create or replace function public.set_project_revision()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   new.revision = old.revision + 1;
@@ -115,6 +116,7 @@ create index if not exists project_pages_project_position_idx
 create or replace function public.touch_project_page()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   new.updated_at = now();
@@ -177,6 +179,7 @@ create index if not exists project_assets_project_idx
 create or replace function public.touch_project_asset()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   new.updated_at = now();
