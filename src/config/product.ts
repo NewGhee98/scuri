@@ -1,5 +1,5 @@
 export const PRODUCT = {
-  name: "Layouts",
-  shortName: "Layouts",
-  description: "A private, on-device photo layout editor for Instagram posts and stories.",
+  name: "Scuri",
+  shortName: "Scuri",
+  description: "A private photo layout editor for creating Instagram posts and stories across your devices.",
 } as const;

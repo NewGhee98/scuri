@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-08-30_
+_Last updated: 2026-08-31_
 
 ## How to use this file
 
@@ -60,6 +60,28 @@ Expected behaviour:
 - Local drafts may exist before sign-in, but saved cloud templates must survive new browser/app instances and device changes.
 
 This cross-device persistence requirement is one of the main reasons Supabase was introduced.
+
+## Ironclad product requirement: projects must persist across devices
+
+A project built on iPad must be available on laptop or another signed-in device later, including its full-resolution source photographs. Device-only `localStorage` and IndexedDB are a cache, not the permanent copy.
+
+**Architecture decision agreed on 2026-08-30, superseded on 2026-08-31:** the first implementation pass (Codex, branch `codex/google-drive-project-sync`, never pushed to GitHub - see "Release status" below) made Google Drive itself the source of truth, via a `project.scuri.json` manifest inside a private Drive folder. That work was reused but refactored before merge, because a Drive manifest is awkward to query, cannot use row-level security, and complicates conflict detection across devices.
+
+**Current architecture (2026-08-31):**
+
+- **Supabase is the source of truth** for project state: `projects`, `project_pages` and `project_assets` tables (`supabase/migrations/20260831120000_create_projects.sql`), owner-only RLS following the existing `templates` table's model, server-generated `updated_at`/`revision` columns for optimistic concurrency - a client's write is gated on the `revision` it last saw, so a stale device detects a conflict instead of silently overwriting a newer remote revision.
+- **Google Drive is a file warehouse only**: untouched full-resolution originals, lightweight previews and optional exports live in a private per-project `Scuri/Projects/<name>/{Originals,Previews,Exports}` folder tree (`src/lib/google-drive.ts`). No Drive-side manifest is authoritative; Drive being disconnected or unavailable never hides project metadata, only the original photo bytes.
+- **Browser storage (`localStorage` + IndexedDB) remains the local-first/offline cache**, unchanged in shape from before.
+- Templates and projects are separate tables/features but **share one Supabase sign-in** (`src/lib/supabase-client.ts`); templates sync/RLS is unchanged.
+- Conflict policy: never silently overwrite. A device whose push loses the revision race keeps its edits as a new, clearly-labelled "(conflicted copy)" project; the cloud copy stays canonical under the original id (`src/lib/project-sync.ts`'s `resolveProjectConflict`).
+- Use the narrow non-sensitive Google `drive.file` scope, not broad Drive access. Large image transfers use resumable uploads. A project deletion soft-deletes the Supabase row and moves its Drive folder to Trash before local data is removed.
+
+Required public environment variables:
+
+- `NEXT_PUBLIC_GOOGLE_DRIVE_CLIENT_ID` (Google Drive backup; optional - projects still sync without it, just without full-resolution originals following the project to a new device)
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (already required for templates; now also gate project sync)
+
+See `README.md`'s "Cloud setup" section for exact Google Cloud Console steps (OAuth consent screen, Web application client, authorized JavaScript origins - no redirect URI is used; wildcards are not supported for JS origins, so ephemeral Vercel Previews cannot pre-authorize Drive connect the way Supabase's redirect allow-list does).
 
 ---
 
@@ -304,6 +326,23 @@ Still outstanding / requires user-device validation:
 - Review the broader non-DML table privileges separately before applying any privilege-hardening migration.
 
 Going forward, treat `main` as the production source of truth and keep feature branches Preview-only unless there is an explicit reason to do otherwise.
+
+---
+
+## Release status — 2026-08-31 (not yet merged)
+
+Branch `agent/supabase-project-sync`, built on top of `main` at commit `71fa515` plus a reused/refactored copy of Codex's `codex/google-drive-project-sync` snapshot (that branch itself never reached GitHub - only `main` and the existing `agent/*` branches exist remotely).
+
+What this branch adds, verified locally (typecheck, lint, all 48 vitest tests including 15 new project-sync tests, and `next build --webpack` all pass):
+
+- Supabase migration `supabase/migrations/20260831120000_create_projects.sql` (`projects`, `project_pages`, `project_assets`, owner-only RLS, revision trigger) - **applied to the live `supabase-teal-nest` project** (confirmed with the user first). The Supabase security advisor's `function_search_path_mutable` warning on the three trigger functions was fixed in both the migration file and live.
+- `src/lib/project-sync.ts`, `src/lib/supabase-client.ts` (new), `src/lib/google-drive.ts` (rewritten - asset warehouse only, manifest/project-authority code removed), `src/lib/types.ts`, `src/components/layouts-app.tsx` and `src/components/project-library-card.tsx` (wired to the new sync engine).
+- User-facing rename from "Layouts" to "Scuri" (matches this file's product name; was already implemented by Codex).
+
+Not yet done:
+
+- No GitHub push credentials were available in the environment that built this - the branch exists locally where it was built (and as a git bundle left alongside the original handoff files) and needs to be pushed and opened as a PR from a machine with push access.
+- No physical-device acceptance testing (see the acceptance test in the original handoff brief) - this needs a real Supabase session and Google account, which an automated build cannot provide.
 
 ---
 

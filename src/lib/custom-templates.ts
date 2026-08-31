@@ -1,6 +1,7 @@
-import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { resolveFrames } from "./crop";
 import { getFormat } from "./formats";
+import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
 import { validateTemplate } from "./templates";
 import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
 
@@ -38,31 +39,12 @@ export interface TemplateSyncPlan {
   removed: number;
 }
 
-let browserClient: SupabaseClient | null = null;
-
 export function isTemplateCloudConfigured(): boolean {
-  return Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_URL &&
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-  );
+  return isSupabaseConfigured();
 }
 
 export function getTemplateCloudClient(): SupabaseClient | null {
-  if (!isTemplateCloudConfigured()) return null;
-  if (!browserClient) {
-    browserClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
-      {
-        auth: {
-          persistSession: true,
-          autoRefreshToken: true,
-          detectSessionInUrl: true,
-        },
-      },
-    );
-  }
-  return browserClient;
+  return getSupabaseClient();
 }
 
 function isFormatId(value: unknown): value is FormatId {

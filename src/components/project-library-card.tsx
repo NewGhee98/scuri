@@ -1,17 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { downloadGoogleDrivePhoto } from "@/lib/google-drive";
 import { disposePhotoAsset, preparePhotoAsset } from "@/lib/image";
 import { isPageComplete } from "@/lib/project";
 import { loadPhotoBlob } from "@/lib/storage";
 import { getTemplate } from "@/lib/templates";
-import type { CanvasFormat, PhotoAsset, ProjectPage, StoredProject } from "@/lib/types";
+import type { CanvasFormat, PhotoAsset, ProjectCloudSyncState, ProjectPage, StoredProject } from "@/lib/types";
 import { CompositionThumbnail } from "./composition-thumbnail";
 import { TemplateThumbnail } from "./template-thumbnail";
 
 interface ProjectLibraryCardProps {
   format: CanvasFormat;
   project: StoredProject;
+  driveAccessToken?: string | null;
+  syncState?: ProjectCloudSyncState;
   onOpen: (projectId: string) => void;
   onDelete: (projectId: string) => void;
 }
@@ -22,7 +25,27 @@ function formatEditedDate(value: string): string {
   return `Edited ${new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date)}`;
 }
 
-export function ProjectLibraryCard({ format, project, onOpen, onDelete }: ProjectLibraryCardProps) {
+const SYNC_STATUS_LABEL: Record<ProjectCloudSyncState, string> = {
+  "local-only": "On this device only",
+  "saved-locally": "Saved locally · syncing soon",
+  syncing: "Syncing…",
+  synced: "Synced",
+  "waiting-for-connection": "Waiting for connection",
+  "drive-reconnect-required": "Reconnect Drive for full-res photos",
+  "sync-error": "Sync needs attention",
+};
+
+const SYNC_STATUS_CLASS: Record<ProjectCloudSyncState, string> = {
+  "local-only": "text-neutral-500",
+  "saved-locally": "text-neutral-500",
+  syncing: "text-neutral-500",
+  synced: "text-emerald-700",
+  "waiting-for-connection": "text-amber-700",
+  "drive-reconnect-required": "text-amber-700",
+  "sync-error": "text-red-700",
+};
+
+export function ProjectLibraryCard({ format, project, driveAccessToken, syncState, onOpen, onDelete }: ProjectLibraryCardProps) {
   const completePages = useMemo(
     () => project.pages.filter((page) => isPageComplete(page, page.templateSnapshot ?? getTemplate(page.templateId))),
     [project.pages],
@@ -41,7 +64,10 @@ export function ProjectLibraryCard({ format, project, onOpen, onDelete }: Projec
         return;
       }
       const entries = await Promise.all(Object.values(coverPage.photos).map(async (item) => {
-        const blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        let blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        if (!blob && driveAccessToken && item.drivePreviewId) {
+          blob = await downloadGoogleDrivePhoto(driveAccessToken, item.drivePreviewId).catch(() => null);
+        }
         if (!blob) return null;
         try {
           const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
@@ -66,7 +92,7 @@ export function ProjectLibraryCard({ format, project, onOpen, onDelete }: Projec
       cancelled = true;
       if (loadedPage) Object.values(loadedPage.photos).forEach(disposePhotoAsset);
     };
-  }, [coverPage, coverTemplate]);
+  }, [coverPage, coverTemplate, driveAccessToken]);
 
   return (
     <article className="project-library-card">
@@ -87,6 +113,7 @@ export function ProjectLibraryCard({ format, project, onOpen, onDelete }: Projec
             {completePages.length ? ` · ${completePages.length} ready` : ""}
           </span>
           <span className="mt-2 block text-[11px] text-neutral-500">{formatEditedDate(project.updatedAt)}</span>
+          {syncState ? <span className={`mt-1 block text-[11px] font-medium ${SYNC_STATUS_CLASS[syncState]}`}>{SYNC_STATUS_LABEL[syncState]}</span> : null}
         </span>
       </button>
       <div className="project-library-actions">

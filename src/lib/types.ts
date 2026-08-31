@@ -63,6 +63,13 @@ export interface PhotoAsset {
   blobKey: string;
   sourceBlob: Blob;
   previewUrl: string;
+  sourceName?: string;
+  mimeType?: string;
+  fileSize?: number;
+  /** Google Drive file id of the untouched full-resolution original. */
+  driveOriginalId?: string;
+  /** Google Drive file id of the lightweight preview. */
+  drivePreviewId?: string;
   sourceWidth: number;
   sourceHeight: number;
   crop: CropState;
@@ -71,6 +78,11 @@ export interface PhotoAsset {
 export interface StoredPhotoAsset {
   frameId: string;
   blobKey: string;
+  sourceName?: string;
+  mimeType?: string;
+  fileSize?: number;
+  driveOriginalId?: string;
+  drivePreviewId?: string;
   sourceWidth: number;
   sourceHeight: number;
   crop: CropState;
@@ -111,6 +123,21 @@ export interface StoredProjectPage {
   updatedAt: string;
 }
 
+/**
+ * Cloud sync status for a project, derived (never stored) from local/remote
+ * state by `getProjectSyncStatus` in `project-sync.ts`. See
+ * PROJECT_CONTEXT.md's "Supabase = source of truth for project state"
+ * section for the architecture this supports.
+ */
+export type ProjectCloudSyncState =
+  | "local-only"
+  | "saved-locally"
+  | "syncing"
+  | "synced"
+  | "waiting-for-connection"
+  | "drive-reconnect-required"
+  | "sync-error";
+
 export interface StoredProject {
   version: 3;
   id: string;
@@ -118,6 +145,17 @@ export interface StoredProject {
   formatId: FormatId;
   activePageId: string | null;
   pages: StoredProjectPage[];
+  /**
+   * Last Supabase `projects.revision` this device knows it is in sync with.
+   * Undefined means this project has never been pushed to Supabase. Used as
+   * the optimistic-concurrency predicate on every push; see
+   * `pushProjectToCloud` in project-sync.ts.
+   */
+  revision?: number;
+  /** ISO timestamp of the last confirmed successful push to or pull from Supabase. */
+  cloudSyncedAt?: string;
+  /** Google Drive folder holding this project's originals/previews/exports. */
+  driveFolderId?: string;
   createdAt: string;
   updatedAt: string;
 }

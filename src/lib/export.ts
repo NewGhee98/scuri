@@ -53,7 +53,7 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
 export function createExportFilename(format: CanvasFormat, pageNumber?: number): string {
   const stamp = new Date().toISOString().slice(0, 10);
   const page = pageNumber ? `-${String(pageNumber).padStart(2, "0")}` : "";
-  return `layouts-${format.shortLabel.toLowerCase()}-${stamp}${page}.jpg`;
+  return `scuri-${format.shortLabel.toLowerCase()}-${stamp}${page}.jpg`;
 }
 
 export async function createExportZip(
@@ -70,7 +70,7 @@ export async function createExportZip(
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "") || "layouts-project";
+    .replace(/^-|-$/g, "") || "scuri-project";
   return {
     blob: new Blob([zipBuffer], { type: "application/zip" }),
     filename: `${safeName}-${new Date().toISOString().slice(0, 10)}.zip`,
