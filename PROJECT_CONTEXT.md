@@ -335,14 +335,13 @@ Branch `agent/supabase-project-sync`, built on top of `main` at commit `71fa515`
 
 What this branch adds, verified locally (typecheck, lint, all 48 vitest tests including 15 new project-sync tests, and `next build --webpack` all pass):
 
-- Supabase migration `supabase/migrations/20260831120000_create_projects.sql` (`projects`, `project_pages`, `project_assets`, owner-only RLS, revision trigger) - **not yet applied to the live `supabase-teal-nest` project.**
+- Supabase migration `supabase/migrations/20260831120000_create_projects.sql` (`projects`, `project_pages`, `project_assets`, owner-only RLS, revision trigger) - **applied to the live `supabase-teal-nest` project** (confirmed with the user first). The Supabase security advisor's `function_search_path_mutable` warning on the three trigger functions was fixed in both the migration file and live.
 - `src/lib/project-sync.ts`, `src/lib/supabase-client.ts` (new), `src/lib/google-drive.ts` (rewritten - asset warehouse only, manifest/project-authority code removed), `src/lib/types.ts`, `src/components/layouts-app.tsx` and `src/components/project-library-card.tsx` (wired to the new sync engine).
 - User-facing rename from "Layouts" to "Scuri" (matches this file's product name; was already implemented by Codex).
 
 Not yet done:
 
-- The Supabase migration has not been applied to the live project - do that (and confirm with the user first) before this is usable.
-- No GitHub push credentials were available in the environment that built this - the branch exists locally where it was built and needs to be pushed and opened as a PR from a machine with push access.
+- No GitHub push credentials were available in the environment that built this - the branch exists locally where it was built (and as a git bundle left alongside the original handoff files) and needs to be pushed and opened as a PR from a machine with push access.
 - No physical-device acceptance testing (see the acceptance test in the original handoff brief) - this needs a real Supabase session and Google account, which an automated build cannot provide.
 
 ---
