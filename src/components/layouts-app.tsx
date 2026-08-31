@@ -57,6 +57,7 @@ import {
   saveProjects,
 } from "@/lib/storage";
 import {
+  getProjectCloudUser,
   getProjectSyncStatus,
   isProjectCloudConfigured,
   mergeCloudProjectLibrary,
@@ -503,6 +504,12 @@ export function LayoutsApp() {
 
   const syncProjectsFromCloud = useCallback(async (): Promise<void> => {
     if (!isProjectCloudConfigured()) return;
+    // Never query project tables as the anon role. The migration intentionally
+    // revokes anon privileges, so doing so produces a permission error (and,
+    // more importantly, an empty remote library must never be interpreted as
+    // "everything was deleted" while the user is signed out).
+    const user = await getProjectCloudUser();
+    if (!user) return;
     try {
       const remote = await pullProjectsFromCloud();
       const localSnapshot = projectsRef.current;
