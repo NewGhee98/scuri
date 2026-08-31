@@ -65,7 +65,7 @@ export async function decodeImage(blob: Blob): Promise<DecodedImage> {
   };
 }
 
-async function createPreview(blob: Blob): Promise<{ previewUrl: string; width: number; height: number }> {
+export async function createPhotoPreview(blob: Blob): Promise<{ blob: Blob; previewUrl: string; width: number; height: number }> {
   const decoded = await decodeImage(blob);
   try {
     const scale = Math.min(1, PREVIEW_LONG_EDGE / Math.max(decoded.width, decoded.height));
@@ -87,7 +87,7 @@ async function createPreview(blob: Blob): Promise<{ previewUrl: string; width: n
         0.86,
       );
     });
-    return { previewUrl: URL.createObjectURL(previewBlob), width: decoded.width, height: decoded.height };
+    return { blob: previewBlob, previewUrl: URL.createObjectURL(previewBlob), width: decoded.width, height: decoded.height };
   } finally {
     decoded.close();
   }
@@ -98,7 +98,7 @@ export async function preparePhotoAsset(
   frameId: string,
   blobKey = crypto.randomUUID(),
 ): Promise<PhotoAsset> {
-  const preview = await createPreview(sourceBlob);
+  const preview = await createPhotoPreview(sourceBlob);
   return {
     frameId,
     blobKey,

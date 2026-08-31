@@ -8,27 +8,41 @@ See `PROJECT_CONTEXT.md` → "Handoff between sessions / agents" for the full pr
 
 ## Status
 
-`idle`
+`awaiting user review`
 
 ## Task
 
-_(one line describing what's currently being worked on — leave blank if idle)_
+Refactor Codex's Drive-heavy project-sync implementation (branch `codex/google-drive-project-sync`, never pushed - see attached snapshot) so Supabase is the source of truth for project state and Google Drive is only the full-resolution asset warehouse, per the corrected architecture decision in `PROJECT_CONTEXT.md`.
 
 ## Done so far
 
--
+- Compared the attached Codex snapshot to live GitHub (`codex/google-drive-project-sync` does not exist remotely - only the snapshot has this work).
+- Built branch `agent/supabase-project-sync` off `main` (`71fa515`).
+- Wrote `supabase/migrations/20260831120000_create_projects.sql` (projects/project_pages/project_assets, owner-only RLS, revision trigger) - not yet applied to the live `supabase-teal-nest` project.
+- Wrote `src/lib/project-sync.ts` (pull/push, revision-gated optimistic concurrency, safe conflict policy, cloud/local merge policy, derived sync status) and `src/lib/supabase-client.ts` (client shared with `custom-templates.ts` so templates and projects use one auth session).
+- Rewrote `src/lib/google-drive.ts` to drop manifest/project-authority code, keep OAuth + per-project folder tree + resumable upload/download/trash.
+- Wired `src/components/layouts-app.tsx` and `src/components/project-library-card.tsx` to the new sync engine (cloud banner, per-project sync status badge, debounced push, Drive connect/disconnect, coordinated deletion).
+- Kept the "Layouts" → "Scuri" rename (product.ts, package.json, export filenames, service worker cache name, brand mark).
+- Added `src/lib/__tests__/project-sync.test.ts` (15 tests: conflict resolution, merge policy, derived sync status, row reconstruction).
+- Updated `README.md` (architecture, Google Cloud OAuth setup steps, known limitations, roadmap) and `PROJECT_CONTEXT.md` (superseded the 2026-08-30 Drive-authoritative decision, added a 2026-08-31 release-status entry).
+- Verified: `npm run typecheck`, `npm run lint`, `npm test` (48/48 passing), `npm run build -- --webpack`, `git diff --check` all pass clean.
 
 ## Remaining
 
--
+- Apply the Supabase migration to the live project (needs explicit user go-ahead - it's a production database).
+- Push this branch to GitHub and open a PR (no push credentials were available in the environment that built it).
+- Physical-device acceptance testing (iPad + laptop, real Google account) per the acceptance test in the original handoff brief - needs a human with real credentials, not something an automated build can do.
+- Google Cloud Console OAuth client setup (Drive API enabled, consent screen, Web application client, authorized JavaScript origins) - instructions are in `README.md`, but the actual console configuration and `NEXT_PUBLIC_GOOGLE_DRIVE_CLIENT_ID` value are the user's to create.
 
 ## Decisions / notes
 
--
+- Conflict policy: never silently overwrite. Losing device keeps its edits as a new "(conflicted copy)" project; cloud stays canonical under the original id. See "remaining limitations" in `README.md` for the small non-transactional gap between the project-row revision bump and its pages/assets writes (self-healing on retry).
+- Deletion of a previously-synced project is blocked (not silently local-only) while offline/signed-out, so a cloud copy is never orphaned.
 
 ## Blockers
 
--
+- GitHub push credentials (see "Remaining").
+- Live Supabase migration apply needs explicit user confirmation before it happens.
 
 ---
 

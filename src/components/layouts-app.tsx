@@ -6,7 +6,19 @@ import { PRODUCT } from "@/config/product";
 import { DEFAULT_CROP, MAX_ZOOM, MIN_ZOOM, setCropZoom } from "@/lib/crop";
 import { createExportFilename, createExportZip, renderComposition } from "@/lib/export";
 import { FORMATS, getFormat } from "@/lib/formats";
-import { disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/image";
+import Script from "next/script";
+import { createPhotoPreview, disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/image";
+import {
+  downloadGoogleDrivePhoto,
+  ensureProjectDriveFolders,
+  isGoogleDriveConfigured,
+  requestGoogleDriveAccessToken,
+  revokeGoogleDriveAccess,
+  trashProjectDriveFolder,
+  uploadExportsToGoogleDrive,
+  uploadPhotoAssetToDrive,
+  type DriveSyncProgress,
+} from "@/lib/google-drive";
 import { LOCAL_PHOTO_SOURCE } from "@/lib/photo-sources";
 import {
   cacheCustomTemplates,
@@ -44,6 +56,16 @@ import {
   savePhotoBlob,
   saveProjects,
 } from "@/lib/storage";
+import {
+  getProjectSyncStatus,
+  isProjectCloudConfigured,
+  mergeCloudProjectLibrary,
+  projectHasUnbackedAssets,
+  pullProjectsFromCloud,
+  pushProjectToCloud,
+  resolveProjectConflict,
+  softDeleteCloudProject,
+} from "@/lib/project-sync";
 import { filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
 import type {
   AppScreen,
@@ -64,7 +86,7 @@ import { TemplateThumbnail } from "./template-thumbnail";
 import { TemplateDesigner } from "./template-designer";
 
 type Notice = { kind: "error" | "success" | "info"; text: string } | null;
-type BusyState = "image" | "export" | "duplicate" | "project" | null;
+type BusyState = "image" | "export" | "duplicate" | "project" | "drive" | null;
 type ExportItem = { pageId: string; pageNumber: number; blob: Blob; url: string; filename: string };
 
 const BACKGROUNDS = ["#ffffff", "#f3f1ec", "#d9d6cf", "#1b1b1b", "#c9d2cc", "#e1d2c6"];
@@ -113,7 +135,7 @@ function Header({
               <span aria-hidden="true">←</span>
             </button>
           ) : (
-            <span className="brand-mark" aria-hidden="true">L</span>
+            <span className="brand-mark" aria-hidden="true">S</span>
           )}
           <div className="min-w-0">
             <p className="truncate text-[15px] font-semibold tracking-[-0.02em]">{PRODUCT.name}</p>
@@ -146,6 +168,11 @@ function serializePage(page: ProjectPage): StoredProjectPage {
         {
           frameId,
           blobKey: photo.blobKey,
+          sourceName: photo.sourceName,
+          mimeType: photo.mimeType,
+          fileSize: photo.fileSize,
+          driveOriginalId: photo.driveOriginalId,
+          drivePreviewId: photo.drivePreviewId,
           sourceWidth: photo.sourceWidth,
           sourceHeight: photo.sourceHeight,
           crop: photo.crop,
@@ -194,6 +221,19 @@ export function LayoutsApp() {
   const templateUserRef = useRef<User | null>(null);
   const templateSyncTimersRef = useRef(new Map<string, number>());
 
+  // --- Project cloud sync (Supabase = source of truth) + Drive asset backup ---
+  const [googleScriptReady, setGoogleScriptReady] = useState(false);
+  const [driveAccessToken, setDriveAccessToken] = useState<string | null>(null);
+  const [driveProgress, setDriveProgress] = useState<DriveSyncProgress | null>(null);
+  const [isOnline, setIsOnline] = useState(true);
+  const [projectSyncErrors, setProjectSyncErrors] = useState<Record<string, boolean>>({});
+  const [syncingProjectIds, setSyncingProjectIds] = useState<Record<string, boolean>>({});
+  const driveAccessTokenRef = useRef<string | null>(null);
+  const driveTokenExpiresAtRef = useRef(0);
+  const projectsRef = useRef<StoredProject[]>([]);
+  const projectSyncTimerRef = useRef<number | null>(null);
+  const projectPushInFlightRef = useRef(new Set<string>());
+
   const format = formatId ? getFormat(formatId) : null;
   const templates = formatId ? getTemplatesForFormat(formatId, customTemplates) : [];
   const templateFilters = useMemo(
@@ -219,6 +259,19 @@ export function LayoutsApp() {
   const hasAnyPhotos = pages.some((page) => Object.keys(page.photos).length > 0);
   const templateCloudConfigured = isTemplateCloudConfigured();
   const templateLibrarySynced = Boolean(templateUser) && customTemplates.every((item) => item.syncState === "synced");
+  // Projects and templates deliberately share one sign-in (see src/lib/supabase-client.ts).
+  const projectCloudConfigured = isProjectCloudConfigured();
+  const projectCloudSignedIn = Boolean(templateUser);
+  const driveConfigured = isGoogleDriveConfigured();
+  // Expiry is checked where it matters (getValidDriveToken, called from
+  // event handlers/effects); render only reflects whether a token was
+  // obtained, to keep this component pure.
+  const driveConnected = Boolean(driveAccessToken);
+
+  const getValidDriveToken = useCallback((): string | null => {
+    if (!driveAccessTokenRef.current || driveTokenExpiresAtRef.current <= Date.now() + 30_000) return null;
+    return driveAccessTokenRef.current;
+  }, []);
 
   const replaceCustomTemplates = useCallback((next: CustomTemplate[]) => {
     const sorted = [...next].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -254,6 +307,7 @@ export function LayoutsApp() {
     return { uploaded, downloaded: plan.downloaded, removed: plan.removed, failed };
   }, [replaceCustomTemplates]);
 
+
   const manuallySyncTemplates = async () => {
     if (templateCloudBusy) return;
     setTemplateCloudBusy(true);
@@ -273,6 +327,50 @@ export function LayoutsApp() {
     } finally {
       setTemplateCloudBusy(false);
     }
+  };
+
+  const connectGoogleDrive = async () => {
+    if (!isGoogleDriveConfigured()) {
+      setNotice({ kind: "error", text: "Add the Google Drive client ID before connecting Scuri." });
+      return;
+    }
+    if (!googleScriptReady) {
+      setNotice({ kind: "info", text: "Google sign-in is still loading. Try again in a moment." });
+      return;
+    }
+    setBusy("drive");
+    try {
+      const token = await requestGoogleDriveAccessToken(driveAccessTokenRef.current ? "" : "consent");
+      driveAccessTokenRef.current = token.accessToken;
+      driveTokenExpiresAtRef.current = token.expiresAt;
+      setDriveAccessToken(token.accessToken);
+      setNotice({ kind: "success", text: "Google Drive connected. Full-resolution originals will back up automatically." });
+      const current = persistActiveProject().find((item) => item.id === projectId);
+      if (current) void pushProjectNow(current);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Google Drive could not be connected." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnectGoogleDrive = async () => {
+    const token = driveAccessTokenRef.current;
+    driveAccessTokenRef.current = null;
+    driveTokenExpiresAtRef.current = 0;
+    setDriveAccessToken(null);
+    if (token) await revokeGoogleDriveAccess(token);
+    setNotice({ kind: "success", text: "Google Drive disconnected from this device. Existing backups are unchanged." });
+  };
+
+  const syncCurrentProjectNow = async () => {
+    const current = persistActiveProject().find((item) => item.id === projectId);
+    if (!current) return;
+    if (!templateUserRef.current) {
+      setNotice({ kind: "info", text: "Sign in to back up this project across your devices." });
+      return;
+    }
+    await pushProjectNow(current);
   };
 
   const saveTemplateDraftLocally = useCallback((draft: CustomTemplate) => {
@@ -317,6 +415,21 @@ export function LayoutsApp() {
   useEffect(() => {
     exportItemsRef.current = exportItems;
   }, [exportItems]);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
+  useEffect(() => {
+    const updateOnlineStatus = () => setIsOnline(navigator.onLine);
+    updateOnlineStatus();
+    window.addEventListener("online", updateOnlineStatus);
+    window.addEventListener("offline", updateOnlineStatus);
+    return () => {
+      window.removeEventListener("online", updateOnlineStatus);
+      window.removeEventListener("offline", updateOnlineStatus);
+    };
+  }, []);
 
   const clearExportItems = () => {
     for (const item of exportItemsRef.current) URL.revokeObjectURL(item.url);
@@ -363,11 +476,21 @@ export function LayoutsApp() {
       if (restoredTemplate.formatId !== restoredFormat.id) continue;
       const restoredPhotos: Record<string, PhotoAsset> = {};
       for (const item of Object.values(storedPage.photos)) {
-        const blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        let blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        const driveToken = getValidDriveToken();
+        if (!blob && driveToken && item.driveOriginalId) {
+          blob = await downloadGoogleDrivePhoto(driveToken, item.driveOriginalId).catch(() => null);
+          if (blob) await savePhotoBlob(item.blobKey, blob).catch(() => undefined);
+        }
         if (!blob || !restoredTemplate.frames.some((frame) => frame.id === item.frameId)) continue;
         try {
           const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
           asset.crop = item.crop;
+          asset.sourceName = item.sourceName;
+          asset.mimeType = item.mimeType || blob.type;
+          asset.fileSize = item.fileSize;
+          asset.driveOriginalId = item.driveOriginalId;
+          asset.drivePreviewId = item.drivePreviewId;
           restoredPhotos[item.frameId] = asset;
         } catch {
           // A single damaged stored photo should not prevent the rest of the project opening.
@@ -377,6 +500,104 @@ export function LayoutsApp() {
     }
     return restoredPages;
   };
+
+  const syncProjectsFromCloud = useCallback(async (): Promise<void> => {
+    if (!isProjectCloudConfigured()) return;
+    try {
+      const remote = await pullProjectsFromCloud();
+      const localSnapshot = projectsRef.current;
+      const { projects: merged, removedLocalIds } = mergeCloudProjectLibrary(localSnapshot, remote, () => crypto.randomUUID());
+      const sorted = sortProjectsByLastEdited(merged);
+      projectsRef.current = sorted;
+      setProjects(sorted);
+      saveProjects(sorted);
+      for (const id of removedLocalIds) {
+        const stale = localSnapshot.find((project) => project.id === id);
+        if (stale && stale.id !== projectId) await deleteStoredProjectPhotos(stale);
+      }
+    } catch {
+      setNotice({ kind: "error", text: "Cloud projects could not be loaded. Your local projects are unchanged." });
+    }
+  }, [projectId]);
+
+  const pushProjectNow = useCallback(async (project: StoredProject): Promise<void> => {
+    if (!isProjectCloudConfigured() || !templateUserRef.current) return;
+    if (projectPushInFlightRef.current.has(project.id)) return;
+    projectPushInFlightRef.current.add(project.id);
+    setSyncingProjectIds((current) => ({ ...current, [project.id]: true }));
+    let working = project;
+    try {
+      const driveToken = getValidDriveToken();
+      if (driveToken && isGoogleDriveConfigured() && projectHasUnbackedAssets(working)) {
+        setDriveProgress({ completed: 0, total: 1, label: "Backing up photos to Google Drive…" });
+        const folders = await ensureProjectDriveFolders(driveToken, working.id, working.name, working.driveFolderId);
+        const updatedPages: StoredProjectPage[] = [];
+        for (const page of working.pages) {
+          const updatedPhotos: StoredProjectPage["photos"] = {};
+          for (const [frameId, photo] of Object.entries(page.photos)) {
+            if (photo.driveOriginalId) {
+              updatedPhotos[frameId] = photo;
+              continue;
+            }
+            const source = await loadPhotoBlob(photo.blobKey).catch(() => null);
+            if (!source) {
+              updatedPhotos[frameId] = photo;
+              continue;
+            }
+            const preview = await createPhotoPreview(source);
+            URL.revokeObjectURL(preview.previewUrl);
+            const uploaded = await uploadPhotoAssetToDrive(driveToken, folders, working.id, photo, source, preview.blob).catch(() => null);
+            updatedPhotos[frameId] = uploaded ? { ...photo, driveOriginalId: uploaded.driveOriginalId, drivePreviewId: uploaded.drivePreviewId } : photo;
+          }
+          updatedPages.push({ ...page, photos: updatedPhotos });
+        }
+        working = { ...working, pages: updatedPages, driveFolderId: folders.projectFolderId };
+        setDriveProgress(null);
+      }
+
+      const result = await pushProjectToCloud(working);
+      if (result.conflict) {
+        const duplicate = resolveProjectConflict(working, result.remote, crypto.randomUUID()).duplicate;
+        setProjects((current) => {
+          const next = sortProjectsByLastEdited([...current.filter((item) => item.id !== working.id && item.id !== result.remote.id), result.remote, duplicate]);
+          projectsRef.current = next;
+          saveProjects(next);
+          return next;
+        });
+        if (projectId === working.id) {
+          setProjectId(duplicate.id);
+          setProjectName(duplicate.name);
+          setProjectCreatedAt(duplicate.createdAt);
+          setProjectUpdatedAt(duplicate.updatedAt);
+        }
+        setNotice({ kind: "info", text: `"${working.name}" changed on another device. The cloud version was kept, and your changes were kept separately as "${duplicate.name}".` });
+        setProjectSyncErrors((current) => ({ ...current, [working.id]: false }));
+        return;
+      }
+
+      setProjects((current) => {
+        const next = sortProjectsByLastEdited([...current.filter((item) => item.id !== result.project.id), result.project]);
+        projectsRef.current = next;
+        saveProjects(next);
+        return next;
+      });
+      if (projectId === result.project.id) {
+        setProjectCreatedAt(result.project.createdAt);
+        setProjectUpdatedAt(result.project.updatedAt);
+      }
+      setProjectSyncErrors((current) => ({ ...current, [working.id]: result.partial }));
+    } catch {
+      setProjectSyncErrors((current) => ({ ...current, [project.id]: true }));
+    } finally {
+      projectPushInFlightRef.current.delete(project.id);
+      setSyncingProjectIds((current) => {
+        const next = { ...current };
+        delete next[project.id];
+        return next;
+      });
+      setDriveProgress(null);
+    }
+  }, [getValidDriveToken, projectId]);
 
   useEffect(() => {
     const restore = () => {
@@ -403,6 +624,7 @@ export function LayoutsApp() {
       void syncTemplateCloud().catch(() => {
         setNotice({ kind: "error", text: "Cloud templates could not be loaded. Your local drafts are unchanged." });
       }).finally(() => setTemplateAuthReady(true));
+      void syncProjectsFromCloud();
     }, 0);
     const { data } = client.auth.onAuthStateChange((_event, session) => {
       templateUserRef.current = session?.user ?? null;
@@ -410,13 +632,14 @@ export function LayoutsApp() {
       setTemplateAuthReady(true);
       if (session?.user) {
         window.setTimeout(() => void syncTemplateCloud().catch(() => undefined), 0);
+        window.setTimeout(() => void syncProjectsFromCloud(), 0);
       }
     });
     return () => {
       window.clearTimeout(initialSync);
       data.subscription.unsubscribe();
     };
-  }, [syncTemplateCloud]);
+  }, [syncProjectsFromCloud, syncTemplateCloud]);
 
   useEffect(() => {
     const templateSyncTimers = templateSyncTimersRef.current;
@@ -427,22 +650,33 @@ export function LayoutsApp() {
     };
   }, []);
 
+  const buildStoredProject = useCallback((): StoredProject | null => {
+    if (!projectId || !formatId) return null;
+    const existing = projectsRef.current.find((project) => project.id === projectId);
+    return {
+      version: 3,
+      id: projectId,
+      name: projectName.trim() || "Untitled project",
+      formatId,
+      activePageId,
+      pages: pages.map(serializePage),
+      revision: existing?.revision,
+      cloudSyncedAt: existing?.cloudSyncedAt,
+      driveFolderId: existing?.driveFolderId,
+      createdAt: projectCreatedAt || now(),
+      updatedAt: projectUpdatedAt || projectCreatedAt || now(),
+    };
+  }, [activePageId, formatId, pages, projectCreatedAt, projectId, projectName, projectUpdatedAt]);
+
   useEffect(() => {
     if (!ready || !projectId || !formatId) return;
     const timer = window.setTimeout(() => {
-      const saved: StoredProject = {
-        version: 3,
-        id: projectId,
-        name: projectName.trim() || "Untitled project",
-        formatId,
-        activePageId,
-        pages: pages.map(serializePage),
-        createdAt: projectCreatedAt || now(),
-        updatedAt: projectUpdatedAt || projectCreatedAt || now(),
-      };
+      const saved = buildStoredProject();
+      if (!saved) return;
       try {
         setProjects((current) => {
           const next = sortProjectsByLastEdited([...current.filter((project) => project.id !== saved.id), saved]);
+          projectsRef.current = next;
           saveProjects(next);
           return next;
         });
@@ -451,7 +685,23 @@ export function LayoutsApp() {
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [activePageId, formatId, pages, projectCreatedAt, projectId, projectName, projectUpdatedAt, ready]);
+  }, [buildStoredProject, formatId, projectId, ready]);
+
+  useEffect(() => {
+    if (!ready || !projectId || !formatId || !templateUser || !isProjectCloudConfigured()) return;
+    if (projectSyncTimerRef.current) window.clearTimeout(projectSyncTimerRef.current);
+    const project = buildStoredProject();
+    if (!project) return;
+    projectSyncTimerRef.current = window.setTimeout(() => {
+      void pushProjectNow(project);
+    }, 1800);
+    return () => {
+      if (projectSyncTimerRef.current) window.clearTimeout(projectSyncTimerRef.current);
+      projectSyncTimerRef.current = null;
+    };
+    // Re-runs whenever the project actually changes (projectUpdatedAt), not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectUpdatedAt]);
 
   useEffect(() => {
     if (!hasAnyPhotos) return;
@@ -481,18 +731,10 @@ export function LayoutsApp() {
   };
 
   const persistActiveProject = (): StoredProject[] => {
-    if (!projectId || !formatId) return projects;
-    const saved: StoredProject = {
-      version: 3,
-      id: projectId,
-      name: projectName.trim() || "Untitled project",
-      formatId,
-      activePageId,
-      pages: pages.map(serializePage),
-      createdAt: projectCreatedAt || now(),
-      updatedAt: projectUpdatedAt || projectCreatedAt || now(),
-    };
+    const saved = buildStoredProject();
+    if (!saved) return projects;
     const next = sortProjectsByLastEdited([...projects.filter((project) => project.id !== saved.id), saved]);
+    projectsRef.current = next;
     saveProjects(next);
     setProjects(next);
     return next;
@@ -859,6 +1101,31 @@ export function LayoutsApp() {
     const savedProjects = persistActiveProject();
     const project = savedProjects.find((item) => item.id === id);
     if (!project || !window.confirm(`Delete “${project.name}” and all of its photographs permanently?`)) return;
+
+    // Deletion is coordinated: Supabase is the authoritative record, so a
+    // previously-synced project is only cleared from this device once the
+    // cloud tombstone is safely recorded. An unsynced project has nothing to
+    // coordinate and is simply removed locally.
+    if (project.revision !== undefined) {
+      if (!templateUserRef.current || !isOnline) {
+        setNotice({ kind: "info", text: "Reconnect to sync before deleting this project - it is still backed up in the cloud." });
+        return;
+      }
+      try {
+        await softDeleteCloudProject(id);
+      } catch {
+        setNotice({ kind: "error", text: "This project could not be deleted from the cloud, so nothing was removed." });
+        return;
+      }
+      const driveToken = getValidDriveToken();
+      if (driveToken && project.driveFolderId) {
+        await trashProjectDriveFolder(driveToken, project.driveFolderId).catch(() => {
+          // Best-effort: Supabase deletion is authoritative; an orphaned Drive
+          // folder can be cleaned up later and does not block local deletion.
+        });
+      }
+    }
+
     if (projectId === id) {
       await deleteAllProjectPhotos(pagesRef.current);
       pagesRef.current = [];
@@ -873,6 +1140,7 @@ export function LayoutsApp() {
       await deleteStoredProjectPhotos(project);
     }
     const next = savedProjects.filter((item) => item.id !== id);
+    projectsRef.current = next;
     setProjects(next);
     saveProjects(next);
     setNotice({ kind: "success", text: "Project deleted permanently." });
@@ -1064,6 +1332,40 @@ export function LayoutsApp() {
     }
   };
 
+  const saveExportsToDrive = async () => {
+    const driveToken = getValidDriveToken();
+    if (!driveToken) {
+      setNotice({ kind: "info", text: "Connect Google Drive from Projects before saving exports there." });
+      return;
+    }
+    const current = persistActiveProject().find((item) => item.id === projectId);
+    if (!current || !exportItems.length) return;
+    setBusy("drive");
+    try {
+      const folders = await ensureProjectDriveFolders(driveToken, current.id, current.name, current.driveFolderId);
+      await uploadExportsToGoogleDrive(
+        driveToken,
+        folders.projectFolderId,
+        current.id,
+        exportItems.map((item) => ({ filename: item.filename, blob: item.blob })),
+      );
+      if (!current.driveFolderId) {
+        const updated = { ...current, driveFolderId: folders.projectFolderId };
+        setProjects((prev) => {
+          const next = prev.map((item) => item.id === updated.id ? updated : item);
+          projectsRef.current = next;
+          saveProjects(next);
+          return next;
+        });
+      }
+      setNotice({ kind: "success", text: `${exportItems.length === 1 ? "Export" : "Exports"} saved in this project's Google Drive folder.` });
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "The exports could not be saved to Google Drive." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const formatCards = useMemo(
     () => FORMATS.map((item) => ({ ...item, ratio: item.width / item.height })),
     [],
@@ -1082,6 +1384,13 @@ export function LayoutsApp() {
 
   return (
     <div className="min-h-dvh bg-[#f5f5f2] text-[#11110f]">
+      {isGoogleDriveConfigured() ? (
+        <Script
+          src="https://accounts.google.com/gsi/client"
+          strategy="afterInteractive"
+          onLoad={() => setGoogleScriptReady(true)}
+        />
+      ) : null}
       <Header
         screen={screen}
         pageCount={pages.length}
@@ -1296,10 +1605,70 @@ export function LayoutsApp() {
             <div>
               <p className="eyebrow">Your workspace</p>
               <h1 className="mt-2 text-[clamp(2.4rem,7vw,4.8rem)] font-medium leading-[0.95] tracking-[-0.055em]">Projects</h1>
-              <p className="mt-4 max-w-[560px] text-sm leading-6 text-neutral-600">Open a project to edit, reorder and export its pages. Everything stays privately on this device.</p>
+              <p className="mt-4 max-w-[560px] text-sm leading-6 text-neutral-600">Open a project to edit, reorder and export its pages. Sign in to keep them - and their full-resolution photos - available on every device.</p>
             </div>
             <button className="primary-button" type="button" onClick={beginNewProject}>+ New project</button>
           </section>
+
+          <section className="account-banner mt-7" aria-label="Project cloud sync status">
+            <div>
+              <p className="text-sm font-semibold">
+                {!projectCloudConfigured
+                  ? "Cloud connection required"
+                  : !templateAuthReady
+                    ? "Restoring your saved sign-in…"
+                    : templateUser
+                      ? `Synced as ${templateUser.email ?? "your account"}`
+                      : "Sign in for permanent cross-device projects"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-neutral-500">
+                {!projectCloudConfigured
+                  ? "The editor works now, but Supabase must be connected before a project can sync to iPhone, iPad and desktop."
+                  : !templateAuthReady
+                    ? "Scuri is checking this browser for your existing session."
+                    : templateUser
+                      ? "Project structure, layouts and photo metadata sync automatically. Connect Google Drive below to back up full-resolution originals."
+                      : "Use the same email you use for templates. Projects and templates share one sign-in."}
+              </p>
+            </div>
+            {projectCloudConfigured ? (
+              !templateAuthReady ? <span className="template-status pending">Checking…</span> : templateUser ? (
+                <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => void signOutTemplates()}>Sign out</button>
+              ) : <button className="secondary-button" type="button" onClick={() => setShowTemplateSignIn(true)}>Sign in by email</button>
+            ) : <span className="template-status pending">Setup pending</span>}
+          </section>
+
+          {projectCloudConfigured && templateUser ? (
+            <section className="account-banner mt-3" aria-label="Google Drive photo backup status">
+              <div>
+                <p className="text-sm font-semibold">
+                  {!driveConfigured
+                    ? "Google Drive setup required"
+                    : driveConnected
+                      ? "Google Drive photo backup is connected"
+                      : busy === "drive"
+                        ? driveProgress?.label ?? "Connecting Google Drive…"
+                        : "Full-resolution photos are only on this device"}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-neutral-500">
+                  {!driveConfigured
+                    ? "Add Scuri's Google OAuth client ID to enable private, cross-device photo backup."
+                    : driveConnected
+                      ? "Original photos and lightweight previews back up to a private Scuri folder in your Drive."
+                      : "Connect Drive so full-resolution originals open on other devices too. Project structure syncs either way."}
+                </p>
+              </div>
+              {driveConfigured ? (
+                driveConnected ? (
+                  <button className="text-button" type="button" onClick={() => void disconnectGoogleDrive()}>Disconnect</button>
+                ) : (
+                  <button className="secondary-button" type="button" disabled={!googleScriptReady || busy !== null} onClick={() => void connectGoogleDrive()}>
+                    {googleScriptReady ? "Connect Google Drive" : "Loading Google…"}
+                  </button>
+                )
+              ) : <span className="template-status pending">Setup pending</span>}
+            </section>
+          ) : null}
 
           {projects.length ? (
             <section className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Saved projects">
@@ -1308,6 +1677,15 @@ export function LayoutsApp() {
                   key={project.id}
                   format={getFormat(project.formatId)}
                   project={project}
+                  driveAccessToken={driveConnected ? driveAccessToken : null}
+                  syncState={getProjectSyncStatus(project, {
+                    online: isOnline,
+                    signedIn: projectCloudSignedIn,
+                    isSyncing: Boolean(syncingProjectIds[project.id]),
+                    hasError: Boolean(projectSyncErrors[project.id]),
+                    driveConfigured,
+                    driveTokenValid: driveConnected,
+                  })}
                   onOpen={(id) => void openStoredProject(id)}
                   onDelete={(id) => void deleteProject(id)}
                 />
@@ -1391,6 +1769,11 @@ export function LayoutsApp() {
                 {!pages.length ? "Add a page first" : !completePageCount ? "Complete a page to export" : `Export all ${completePageCount}`}
               </button>
               <button className="secondary-button" type="button" disabled={pages.length >= MAX_PROJECT_PAGES || busy !== null} onClick={addPage}>+ Add page</button>
+              {projectCloudConfigured && templateUser ? (
+                <button className="text-button justify-center" type="button" disabled={Boolean(syncingProjectIds[projectId]) || busy !== null} onClick={() => void syncCurrentProjectNow()}>
+                  {syncingProjectIds[projectId] ? "Syncing…" : "Sync now"}
+                </button>
+              ) : null}
             </div>
           </section>
 
@@ -1591,6 +1974,11 @@ export function LayoutsApp() {
                 <button className="secondary-button" type="button" onClick={() => void downloadExports()}>
                   {exportItems.length === 1 ? "Download JPEG to Files" : "Download ZIP to Files"}
                 </button>
+                {driveConnected ? (
+                  <button className="secondary-button" type="button" onClick={() => void saveExportsToDrive()}>
+                    Save {exportItems.length === 1 ? "export" : "exports"} to Google Drive
+                  </button>
+                ) : null}
                 <button className="text-button mt-2 justify-center" type="button" onClick={() => setScreen("project")}>Back to project</button>
               </div>
               <p className="mt-5 rounded-xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">
@@ -1670,7 +2058,7 @@ export function LayoutsApp() {
         <div className="busy-overlay" aria-live="polite">
           <span className="loading-ring" aria-hidden="true" />
           <span>
-            {busy === "project" ? "Opening project…" : busy === "image" ? "Preparing photos…" : busy === "duplicate" ? "Duplicating page…" : exportProgress ? `Creating image ${exportProgress.current} of ${exportProgress.total}…` : "Preparing download…"}
+            {busy === "project" ? "Opening project…" : busy === "image" ? "Preparing photos…" : busy === "duplicate" ? "Duplicating page…" : busy === "drive" ? driveProgress?.label ?? "Working with Google Drive…" : exportProgress ? `Creating image ${exportProgress.current} of ${exportProgress.total}…` : "Preparing download…"}
           </span>
         </div>
       ) : null}
