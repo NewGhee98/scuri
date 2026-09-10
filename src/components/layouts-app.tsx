@@ -268,6 +268,7 @@ export function LayoutsApp() {
   // event handlers/effects); render only reflects whether a token was
   // obtained, to keep this component pure.
   const driveConnected = Boolean(driveAccessToken);
+  const driveRestorePreferenceKey = "scuri-google-drive-restore";
 
   const getValidDriveToken = useCallback((): string | null => {
     if (!driveAccessTokenRef.current || driveTokenExpiresAtRef.current <= Date.now() + 30_000) return null;
@@ -345,6 +346,7 @@ export function LayoutsApp() {
       driveAccessTokenRef.current = token.accessToken;
       driveTokenExpiresAtRef.current = token.expiresAt;
       setDriveAccessToken(token.accessToken);
+      window.localStorage.setItem(driveRestorePreferenceKey, "true");
       setNotice({ kind: "success", text: "Google Drive connected. Full-resolution originals will back up automatically." });
       const current = persistActiveProject().find((item) => item.id === projectId);
       if (current) void pushProjectNow(current);
@@ -360,6 +362,7 @@ export function LayoutsApp() {
     driveAccessTokenRef.current = null;
     driveTokenExpiresAtRef.current = 0;
     setDriveAccessToken(null);
+    window.localStorage.removeItem(driveRestorePreferenceKey);
     if (token) await revokeGoogleDriveAccess(token);
     setNotice({ kind: "success", text: "Google Drive disconnected from this device. Existing backups are unchanged." });
   };
@@ -647,6 +650,31 @@ export function LayoutsApp() {
       data.subscription.unsubscribe();
     };
   }, [syncProjectsFromCloud, syncTemplateCloud]);
+
+  // Google Identity Services deliberately gives the browser a short-lived
+  // Drive token, rather than an application-held refresh token. Remembering
+  // only that this browser was explicitly connected lets us request a fresh
+  // token without a prompt after a reload, while keeping a manual Connect
+  // fallback if the user's Google browser session has ended.
+  useEffect(() => {
+    if (!driveConfigured || !googleScriptReady || driveAccessTokenRef.current) return;
+    if (window.localStorage.getItem(driveRestorePreferenceKey) !== "true") return;
+
+    let cancelled = false;
+    void requestGoogleDriveAccessToken("").then((token) => {
+      if (cancelled) return;
+      driveAccessTokenRef.current = token.accessToken;
+      driveTokenExpiresAtRef.current = token.expiresAt;
+      setDriveAccessToken(token.accessToken);
+    }).catch(() => {
+      // Silent restoration is best-effort. The Connect button remains
+      // available when Google needs the user to sign in or re-consent.
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [driveConfigured, driveRestorePreferenceKey, googleScriptReady]);
 
   useEffect(() => {
     const templateSyncTimers = templateSyncTimersRef.current;

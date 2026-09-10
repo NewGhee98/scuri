@@ -18,7 +18,7 @@ const frame = (id: string, x: number, y: number, width: number, height: number, 
   cornerRadius,
 });
 
-const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier"> & { slug: string }> = [
+const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier"> & { slug: string; formatIds?: readonly FormatId[] }> = [
   {
     slug: "full-frame",
     name: "Full frame",
@@ -143,10 +143,47 @@ const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames
     frames: [frame("photo-1", 0, 0, 1, 1)],
   },
 
+  {
+    slug: "three-landscapes",
+    name: "Three landscapes",
+    formatIds: ["instagram-post"],
+    defaultGutter: 0,
+    frames: [
+      frame("photo-1", 0, 0, 1, 1 / 3),
+      frame("photo-2", 0, 1 / 3, 1, 1 / 3),
+      frame("photo-3", 0, 2 / 3, 1, 1 / 3),
+    ],
+  },
+  {
+    slug: "four-landscapes",
+    name: "Four landscapes",
+    formatIds: ["instagram-post"],
+    defaultGutter: 0,
+    frames: [
+      frame("photo-1", 0, 0, 1, 0.25),
+      frame("photo-2", 0, 0.25, 1, 0.25),
+      frame("photo-3", 0, 0.5, 1, 0.25),
+      frame("photo-4", 0, 0.75, 1, 0.25),
+    ],
+  },
+  {
+    slug: "five-landscapes",
+    name: "Five landscapes",
+    formatIds: ["instagram-post"],
+    defaultGutter: 0,
+    frames: [
+      frame("photo-1", 0, 0, 1, 0.2),
+      frame("photo-2", 0, 0.2, 1, 0.2),
+      frame("photo-3", 0, 0.4, 1, 0.2),
+      frame("photo-4", 0, 0.6, 1, 0.2),
+      frame("photo-5", 0, 0.8, 1, 0.2),
+    ],
+  },
+
 ];
 
 export const TEMPLATES: readonly TemplateDefinition[] = FORMATS.flatMap((format) =>
-  layouts.map((layout) => ({
+  layouts.filter((layout) => !layout.formatIds || layout.formatIds.includes(format.id)).map((layout) => ({
     id: `${format.id}-${layout.slug}`,
     name: layout.name,
     formatId: format.id,

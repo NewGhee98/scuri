@@ -3,9 +3,9 @@ import { filterTemplates, getTemplateEdgeStyle, getTemplatesForFormat, TEMPLATES
 import type { TemplateDefinition } from "../types";
 
 describe("template library", () => {
-  it("contains fourteen valid templates for each format", () => {
-    expect(TEMPLATES).toHaveLength(42);
-    expect(getTemplatesForFormat("instagram-post")).toHaveLength(14);
+  it("contains valid built-in templates for each format", () => {
+    expect(TEMPLATES).toHaveLength(45);
+    expect(getTemplatesForFormat("instagram-post")).toHaveLength(17);
     expect(getTemplatesForFormat("instagram-square")).toHaveLength(14);
     expect(getTemplatesForFormat("instagram-story")).toHaveLength(14);
     for (const template of TEMPLATES) expect(validateTemplate(template)).toEqual([]);
@@ -14,6 +14,16 @@ describe("template library", () => {
   it("includes a three-image post template", () => {
     const templates = getTemplatesForFormat("instagram-post");
     expect(templates.some((template) => template.frames.length === 3)).toBe(true);
+  });
+
+  it("includes edge-to-edge stacked landscape templates for Instagram posts", () => {
+    const postTemplates = getTemplatesForFormat("instagram-post");
+    for (const [name, photoCount] of [["Three landscapes", 3], ["Four landscapes", 4], ["Five landscapes", 5]] as const) {
+      const template = postTemplates.find((item) => item.name === name);
+      expect(template?.defaultGutter).toBe(0);
+      expect(template?.frames).toHaveLength(photoCount);
+      expect(template?.frames.every((frame) => frame.x === 0 && frame.width === 1)).toBe(true);
+    }
   });
 
   it("filters templates by exact photo count and corner style", () => {
@@ -65,7 +75,7 @@ describe("template library", () => {
       updatedAt: "2026-08-10T00:00:00.000Z",
       syncState: "synced",
     };
-    expect(getTemplatesForFormat("instagram-post", [custom])).toHaveLength(15);
+    expect(getTemplatesForFormat("instagram-post", [custom])).toHaveLength(18);
     expect(getTemplatesForFormat("instagram-story", [custom])).toHaveLength(14);
   });
 
