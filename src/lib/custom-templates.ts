@@ -204,6 +204,26 @@ export async function sendTemplateMagicLink(email: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Sign in to the same Supabase account without sending a magic-link email. */
+export async function signInTemplateWithPassword(email: string, password: string): Promise<void> {
+  const client = getTemplateCloudClient();
+  if (!client) throw new Error("Template cloud storage has not been connected yet.");
+  const { error } = await client.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+}
+
+/**
+ * Adds or replaces the password for the already authenticated account. This
+ * preserves the current auth user ID, so owner-only cloud templates/projects
+ * remain attached to the same account.
+ */
+export async function setTemplateCloudPassword(password: string): Promise<void> {
+  const client = getTemplateCloudClient();
+  if (!client) throw new Error("Template cloud storage has not been connected yet.");
+  const { error } = await client.auth.updateUser({ password });
+  if (error) throw error;
+}
+
 export async function signOutTemplateCloud(): Promise<void> {
   const client = getTemplateCloudClient();
   if (!client) return;
