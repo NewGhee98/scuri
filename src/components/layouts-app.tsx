@@ -34,6 +34,8 @@ import {
   loadCloudTemplates,
   saveCloudTemplate,
   sendTemplateMagicLink,
+  setTemplateCloudPassword,
+  signInTemplateWithPassword,
   signOutTemplateCloud,
 } from "@/lib/custom-templates";
 import {
@@ -212,7 +214,12 @@ export function LayoutsApp() {
   const [templateAuthReady, setTemplateAuthReady] = useState(() => !isTemplateCloudConfigured());
   const [templateCloudBusy, setTemplateCloudBusy] = useState(false);
   const [showTemplateSignIn, setShowTemplateSignIn] = useState(false);
+  const [showPasswordSetup, setShowPasswordSetup] = useState(false);
+  const [signInMethod, setSignInMethod] = useState<"magic-link" | "password">("magic-link");
   const [signInEmail, setSignInEmail] = useState("");
+  const [signInPassword, setSignInPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const fileTargetRef = useRef<{ pageId: string; frameId: string } | null>(null);
   const exportHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -1059,6 +1066,45 @@ export function LayoutsApp() {
     }
   };
 
+  const signInWithTemplatePassword = async () => {
+    const email = signInEmail.trim();
+    if (!email || !signInPassword) return;
+    setTemplateCloudBusy(true);
+    try {
+      await signInTemplateWithPassword(email, signInPassword);
+      setSignInPassword("");
+      setShowTemplateSignIn(false);
+      setNotice({ kind: "success", text: "Signed in. Your templates and projects will now sync on this device." });
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Could not sign in with that email and password." });
+    } finally {
+      setTemplateCloudBusy(false);
+    }
+  };
+
+  const saveTemplatePassword = async () => {
+    if (newPassword.length < 8) {
+      setNotice({ kind: "error", text: "Use a password with at least 8 characters." });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setNotice({ kind: "error", text: "The passwords do not match." });
+      return;
+    }
+    setTemplateCloudBusy(true);
+    try {
+      await setTemplateCloudPassword(newPassword);
+      setNewPassword("");
+      setConfirmPassword("");
+      setShowPasswordSetup(false);
+      setNotice({ kind: "success", text: "Password saved. You can now sign in on other devices without requesting an email link." });
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Could not save your password." });
+    } finally {
+      setTemplateCloudBusy(false);
+    }
+  };
+
   const signOutTemplates = async () => {
     try {
       await signOutTemplateCloud();
@@ -1485,6 +1531,7 @@ export function LayoutsApp() {
                   <button className="secondary-button" type="button" disabled={templateCloudBusy} onClick={() => void manuallySyncTemplates()}>
                     {templateCloudBusy ? "Syncing…" : "Sync now"}
                   </button>
+                  <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => setShowPasswordSetup(true)}>Set password</button>
                   <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => void signOutTemplates()}>Sign out</button>
                 </div>
               ) : <button className="secondary-button" type="button" onClick={() => setShowTemplateSignIn(true)}>Sign in by email</button>
@@ -2039,12 +2086,11 @@ export function LayoutsApp() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="eyebrow">Cross-device templates</p>
-                <h2 id="template-sign-in-title" className="mt-2 text-2xl font-medium tracking-[-0.035em]">Sign in by email</h2>
+                <h2 id="template-sign-in-title" className="mt-2 text-2xl font-medium tracking-[-0.035em]">Sign in to Scuri</h2>
               </div>
               <button className="icon-button" type="button" aria-label="Close sign-in" onClick={() => setShowTemplateSignIn(false)}>×</button>
             </div>
-            <p className="mt-4 text-sm leading-6 text-neutral-600">We’ll email you a secure sign-in link. Use the same address on your iPhone, iPad and desktop.</p>
-            <p className="mt-2 text-xs leading-5 text-neutral-500">You only need the link once for this browser or installed app. Scuri will restore and refresh the session automatically on future visits.</p>
+            <p className="mt-4 text-sm leading-6 text-neutral-600">Use the same account on your iPhone, iPad and desktop.</p>
             <label className="control-label mt-5 block" htmlFor="template-email">Email address</label>
             <input
               id="template-email"
@@ -2055,13 +2101,42 @@ export function LayoutsApp() {
               value={signInEmail}
               onChange={(event) => setSignInEmail(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void requestTemplateMagicLink();
+                if (event.key === "Enter") void (signInMethod === "password" ? signInWithTemplatePassword() : requestTemplateMagicLink());
               }}
             />
-            <button className="primary-button mt-4 w-full" type="button" disabled={!signInEmail.trim() || templateCloudBusy} onClick={() => void requestTemplateMagicLink()}>
-              {templateCloudBusy ? "Sending link…" : "Email me a sign-in link"}
+            {signInMethod === "password" ? (
+              <>
+                <label className="control-label mt-4 block" htmlFor="template-password">Password</label>
+                <input id="template-password" className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3" type="password" autoComplete="current-password" value={signInPassword} onChange={(event) => setSignInPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void signInWithTemplatePassword(); }} />
+              </>
+            ) : <p className="mt-2 text-xs leading-5 text-neutral-500">We’ll email a secure one-time link. Once you set a password, you won’t need an email for future devices.</p>}
+            <button className="primary-button mt-4 w-full" type="button" disabled={!signInEmail.trim() || (signInMethod === "password" && !signInPassword) || templateCloudBusy} onClick={() => void (signInMethod === "password" ? signInWithTemplatePassword() : requestTemplateMagicLink())}>
+              {templateCloudBusy ? (signInMethod === "password" ? "Signing in…" : "Sending link…") : (signInMethod === "password" ? "Sign in with password" : "Email me a sign-in link")}
+            </button>
+            <button className="text-button mt-3 w-full justify-center" type="button" disabled={templateCloudBusy} onClick={() => setSignInMethod((current) => current === "password" ? "magic-link" : "password")}>
+              {signInMethod === "password" ? "Use an email link instead" : "Use a password instead"}
             </button>
             <p className="mt-4 text-xs leading-5 text-neutral-500">Projects and photographs remain on this device in the templates-first release.</p>
+          </section>
+        </div>
+      ) : null}
+
+      {showPasswordSetup ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowPasswordSetup(false)}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="set-password-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="eyebrow">Account access</p>
+                <h2 id="set-password-title" className="mt-2 text-2xl font-medium tracking-[-0.035em]">Set a password</h2>
+              </div>
+              <button className="icon-button" type="button" aria-label="Close password setup" onClick={() => setShowPasswordSetup(false)}>×</button>
+            </div>
+            <p className="mt-4 text-sm leading-6 text-neutral-600">This keeps the same Scuri account and cloud library. You can then sign in on another device without waiting for an email link.</p>
+            <label className="control-label mt-5 block" htmlFor="new-template-password">New password</label>
+            <input id="new-template-password" className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+            <label className="control-label mt-4 block" htmlFor="confirm-template-password">Confirm password</label>
+            <input id="confirm-template-password" className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTemplatePassword(); }} />
+            <button className="primary-button mt-5 w-full" type="button" disabled={templateCloudBusy || !newPassword || !confirmPassword} onClick={() => void saveTemplatePassword()}>{templateCloudBusy ? "Saving…" : "Save password"}</button>
           </section>
         </div>
       ) : null}
