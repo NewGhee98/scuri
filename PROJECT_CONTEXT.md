@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-08-31_
+_Last updated: 2026-09-12_
 
 ## How to use this file
 
@@ -131,9 +131,9 @@ On 2026-08-30, PR #7 added six built-in templates derived from the user's own In
 
 On 2026-08-30, PR #8 added compact filters to the Templates library. Users can combine the existing output-format selector with an **exact photo-count** filter (for example, `2`) and **corner treatment** filters: **Rounded**, **Straight**, or **Mixed**. The library automatically includes relevant counts from custom templates and offers a one-click clear action.
 
-### Upcoming template feature
+### Image repositioning
 
-- Allow images to be **resized / repositioned within a frame**.
+- Images can be repositioned within a fixed frame by dragging; movement is constrained to keep the frame covered.
 
 Existing living backlog document:
 
@@ -343,6 +343,18 @@ Not yet done:
 
 - No GitHub push credentials were available in the environment that built this - the branch exists locally where it was built (and as a git bundle left alongside the original handoff files) and needs to be pushed and opened as a PR from a machine with push access.
 - No physical-device acceptance testing (see the acceptance test in the original handoff brief) - this needs a real Supabase session and Google account, which an automated build cannot provide.
+
+---
+
+## Release status — 2026-09-12
+
+PR #12 (**Refine vertical pair and template resizing**) was squash-merged into `main` and deployed to Production.
+
+- The built-in **Vertical pair** now uses an outside border equal to its centre gap.
+- The custom Template editor now offers **Resize from centre**, which keeps a frame centred while corner-resizing; one-sided resizing remains the default.
+- Production deployment `dpl_7hmjC5E49ZJi9ynSE5JX4ip9jrSR` reached **READY** from main commit `f9b4b22`.
+- Verification before release: 54 unit tests passing, TypeScript, ESLint, diff check, and production build completed successfully.
+- No Supabase schema or configuration change was required.
 
 ---
 
