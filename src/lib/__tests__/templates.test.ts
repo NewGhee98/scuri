@@ -26,6 +26,11 @@ describe("template library", () => {
     }
   });
 
+  it("gives Vertical pair an outside border equal to its centre gap", () => {
+    const template = TEMPLATES.find((item) => item.id === "instagram-post-vertical-pair");
+    expect(template?.outerInsetMultiplier).toBe(2);
+  });
+
   it("filters templates by exact photo count and corner style", () => {
     const postTemplates = getTemplatesForFormat("instagram-post");
     const roundedThreePhotoTemplates = filterTemplates(postTemplates, {

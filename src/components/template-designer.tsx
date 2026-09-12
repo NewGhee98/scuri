@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getFormat } from "@/lib/formats";
+import { resizeFrame, type ResizeHandle } from "@/lib/frame-resize";
 import { validateTemplate } from "@/lib/templates";
 import type { CustomTemplate, NormalizedFrame } from "@/lib/types";
 
-type ResizeHandle = "nw" | "ne" | "sw" | "se";
 type Guide = { axis: "x" | "y"; value: number };
 
 interface Interaction {
@@ -26,7 +26,6 @@ interface TemplateDesignerProps {
   saving: boolean;
 }
 
-const MIN_SIZE = 0.045;
 const SNAP_DISTANCE = 0.009;
 const CORNER_PRESETS = [0, 0.06, 0.16, 0.5] as const;
 
@@ -72,6 +71,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
   const [multiSelect, setMultiSelect] = useState(false);
   const [preview, setPreview] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [resizeFromCenter, setResizeFromCenter] = useState(false);
   const [guides, setGuides] = useState<Guide[]>([]);
   const [canvasWidth, setCanvasWidth] = useState(520);
   const canvasShellRef = useRef<HTMLDivElement>(null);
@@ -279,36 +279,11 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
       return;
     }
 
-    const handle = interaction.handle ?? "se";
-    let left = primary.x;
-    let top = primary.y;
-    let right = primary.x + primary.width;
-    let bottom = primary.y + primary.height;
-    if (handle.includes("w")) left = clamp(primary.x + deltaX, 0, right - MIN_SIZE);
-    if (handle.includes("e")) right = clamp(primary.x + primary.width + deltaX, left + MIN_SIZE, 1);
-    if (handle.includes("n")) top = clamp(primary.y + deltaY, 0, bottom - MIN_SIZE);
-    if (handle.includes("s")) bottom = clamp(primary.y + primary.height + deltaY, top + MIN_SIZE, 1);
-    if (primary.aspectRatioLocked) {
-      const ratio = primary.width / primary.height;
-      const width = right - left;
-      const height = bottom - top;
-      if (Math.abs(deltaX) >= Math.abs(deltaY)) {
-        const adjustedHeight = width / ratio;
-        if (handle.includes("n")) top = clamp(bottom - adjustedHeight, 0, bottom - MIN_SIZE);
-        else bottom = clamp(top + adjustedHeight, top + MIN_SIZE, 1);
-      } else {
-        const adjustedWidth = height * ratio;
-        if (handle.includes("w")) left = clamp(right - adjustedWidth, 0, right - MIN_SIZE);
-        else right = clamp(left + adjustedWidth, left + MIN_SIZE, 1);
-      }
-    }
-    replaceDraft(updateFrames(interaction.before, [primary.id], (frame) => ({
-      ...frame,
-      x: left,
-      y: top,
-      width: right - left,
-      height: bottom - top,
-    })));
+    replaceDraft(updateFrames(
+      interaction.before,
+      [primary.id],
+      () => resizeFrame(primary, interaction.handle ?? "se", deltaX, deltaY, resizeFromCenter),
+    ));
   };
 
   const endInteraction = (event: React.PointerEvent<HTMLElement>) => {
@@ -515,6 +490,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
             ))}
           </div>
           <label className="toggle-label mt-3"><input type="checkbox" disabled={!primaryFrame} checked={primaryFrame?.aspectRatioLocked ?? false} onChange={(event) => primaryFrame && commit(updateFrames(draftRef.current, [primaryFrame.id], (frame) => ({ ...frame, aspectRatioLocked: event.target.checked })))} /> Lock aspect ratio</label>
+          <label className="toggle-label mt-2"><input type="checkbox" disabled={!primaryFrame} checked={resizeFromCenter} onChange={(event) => setResizeFromCenter(event.target.checked)} /> Resize from centre</label>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button className="small-button" type="button" disabled={!primaryFrame} onClick={() => changeLayer("front")}>Bring to front</button>
             <button className="small-button" type="button" disabled={!primaryFrame} onClick={() => changeLayer("forward")}>Bring forward</button>

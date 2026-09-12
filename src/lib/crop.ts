@@ -15,23 +15,29 @@ export function resolveFrames(
   const scaleX = canvasWidth / template.canvasWidth;
   const scaledGutter = gutter * scaleX;
   const multiplier = template.frameInsetMultiplier ?? 1;
-  const insetX = (scaledGutter * multiplier) / 2;
-  const insetY = (scaledGutter * multiplier) / 2;
+  const innerInset = (scaledGutter * multiplier) / 2;
+  const outerInset = (scaledGutter * (template.outerInsetMultiplier ?? multiplier)) / 2;
 
   return template.frames.map((item: NormalizedFrame) => {
     const cellX = item.x * canvasWidth;
     const cellY = item.y * canvasHeight;
     const cellWidth = item.width * canvasWidth;
     const cellHeight = item.height * canvasHeight;
+    const leftInset = item.x === 0 ? outerInset : innerInset;
+    const rightInset = item.x + item.width === 1 ? outerInset : innerInset;
+    const topInset = item.y === 0 ? outerInset : innerInset;
+    const bottomInset = item.y + item.height === 1 ? outerInset : innerInset;
+    const width = Math.max(1, cellWidth - leftInset - rightInset);
+    const height = Math.max(1, cellHeight - topInset - bottomInset);
     return {
       id: item.id,
-      x: cellX + insetX,
-      y: cellY + insetY,
-      width: Math.max(1, cellWidth - insetX * 2),
-      height: Math.max(1, cellHeight - insetY * 2),
+      x: cellX + leftInset,
+      y: cellY + topInset,
+      width,
+      height,
       cornerRadius: Math.min(Math.max(0, item.cornerRadius ?? 0), 0.5) * Math.min(
-        Math.max(1, cellWidth - insetX * 2),
-        Math.max(1, cellHeight - insetY * 2),
+        width,
+        height,
       ),
     };
   });
