@@ -39,4 +39,15 @@ describe("canvas scaling", () => {
     expect(preview[0].width).toBeCloseTo(full[0].width / 3);
     expect(preview[2].height).toBeCloseTo(full[2].height / 3);
   });
+
+  it("can use a wider outside inset without changing the gap between frames", () => {
+    const template = getTemplatesForFormat("instagram-post").find((item) => item.id.endsWith("vertical-pair"));
+    expect(template).toBeDefined();
+    const [top, bottom] = resolveFrames(template!, template!.defaultGutter, 1080, 1350);
+    expect(top.x).toBeCloseTo(24);
+    expect(top.y).toBeCloseTo(24);
+    expect(1080 - (top.x + top.width)).toBeCloseTo(24);
+    expect(bottom.y - (top.y + top.height)).toBeCloseTo(24);
+    expect(1350 - (bottom.y + bottom.height)).toBeCloseTo(24);
+  });
 });

@@ -18,7 +18,7 @@ const frame = (id: string, x: number, y: number, width: number, height: number, 
   cornerRadius,
 });
 
-const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier"> & { slug: string; formatIds?: readonly FormatId[] }> = [
+const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier" | "outerInsetMultiplier"> & { slug: string; formatIds?: readonly FormatId[] }> = [
   {
     slug: "full-frame",
     name: "Full frame",
@@ -36,6 +36,8 @@ const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames
     slug: "vertical-pair",
     name: "Vertical pair",
     defaultGutter: 24,
+    // Keep the 24px gap between the photos, while making the outside border match it.
+    outerInsetMultiplier: 2,
     frames: [frame("photo-1", 0, 0, 1, 0.5), frame("photo-2", 0, 0.5, 1, 0.5)],
   },
   {
@@ -192,6 +194,7 @@ export const TEMPLATES: readonly TemplateDefinition[] = FORMATS.flatMap((format)
     defaultBackground: "#ffffff",
     defaultGutter: layout.defaultGutter,
     frameInsetMultiplier: layout.frameInsetMultiplier,
+    outerInsetMultiplier: layout.outerInsetMultiplier,
     frames: layout.frames,
   })),
 );

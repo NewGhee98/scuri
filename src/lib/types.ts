@@ -29,6 +29,8 @@ export interface TemplateDefinition {
   defaultBackground: string;
   defaultGutter: number;
   frameInsetMultiplier?: number;
+  /** Optional multiplier for gutters at the outside edge of the canvas. */
+  outerInsetMultiplier?: number;
   frames: NormalizedFrame[];
 }
 
