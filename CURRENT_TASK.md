@@ -8,7 +8,7 @@ See `PROJECT_CONTEXT.md` → "Handoff between sessions / agents" for the full pr
 
 ## Status
 
-`in progress`
+`awaiting user review`
 
 ## Task
 
@@ -25,10 +25,12 @@ Update the built-in **Vertical pair** template so its outer border matches the e
 - Added focused unit coverage for normal, centre-anchored, and edge-constrained resizing.
 - Corrected the focused test expectations to respect floating-point geometry and a centre-fixed frame's nearest-edge limit.
 - Verified `npm test` (54 passing), `npm run typecheck`, `npm run lint`, and `git diff --check`. The production build compiled, completed static page generation and emitted `.next/BUILD_ID` successfully.
+- Published commit `26dc7f8` to GitHub and opened PR #12: `Refine vertical pair and template resizing`.
+- Vercel Preview is READY at `scuri-doou0vii5-nugee.vercel.app` (branch alias: `scuri-git-feature-vertical-pair-border-nugee.vercel.app`).
 
 ## Remaining
 
-- Push the feature branch and open a PR/Preview for review.
+- User acceptance review of PR #12 Preview; merge only after approval.
 
 ---
 
