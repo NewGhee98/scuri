@@ -143,6 +143,7 @@ export type ProjectCloudSyncState =
   | "synced"
   | "waiting-for-connection"
   | "drive-reconnect-required"
+  | "photos-pending"
   | "sync-error";
 
 export interface StoredProject {

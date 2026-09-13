@@ -67,7 +67,7 @@ describe("projectHasUnbackedAssets", () => {
 
     const backedUp = {
       ...withPhoto,
-      pages: [{ ...withPhoto.pages[0], photos: { frame1: { ...withPhoto.pages[0].photos.frame1, driveOriginalId: "drive-1" } } }],
+      pages: [{ ...withPhoto.pages[0], photos: { frame1: { ...withPhoto.pages[0].photos.frame1, driveOriginalId: "drive-1", drivePreviewId: "preview-1" } } }],
     };
     expect(projectHasUnbackedAssets(backedUp)).toBe(false);
   });
@@ -117,7 +117,7 @@ describe("getProjectSyncStatus", () => {
       }],
     });
     expect(getProjectSyncStatus(clean, { ...baseContext, driveConfigured: true, driveTokenValid: false })).toBe("drive-reconnect-required");
-    expect(getProjectSyncStatus(clean, { ...baseContext, driveConfigured: true, driveTokenValid: true })).toBe("synced");
+    expect(getProjectSyncStatus(clean, { ...baseContext, driveConfigured: true, driveTokenValid: true })).toBe("photos-pending");
   });
 });
 

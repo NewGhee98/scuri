@@ -34,11 +34,11 @@ Scuri splits storage across three layers, matched to what each is good at:
 
 - **Supabase = source of truth for project state.** Project names, page order, template/layout identifiers, crop/zoom/positioning state, asset metadata and Google Drive file references live in Postgres, protected by owner-only row-level security, with server-generated timestamps and a revision counter used for optimistic concurrency (see `supabase/migrations/`). Custom template geometry syncs the same way and remains a separate table/feature.
 - **Google Drive = high-resolution file warehouse.** Untouched full-resolution originals and optional saved exports live in a private `Scuri` folder in the signed-in user's own Drive, using the narrow `drive.file` scope. Scuri never uses a Drive-side manifest or folder structure as the authoritative project database - Drive can be disconnected or unavailable and project metadata remains visible.
-- **Browser storage = local/offline cache.** `localStorage` holds the project library and lightweight settings; IndexedDB caches image blobs for fast, offline-capable editing. This is a cache, not the permanent copy - unsynced edits stay safe locally and sync in the background once signed in and online.
+- **Browser storage = local/offline cache.** `localStorage` holds the project library and lightweight settings; IndexedDB caches image blobs for fast, offline-capable editing. Storage failures remain visible, with retry and portable backup actions. Successful local saves can sync in the background once signed in and online; clearing browser data can still lose edits or originals that have not been backed up.
 - Temporary object URLs for editing previews and generated exports, revoked when no longer needed.
 - The Cache API, through the service worker, for the application shell only.
 
-Deleting a project removes its Supabase record (soft-deleted, then trashed on Drive) before clearing the local cache, so a device is never left believing a project is gone when another device might still need it. Sign in with the same account on another device to see all your projects; Google Drive originals are then fetched lazily as you open or export a project.
+Deleting a signed-in project stops its queued sync, waits for an active save and records a Supabase deletion marker before removing it from the local library. Drive files and cached originals are retained; up to ten deleted projects can be restored as new copies during the same session. Sign in with the same account on another device to load its project metadata, then connect Google Drive to fetch originals lazily.
 
 ### Project workflow
 
@@ -185,12 +185,12 @@ That single object is expanded for all current formats. The same editor, thumbna
 ## Known limitations
 
 - Frames are rectangular and non-rotated, but may overlap and use rounded corners.
-- A project's Supabase row and its pages/assets rows are written as separate requests, not one database transaction: the project row (and its revision) is written first and gates the rest, so a losing device in a race never overwrites a winner's data, but a crash between that gate and the following page/asset writes can leave a project's `revision` briefly ahead of its actual page content on the server. The next sync (automatic retry or "Sync now") always re-sends the full current pages/assets and self-heals; this cannot happen from normal single-device use, only a hard interruption mid-sync.
-- If a project is edited on two devices within the same short debounce window, the losing device's edits are preserved as a separate, clearly-labelled "(conflicted copy)" project rather than merged - there is no field-level merge.
+- A project's Supabase row and its pages/assets rows are written as separate requests. An interruption can leave partially saved content, and two devices can interleave child writes after the revision check. The client queue serializes saves within one running app only. A transactional cloud write and a consistent read are still required; automatic retries do not guarantee recovery from every interleaving.
+- When the revision check detects a concurrent edit, local edits are preserved as a separate, clearly labelled "(conflicted copy)" project. There is no field-level merge, and this check does not cover every interleaving described above.
 - A project deleted on a device that is offline or signed out is *not* queued for cloud deletion; deletion there is blocked (with a message) until that device can reach Supabase, rather than silently deleting locally while orphaning the cloud copy.
 - Google Drive's "Authorized JavaScript origins" do not support wildcards, so Drive connect only works on origins you explicitly authorize (see Cloud setup above) - typically production and localhost, not every ephemeral Vercel Preview URL. Supabase project sync is unaffected.
 - If a project is deleted on another device while a signed-out/offline device still holds unsynced edits to it, reconnecting recreates it as a new project (suffixed "(recovered)") rather than restoring the exact original id.
-- There is not yet a portable project backup/import file, so clearing Safari website data removes anything not yet synced to Supabase/Drive.
+- Use **Download project backup** to save a portable `.scuri.zip` file before clearing browser data. Missing originals are disclosed, so wait for photos to load for a complete backup. **Restore backup** previews the package and restores it as a new project. Packages are limited to 256 MB.
 - HEIC availability depends on whether the browser can decode the selected file; the explicit supported types are JPEG, PNG and WebP.
 - iOS memory pressure can still affect unusually large source files. Editing uses a downscaled preview, while export decodes originals one frame at a time.
 - Browser share/download wording varies by iOS version. The generated JPEG preview remains available if the share sheet is unavailable.
@@ -199,7 +199,7 @@ That single object is expanded for all current formats. The same editor, thumbna
 ## Short roadmap
 
 1. Run the full cross-device acceptance test in `CLAUDE_START_HERE.md` on physical iPad and laptop hardware (this needs a real Supabase session and Google account - not something that can be verified from an automated build).
-2. Wrap the pages/assets write in a single Postgres function if the small transactional gap above ever proves troublesome in practice.
-3. Add a portable JSON project backup/import format.
+2. Design and review a transactional project/pages/assets save and consistent read to address the known cross-device race above.
+3. Extend portable backups with larger streaming packages and persistent project history after the transactional sync work.
 4. Consider landscape formats through the existing format definition system.
 5. Consider an opt-in Google Photos source only after the local workflow is solid.

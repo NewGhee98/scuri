@@ -4,6 +4,8 @@ import type {
   StoredProject,
   StoredProjectLibrary,
 } from "./types";
+import { isStoredProject, readProjectLibrary } from "./project-validation";
+import { workspaceKey } from "./workspace";
 
 const PROJECTS_KEY = "layouts.projects.v1";
 const PROJECT_KEY = "layouts.current-project.v2";
@@ -34,14 +36,20 @@ async function withStore<T>(
 ): Promise<T> {
   const database = await openDatabase();
   return new Promise<T>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, mode);
-    const store = transaction.objectStore(STORE_NAME);
-    transaction.oncomplete = () => database.close();
-    transaction.onerror = () => {
+    try {
+      const transaction = database.transaction(STORE_NAME, mode);
+      let result: T;
+      transaction.oncomplete = () => { database.close(); resolve(result); };
+      transaction.onerror = transaction.onabort = () => {
+        database.close();
+        reject(new Error("The browser could not commit local photo storage."));
+      };
+      // A successful request can still be followed by a failed transaction.
+      operation(transaction.objectStore(STORE_NAME), (value) => { result = value; }, reject);
+    } catch (error) {
       database.close();
-      reject(new Error("The browser could not update local photo storage."));
-    };
-    operation(store, resolve, reject);
+      reject(error);
+    }
   });
 }
 
@@ -69,9 +77,19 @@ export async function deletePhotoBlob(key: string): Promise<void> {
   });
 }
 
-export function saveProjects(projects: StoredProject[]): void {
+export function saveProjects(projects: StoredProject[], ownerId?: string | null): void {
+  if (!projects.every(isStoredProject)) throw new Error("Project data could not be validated. The last saved copy has been retained.");
+  const key = workspaceKey(PROJECTS_KEY, ownerId);
+  const previous = localStorage.getItem(key);
+  if (previous) {
+    try { readProjectLibrary(previous); } catch {
+      // Preserve the exact damaged data before permitting a new library write.
+      // If storage is full this throws, leaving the original key untouched.
+      localStorage.setItem(`${key}.recovery.${Date.now()}.${crypto.randomUUID()}`, previous);
+    }
+  }
   const library: StoredProjectLibrary = { version: 1, projects };
-  localStorage.setItem(PROJECTS_KEY, JSON.stringify(library));
+  localStorage.setItem(key, JSON.stringify(library));
 }
 
 export function migrateLegacyProject(project: LegacyStoredProject): StoredProject | null {
@@ -115,30 +133,12 @@ export function migrateMultiPageProject(project: LegacyStoredMultiPageProject): 
   };
 }
 
-function isStoredProject(project: unknown): project is StoredProject {
-  if (!project || typeof project !== "object") return false;
-  const value = project as Partial<StoredProject>;
-  return value.version === 3 &&
-    typeof value.id === "string" &&
-    typeof value.name === "string" &&
-    (value.formatId === "instagram-post" || value.formatId === "instagram-square" || value.formatId === "instagram-story") &&
-    Array.isArray(value.pages) &&
-    value.pages.every((page) => page && typeof page.photos === "object") &&
-    typeof value.createdAt === "string" &&
-    typeof value.updatedAt === "string";
-}
-
-export function loadProjects(): StoredProject[] {
-  const libraryRaw = localStorage.getItem(PROJECTS_KEY);
+export function loadProjects(ownerId?: string | null): StoredProject[] {
+  const libraryRaw = localStorage.getItem(workspaceKey(PROJECTS_KEY, ownerId));
   if (libraryRaw) {
-    try {
-      const library = JSON.parse(libraryRaw) as StoredProjectLibrary;
-      if (library.version !== 1 || !Array.isArray(library.projects)) return [];
-      return library.projects.filter(isStoredProject);
-    } catch {
-      return [];
-    }
+    return readProjectLibrary(libraryRaw);
   }
+  if (ownerId) return []; // Never import another/unassigned workspace at sign-in.
 
   const raw = localStorage.getItem(PROJECT_KEY) ?? localStorage.getItem(LEGACY_PROJECT_KEY);
   if (!raw) return [];
@@ -147,11 +147,11 @@ export function loadProjects(): StoredProject[] {
   try {
     project = JSON.parse(raw) as LegacyStoredMultiPageProject | LegacyStoredProject;
   } catch {
-    return [];
+    throw new Error("Older saved project data is damaged. The original data has been retained.");
   }
 
   const migrated = project.version === 1 ? migrateLegacyProject(project) : migrateMultiPageProject(project);
-  if (!migrated) return [];
+  if (!migrated || !isStoredProject(migrated)) throw new Error("Older project data could not be migrated. The original data has been retained.");
 
   // Do not swallow a failed write here: the caller must know migration did not
   // persist so it does not clear the legacy keys and lose the only saved copy.

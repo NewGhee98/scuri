@@ -3,6 +3,15 @@ import { preparePhotoAsset } from "./image";
 import { loadPhotoBlob, savePhotoBlob } from "./storage";
 import type { PhotoAsset, ProjectDeletions, ProjectPage, StoredPhotoAsset, StoredProject, StoredProjectPage } from "./types";
 
+function withStoredMetadata(asset: PhotoAsset, stored: StoredPhotoAsset): PhotoAsset {
+  return { ...asset, ...stored,
+    sourceName: stored.sourceName ?? asset.sourceName, mimeType: stored.mimeType ?? asset.mimeType,
+    fileSize: stored.fileSize ?? asset.fileSize,
+    // Actual decoded original dimensions take precedence over nullable/old metadata.
+    sourceWidth: asset.sourceWidth, sourceHeight: asset.sourceHeight,
+  };
+}
+
 export function serializePage(page: ProjectPage): StoredProjectPage {
   const photos = { ...page.unavailablePhotos };
   for (const [frameId, photo] of Object.entries(page.photos)) {
@@ -36,7 +45,7 @@ export function reconcileProjectPages(project: StoredProject, current: ProjectPa
     const unavailablePhotos: NonNullable<ProjectPage["unavailablePhotos"]> = {};
     for (const [frameId, stored] of Object.entries(page.photos)) {
       const cached = loaded.get(stored.blobKey);
-      if (cached) photos[frameId] = { ...cached, ...stored, frameId };
+      if (cached) photos[frameId] = withStoredMetadata(cached, { ...stored, frameId });
       else unavailablePhotos[frameId] = stored;
     }
     return { ...page, photos, unavailablePhotos };
@@ -46,12 +55,13 @@ export function reconcileProjectPages(project: StoredProject, current: ProjectPa
 export interface HydratedPhoto { pageId: string; photo: PhotoAsset }
 
 /** Failures affect display availability only. The caller retains every stored record. */
-export async function hydrateProjectPhotos(pages: ProjectPage[], getDriveToken: () => string | null): Promise<HydratedPhoto[]> {
+export async function hydrateProjectPhotos(pages: ProjectPage[], getDriveToken: () => string | null, getVolatileBlob?: (key: string) => Blob | undefined): Promise<HydratedPhoto[]> {
   const hydrated: HydratedPhoto[] = [];
   for (const page of pages) {
     for (const item of Object.values(page.unavailablePhotos ?? {})) {
       try {
         let blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        blob ??= getVolatileBlob?.(item.blobKey) ?? null;
         const token = getDriveToken();
         if (!blob && token && item.driveOriginalId) {
           blob = await downloadGoogleDrivePhoto(token, item.driveOriginalId).catch(() => null);
@@ -59,7 +69,7 @@ export async function hydrateProjectPhotos(pages: ProjectPage[], getDriveToken: 
         }
         if (!blob) continue;
         const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
-        hydrated.push({ pageId: page.id, photo: { ...asset, ...item } });
+        hydrated.push({ pageId: page.id, photo: withStoredMetadata(asset, item) });
       } catch {
         // Missing IDB, failed Drive access or image decode must not erase metadata.
       }
@@ -80,7 +90,7 @@ export function applyHydratedPhotos(current: ProjectPage[], hydrated: HydratedPh
       if (result.pageId !== page.id) continue;
       const stored = unavailablePhotos[result.photo.frameId];
       if (!stored || stored.blobKey !== result.photo.blobKey) continue;
-      photos[stored.frameId] = { ...result.photo, ...stored };
+      photos[stored.frameId] = withStoredMetadata(result.photo, stored);
       delete unavailablePhotos[stored.frameId];
       pageChanged = changed = true;
     }
