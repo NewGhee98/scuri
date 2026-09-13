@@ -1,6 +1,14 @@
 # Local verification — 2026-09-13
 
-## Zoom and arrangement suggestions (latest, not deployed)
+## Upload-checkpoint protection recovery (latest, not deployed)
+
+Based on GitHub main a8b0e5417ff0685929580e791a05e6e75ae7fecd. The new integration regression first failed against the previous handler behaviour with a lost upload-folder ID. After the fix, **144 tests passed in 17 files** (eight additional regressions), TypeScript and ESLint passed, and the final production build compiled, typechecked, prerendered all four static pages and completed traces. A test callback's async type was corrected before the final successful checks.
+
+Coverage includes protection -> cache reload -> active-page metadata adoption -> subsequent cloud push, independent original/preview checkpoints, missing folder retention, immutable-key matching after frame moves, cloud-ID precedence, library-only originals, retained local edits, unchanged acknowledged state, and a failed-preview retry that never re-uploads the completed original. All fixtures/adapters are synthetic and real transport is blocked or mocked. Existing assets were not seeded, reset, overwritten or deleted.
+
+This fix introduces no migration, dependency or environment changes. Existing SQL files are unchanged. No Supabase/Drive writes or production deployment were performed for this fix. On 14 September the user relayed the connector's confirmation that the photo-library migration is applied and verified live; that confirmation was not independently re-run here. The recorded migration timestamp alignment and cross-device transactional limitation remain separate. The earlier browser deployment smoke test covered the preceding release, not this new fix. Packaging verification for the preceding local handoff is recorded in the companion SCURI_UPLOAD_CHECKPOINT_FIX.md.
+
+## Zoom and arrangement suggestions (earlier local package)
 
 Final checks on 13 September 2026: **136 tests passed in 16 files** (26 additional tests), TypeScript passed, ESLint passed without errors or warnings, and the production build completed compilation, TypeScript checking, prerendering and build traces. The worker is included in the successful webpack build. No dependency or lockfile changes are included.
 
