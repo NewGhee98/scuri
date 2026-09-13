@@ -10,6 +10,7 @@ interface EditorCanvasProps {
   background: string;
   gutter: number;
   photos: Record<string, PhotoAsset>;
+  unavailableFrameIds?: string[];
   selectedFrameId: string | null;
   rearrangeMode: boolean;
   onSelectFrame: (frameId: string) => void;
@@ -48,6 +49,7 @@ export function EditorCanvas({
   background,
   gutter,
   photos,
+  unavailableFrameIds,
   selectedFrameId,
   rearrangeMode,
   onSelectFrame,
@@ -145,7 +147,7 @@ export function EditorCanvas({
         context.font = `500 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
         context.textAlign = "center";
         context.textBaseline = "middle";
-        context.fillText("Tap to add photo", frame.x + frame.width / 2, frame.y + frame.height / 2, frame.width - 16);
+        context.fillText(unavailableFrameIds?.includes(frame.id) ? "Photo unavailable" : "Tap to add photo", frame.x + frame.width / 2, frame.y + frame.height / 2, frame.width - 16);
       }
       context.restore();
 
@@ -168,7 +170,7 @@ export function EditorCanvas({
         context.restore();
       }
     }
-  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId]);
+  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId, unavailableFrameIds]);
 
   const canvasPoint = useCallback((event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -256,7 +258,7 @@ export function EditorCanvas({
       onMovePhoto(swapDrag.sourceFrameId, swapDrag.targetFrameId);
     }
     const drag = dragRef.current;
-    if (drag && drag.distance < 6 && !photos[drag.frameId]) onRequestPhoto(drag.frameId);
+    if (drag && drag.distance < 6 && !photos[drag.frameId] && !unavailableFrameIds?.includes(drag.frameId)) onRequestPhoto(drag.frameId);
     pointersRef.current.delete(event.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
     if (swapDrag?.pointerId === event.pointerId) {

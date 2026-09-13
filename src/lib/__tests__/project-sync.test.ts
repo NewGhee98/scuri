@@ -45,7 +45,7 @@ describe("resolveProjectConflict", () => {
     expect(duplicate.revision).toBeUndefined();
     expect(duplicate.cloudSyncedAt).toBeUndefined();
     // Nothing from the device's own edit is lost: page/photo content carries over untouched.
-    expect(duplicate.pages).toBe(local.pages);
+    expect(duplicate.pages).toEqual(local.pages); // empty here; populated copies get fresh page ids
   });
 });
 
