@@ -990,3 +990,17 @@ input:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+/* Native modal supplies focus containment, Escape and background inertness. */
+.backup-dialog {
+  width: min(92vw, 520px);
+  max-height: 90dvh;
+  overflow: auto;
+  margin: auto;
+  padding: 28px;
+  border: 1px solid #deded9;
+  border-radius: 18px;
+  background: #fff;
+  color: #11110f;
+  box-shadow: 0 24px 80px #0003;
+}
+.backup-dialog::backdrop { background: #0006; }

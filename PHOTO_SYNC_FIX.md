@@ -1,5 +1,7 @@
 # Project-photo sync safety fix
 
+The later approved client release extends this first fix. See `CLIENT_RELEASE.md` for current behaviour, 110-test verification, portable backups and session undo. The earlier 85-test account below describes the first patch only.
+
 Prepared locally from the supplied archive. No live service access, credentials, recovery, schema change, seed operation or deployment.
 
 ## Failure trace

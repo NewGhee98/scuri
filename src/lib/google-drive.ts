@@ -304,6 +304,7 @@ export async function uploadPhotoAssetToDrive(
   photo: Pick<StoredPhotoAsset, "frameId" | "blobKey" | "sourceName" | "mimeType" | "driveOriginalId" | "drivePreviewId">,
   source: Blob,
   preview: Blob,
+  onUploaded?: (ids: { driveOriginalId?: string; drivePreviewId?: string }) => Promise<void>,
 ): Promise<{ driveOriginalId: string; drivePreviewId: string }> {
   let driveOriginalId = photo.driveOriginalId;
   let drivePreviewId = photo.drivePreviewId;
@@ -318,6 +319,7 @@ export async function uploadPhotoAssetToDrive(
       appProperties: { scuriType: "original", ...identity },
     }, source);
     driveOriginalId = uploaded.id;
+    await onUploaded?.({ driveOriginalId, drivePreviewId });
   }
 
   if (!drivePreviewId) {
@@ -327,6 +329,7 @@ export async function uploadPhotoAssetToDrive(
       appProperties: { scuriType: "preview", ...identity },
     }, preview);
     drivePreviewId = uploaded.id;
+    await onUploaded?.({ driveOriginalId, drivePreviewId });
   }
 
   return { driveOriginalId, drivePreviewId };

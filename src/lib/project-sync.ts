@@ -285,16 +285,21 @@ export async function pullProjectsFromCloud(): Promise<StoredProject[]> {
  * retains deletion intent and the committed revision for a checked retry.
  * See CloudConflict / resolveProjectConflict for what happens next.
  */
-export async function pushProjectToCloud(project: StoredProject): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+  const assertCurrent = () => { if (options && !options.isCurrent()) throw new Error("The workspace changed; this save was stopped."); };
+  assertCurrent();
   const client = getProjectCloudClient();
   if (!client) throw new Error("Project cloud storage has not been connected yet.");
   const { data: userData, error: userError } = await client.auth.getUser();
   if (userError || !userData.user) throw new Error("Sign in before saving this project to the cloud.");
   const ownerId = userData.user.id;
+  if (options && options.ownerId !== ownerId) throw new Error("The signed-in account changed; this save was stopped.");
+  assertCurrent();
 
   // Read before ANY writes (including page deletes which cascade to assets).
   // Fail closed on read errors. Covers empty and partially hydrated old caches.
   const remote = await fetchCloudProject(client, project.id);
+  assertCurrent();
   if (remote && hasUnexplainedPhotoLoss(project, remote)) return { assetProtection: true, remote };
   if (remote && remote.revision !== project.revision) return { conflict: true, remote };
 
@@ -349,6 +354,7 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
   };
 
   try {
+    assertCurrent();
     const { pages, assets } = storedProjectToRows(project, ownerId, remote);
 
     if (pages.length) {
@@ -356,14 +362,17 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
       if (error) throw error;
     }
     if (assets.length) {
+      assertCurrent();
       const { error } = await client.from("project_assets").upsert(assets, { onConflict: "id" });
       if (error) throw error;
     }
     // Only exact, previously observed and explicitly removed assignments.
     // No project-wide or NOT IN deletion, including the empty-project case.
     for (const page of remote?.pages ?? []) {
+      assertCurrent();
       const incoming = project.pages.find((item) => item.id === page.id);
       for (const photo of Object.values(page.photos)) {
+        assertCurrent();
         if (incoming?.photos[photo.frameId]) continue; // updated in place above
         const { error } = await client.from("project_assets").delete()
           .eq("project_id", project.id).eq("owner_id", ownerId)
@@ -377,6 +386,7 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
           .select("id").eq("page_id", page.id);
         if (readError) throw readError;
         if (remaining?.length) throw new Error("This page still has cloud photos; reload before deleting it.");
+        assertCurrent();
         const { error } = await client.from("project_pages").delete()
           .eq("project_id", project.id).eq("owner_id", ownerId).eq("id", page.id);
         if (error) throw error;
@@ -397,11 +407,12 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
 }
 
 /** Soft-deletes a project in Supabase (tombstone, not a hard delete). */
-export async function softDeleteCloudProject(projectId: string): Promise<void> {
+export async function softDeleteCloudProject(projectId: string, options?: { ownerId: string; isCurrent: () => boolean }): Promise<void> {
   const client = getProjectCloudClient();
   if (!client) return;
   const { data: userData, error: userError } = await client.auth.getUser();
   if (userError || !userData.user) throw new Error("Sign in before deleting this project from the cloud.");
+  if (options && (!options.isCurrent() || options.ownerId !== userData.user.id)) throw new Error("The account changed; deletion was stopped.");
   const { error } = await client
     .from("projects")
     .update({ deleted_at: new Date().toISOString() })
@@ -446,6 +457,29 @@ export function resolveProjectConflict(
   return { canonical: remote, duplicate };
 }
 
+/** Keep meaningful local work when the absence guard restores remote metadata.
+ * An otherwise identical empty cache needs reconciliation, not another project. */
+export function preserveProtectedLocalEdits(local: StoredProject, remote: StoredProject, newId: string): StoredProject | null {
+  const meaningful = local.name !== remote.name || local.pages.some(page => {
+    const other = remote.pages.find(item => item.id === page.id);
+    return !other || page.templateId !== other.templateId || page.background !== other.background || page.gutter !== other.gutter ||
+      JSON.stringify(page.templateSnapshot) !== JSON.stringify(other.templateSnapshot) ||
+      Object.values(page.photos).some(photo => {
+        const previous = other.photos[photo.frameId];
+        return !previous || previous.blobKey !== photo.blobKey || JSON.stringify(previous.crop) !== JSON.stringify(photo.crop);
+      });
+  });
+  if (!meaningful && !local.pendingDeletions?.photos.length && !local.pendingDeletions?.pageIds.length) return null;
+  const copy = resolveProjectConflict(local, remote, newId).duplicate;
+  return { ...copy, name: `${local.name} (recovered local edits)`.slice(0, 120) };
+}
+
+export function getProjectBackupCounts(project: StoredProject): { total: number; originals: number; previews: number } {
+  const photos = project.pages.flatMap(page => Object.values(page.photos));
+  return { total: photos.length, originals: photos.filter(photo => photo.driveOriginalId).length,
+    previews: photos.filter(photo => photo.drivePreviewId).length };
+}
+
 /** Keep edits made during an async push; merge only acknowledged sync/byte ids.
  * New deletion intent survives an older acknowledgement, including offline retries. */
 export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProject, result: CloudPushResult): StoredProject {
@@ -480,7 +514,7 @@ export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProjec
 }
 
 export function projectHasUnbackedAssets(project: StoredProject): boolean {
-  return project.pages.some((page) => Object.values(page.photos).some((photo) => !photo.driveOriginalId));
+  return project.pages.some((page) => Object.values(page.photos).some((photo) => !photo.driveOriginalId || !photo.drivePreviewId));
 }
 
 export function isProjectDirty(project: StoredProject): boolean {
@@ -503,11 +537,13 @@ export function getProjectSyncStatus(project: StoredProject, context: ProjectSyn
   if (context.hasError) return "sync-error";
   if (!context.signedIn) return "local-only";
   const dirty = isProjectDirty(project);
-  if (!context.online) return dirty ? "waiting-for-connection" : "synced";
+  const unbacked = projectHasUnbackedAssets(project);
+  if (!context.online) return dirty || unbacked ? "waiting-for-connection" : "synced";
   if (dirty) return "saved-locally";
-  if (context.driveConfigured && !context.driveTokenValid && projectHasUnbackedAssets(project)) {
+  if (context.driveConfigured && !context.driveTokenValid && unbacked) {
     return "drive-reconnect-required";
   }
+  if (unbacked) return "photos-pending";
   return "synced";
 }
 

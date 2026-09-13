@@ -1,5 +1,17 @@
 # Local verification — 2026-09-13
 
+## Approved client release (latest)
+
+The local client-safety/backup/undo update builds on the earlier fix below. Final suite: **110 passing tests in 12 files** (25 new tests). Typecheck and lint passed, with zero errors/warnings. A production build compiled, typechecked, prerendered all four static pages and completed traces. Final packaging checks are recorded in `SCURI_CLIENT_RELEASE.md`, supplied alongside the source archive.
+
+New coverage: meaningful local-edit preservation, decoded dimensions and in-memory originals, truthful backup status, independent upload checkpoints, offline/reconnect queue draining, retries without new edits, deletion waiting for pending writes, account-separated project/template caches and stale-session cancellation, IndexedDB commit/abort, corrupt-cache preservation, undo/redo across a cloud acknowledgement, clock ordering, backup round-trip/fresh IDs/missing originals/checksum failures/path validation, and partial original/preview upload retries.
+
+All records and photo bytes in these tests are synthetic. Real network fetches are blocked or mocked. No existing database/cache/Drive assets are seeded, reset, overwritten or deleted by any test helper. The app package includes no dependency or SQL migration changes. Browser UI, device memory/performance, real OAuth and deployed database policies have not been exercised.
+
+The remaining non-transactional cross-device save race is explicitly outside this release; passing the client tests does not resolve it. See `CLIENT_RELEASE.md`.
+
+## Earlier photo-sync patch
+
 Input: the supplied `scuri-main.zip`.
 
 Input SHA-256: `bbc86e3f98330ff77b46d030f1f0f797aeccc91cfb32fcb9eb15e391c3e724b3`.
