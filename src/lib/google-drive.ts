@@ -300,15 +300,17 @@ export async function uploadPhotoAssetToDrive(
   accessToken: string,
   folders: ProjectDriveFolders,
   projectId: string,
-  pageId: string,
-  photo: Pick<StoredPhotoAsset, "frameId" | "blobKey" | "sourceName" | "mimeType" | "driveOriginalId" | "drivePreviewId">,
+  pageId: string | null,
+  photo: Pick<StoredPhotoAsset, "blobKey" | "sourceName" | "mimeType" | "driveOriginalId" | "drivePreviewId"> & { frameId?: string },
   source: Blob,
   preview: Blob,
+  onUploaded?: (ids: { driveOriginalId?: string; drivePreviewId?: string }) => Promise<void>,
 ): Promise<{ driveOriginalId: string; drivePreviewId: string }> {
   let driveOriginalId = photo.driveOriginalId;
   let drivePreviewId = photo.drivePreviewId;
   // Upload-time recovery hints only: placements/crops still belong to Supabase.
-  const identity = { scuriProjectId: projectId, scuriPageId: pageId, scuriFrameId: photo.frameId, scuriBlobKey: photo.blobKey };
+  const identity: Record<string, string> = { scuriProjectId: projectId, scuriBlobKey: photo.blobKey };
+  if (pageId && photo.frameId) { identity.scuriPageId = pageId; identity.scuriFrameId = photo.frameId; }
 
   if (!driveOriginalId) {
     const extension = extensionForMimeType(photo.mimeType || source.type);
@@ -318,6 +320,7 @@ export async function uploadPhotoAssetToDrive(
       appProperties: { scuriType: "original", ...identity },
     }, source);
     driveOriginalId = uploaded.id;
+    await onUploaded?.({ driveOriginalId, drivePreviewId });
   }
 
   if (!drivePreviewId) {
@@ -327,6 +330,7 @@ export async function uploadPhotoAssetToDrive(
       appProperties: { scuriType: "preview", ...identity },
     }, preview);
     drivePreviewId = uploaded.id;
+    await onUploaded?.({ driveOriginalId, drivePreviewId });
   }
 
   return { driveOriginalId, drivePreviewId };

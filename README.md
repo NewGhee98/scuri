@@ -16,7 +16,8 @@ All image selection, composition and export happens in the browser. Signing in m
 - Single or multi-photo selection from Apple Photos, iOS Files and desktop file pickers.
 - Automatic multi-photo filling from the tapped tile, followed by drag-to-swap tile rearranging.
 - Fixed clipping frames with independent drag, pinch, mouse-wheel and slider zoom.
-- Cover fitting and constrained movement, so empty space cannot be dragged into a frame.
+- A 0% fill-frame zoom baseline; negative zoom reveals the whole image and surrounding page background while keeping it centred. Positive zoom retains constrained panning.
+- A project photo library independent of frame placement, with local palette analysis and up to three arrangement suggestions using existing layouts.
 - Replace, reset and remove controls for each photograph.
 - Adjustable background colour, borders and gutters.
 - High-quality, exact-size single-page or batch JPEG export and Web Share support.
@@ -34,11 +35,11 @@ Scuri splits storage across three layers, matched to what each is good at:
 
 - **Supabase = source of truth for project state.** Project names, page order, template/layout identifiers, crop/zoom/positioning state, asset metadata and Google Drive file references live in Postgres, protected by owner-only row-level security, with server-generated timestamps and a revision counter used for optimistic concurrency (see `supabase/migrations/`). Custom template geometry syncs the same way and remains a separate table/feature.
 - **Google Drive = high-resolution file warehouse.** Untouched full-resolution originals and optional saved exports live in a private `Scuri` folder in the signed-in user's own Drive, using the narrow `drive.file` scope. Scuri never uses a Drive-side manifest or folder structure as the authoritative project database - Drive can be disconnected or unavailable and project metadata remains visible.
-- **Browser storage = local/offline cache.** `localStorage` holds the project library and lightweight settings; IndexedDB caches image blobs for fast, offline-capable editing. This is a cache, not the permanent copy - unsynced edits stay safe locally and sync in the background once signed in and online.
+- **Browser storage = local/offline cache.** `localStorage` holds the project library and lightweight settings; IndexedDB caches image blobs for fast, offline-capable editing. Storage failures remain visible, with retry and portable backup actions. Successful local saves can sync in the background once signed in and online; clearing browser data can still lose edits or originals that have not been backed up.
 - Temporary object URLs for editing previews and generated exports, revoked when no longer needed.
 - The Cache API, through the service worker, for the application shell only.
 
-Deleting a project removes its Supabase record (soft-deleted, then trashed on Drive) before clearing the local cache, so a device is never left believing a project is gone when another device might still need it. Sign in with the same account on another device to see all your projects; Google Drive originals are then fetched lazily as you open or export a project.
+Deleting a signed-in project stops its queued sync, waits for an active save and records a Supabase deletion marker before removing it from the local library. Drive files and cached originals are retained; up to ten deleted projects can be restored as new copies during the same session. Sign in with the same account on another device to load its project metadata, then connect Google Drive to fetch originals lazily.
 
 ### Project workflow
 
@@ -47,6 +48,10 @@ Deleting a project removes its Supabase record (soft-deleted, then trashed on Dr
 3. Save the page, then add, duplicate, edit, delete or reorder pages from its project page.
 4. Export one ready page or use **Export all** to export every completed page in order; drafts are skipped.
 5. On iPhone or iPad, use **Save all to Photos / Share** and choose the multi-image save action in Apple’s share sheet. If file sharing is unavailable, use **Download ZIP to Files**.
+
+**Plan an arrangement:** use **Add photos to library** on the project page, wait for local analysis, then select **Suggest arrangements**. Review Colour harmony, Best fit and Balanced mix when meaningfully different options are available. Each proposal lists any unplaced photos. **Apply as new project** preserves the current project and every library original. In the editor, a library photo can also be placed with **Use in selected frame**. Removing a frame assignment leaves the original in the library.
+
+**Zoom out:** select a photo and move its zoom slider below 0%. The frame, border and gutter remain fixed; the original shrinks in proportion and is centred over the page background. The slider extends beyond the size needed to show the entire image. Existing saved fill/zoom crops retain their appearance. See [ZOOM_ARRANGEMENTS_RELEASE.md](ZOOM_ARRANGEMENTS_RELEASE.md) for behaviour, compatibility and verification limits.
 
 ## Local development
 
@@ -66,7 +71,7 @@ Copy `.env.example` to `.env.local` and add the two Supabase public values if yo
 ### Supabase (templates + projects)
 
 1. Create or connect a Supabase project through the Vercel Marketplace.
-2. Apply the SQL files in `supabase/migrations/` in timestamp order - `20260811172718_create_templates.sql` and `20260811172858_restrict_templates_to_authenticated.sql` for templates, then `20260831120000_create_projects.sql` for projects/pages/assets.
+2. The existing schema uses `20260811172718_create_templates.sql` and `20260811172858_restrict_templates_to_authenticated.sql` for templates, then `20260831120000_create_projects.sql` for projects/pages/assets. The new `20260913180000_add_project_photo_library.sql` is **prepared for review only**, not executed. Review [PHOTO_LIBRARY_MIGRATION_REVIEW.md](PHOTO_LIBRARY_MIGRATION_REVIEW.md) before installing it in an authorized environment. Independent, unassigned cloud photos require this additive column; the client keeps them locally and reports a setup error if it is absent.
 3. Add these variables to Vercel Preview and Production:
 
 ```bash
@@ -77,7 +82,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 4. In Supabase Auth URL Configuration, set the production Scuri address as the Site URL and add the Vercel preview wildcard as an allowed redirect URL.
 5. Email sign-in is enough for a private test account. Configure custom SMTP before opening registration to general users.
 
-Every migration enables row-level security. Authenticated users can only read and mutate rows whose `owner_id` matches their Supabase user ID. Templates and projects are separate tables/features that happen to share one sign-in.
+The existing tables enable row-level security. Authenticated users can only read and mutate rows whose `owner_id` matches their Supabase user ID. The proposed photo library column shares the existing projects policies and revision gate; it introduces no policy changes. Templates and projects are separate tables/features that happen to share one sign-in.
 
 ### Google Drive (full-resolution photo backup)
 
@@ -109,7 +114,7 @@ npm test
 npm run build
 ```
 
-The unit tests cover format selection, export dimensions, template validation, normalised canvas scaling, cover-crop calculations, image-position constraints, zoom limits, multi-photo fill order, tile swapping, page readiness, reordering and migration from the previous single-page storage format.
+The 136 offline tests include crop/rendering and below-baseline save/restore, palette grouping, panorama/template matching, distinct proposals, complete placement accounting, unavailable photos, safe application as a copy, optional-column compatibility, library/backup persistence, and the existing fresh-device and explicit-deletion safety regressions. See [VERIFICATION.md](VERIFICATION.md) for the checks and their limits.
 
 ## Production
 
@@ -185,12 +190,12 @@ That single object is expanded for all current formats. The same editor, thumbna
 ## Known limitations
 
 - Frames are rectangular and non-rotated, but may overlap and use rounded corners.
-- A project's Supabase row and its pages/assets rows are written as separate requests, not one database transaction: the project row (and its revision) is written first and gates the rest, so a losing device in a race never overwrites a winner's data, but a crash between that gate and the following page/asset writes can leave a project's `revision` briefly ahead of its actual page content on the server. The next sync (automatic retry or "Sync now") always re-sends the full current pages/assets and self-heals; this cannot happen from normal single-device use, only a hard interruption mid-sync.
-- If a project is edited on two devices within the same short debounce window, the losing device's edits are preserved as a separate, clearly-labelled "(conflicted copy)" project rather than merged - there is no field-level merge.
+- A project's Supabase row and its pages/assets rows are written as separate requests. An interruption can leave partially saved content, and two devices can interleave child writes after the revision check. The client queue serializes saves within one running app only. A transactional cloud write and a consistent read are still required; automatic retries do not guarantee recovery from every interleaving.
+- When the revision check detects a concurrent edit, local edits are preserved as a separate, clearly labelled "(conflicted copy)" project. There is no field-level merge, and this check does not cover every interleaving described above.
 - A project deleted on a device that is offline or signed out is *not* queued for cloud deletion; deletion there is blocked (with a message) until that device can reach Supabase, rather than silently deleting locally while orphaning the cloud copy.
 - Google Drive's "Authorized JavaScript origins" do not support wildcards, so Drive connect only works on origins you explicitly authorize (see Cloud setup above) - typically production and localhost, not every ephemeral Vercel Preview URL. Supabase project sync is unaffected.
 - If a project is deleted on another device while a signed-out/offline device still holds unsynced edits to it, reconnecting recreates it as a new project (suffixed "(recovered)") rather than restoring the exact original id.
-- There is not yet a portable project backup/import file, so clearing Safari website data removes anything not yet synced to Supabase/Drive.
+- Use **Download project backup** to save a portable `.scuri.zip` file before clearing browser data. Missing originals are disclosed, so wait for photos to load for a complete backup. **Restore backup** previews the package and restores it as a new project. Packages are limited to 256 MB.
 - HEIC availability depends on whether the browser can decode the selected file; the explicit supported types are JPEG, PNG and WebP.
 - iOS memory pressure can still affect unusually large source files. Editing uses a downscaled preview, while export decodes originals one frame at a time.
 - Browser share/download wording varies by iOS version. The generated JPEG preview remains available if the share sheet is unavailable.
@@ -199,7 +204,7 @@ That single object is expanded for all current formats. The same editor, thumbna
 ## Short roadmap
 
 1. Run the full cross-device acceptance test in `CLAUDE_START_HERE.md` on physical iPad and laptop hardware (this needs a real Supabase session and Google account - not something that can be verified from an automated build).
-2. Wrap the pages/assets write in a single Postgres function if the small transactional gap above ever proves troublesome in practice.
-3. Add a portable JSON project backup/import format.
+2. Design and review a transactional project/pages/assets save and consistent read to address the known cross-device race above.
+3. Extend portable backups with larger streaming packages and persistent project history after the transactional sync work.
 4. Consider landscape formats through the existing format definition system.
 5. Consider an opt-in Google Photos source only after the local workflow is solid.

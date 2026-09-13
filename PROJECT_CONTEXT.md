@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-09-12_
+_Last updated: 2026-09-13_
 
 ## How to use this file
 
@@ -74,7 +74,7 @@ A project built on iPad must be available on laptop or another signed-in device 
 - **Browser storage (`localStorage` + IndexedDB) remains the local-first/offline cache**, unchanged in shape from before.
 - Templates and projects are separate tables/features but **share one Supabase sign-in** (`src/lib/supabase-client.ts`); templates sync/RLS is unchanged.
 - Conflict policy: never silently overwrite. A device whose push loses the revision race keeps its edits as a new, clearly-labelled "(conflicted copy)" project; the cloud copy stays canonical under the original id (`src/lib/project-sync.ts`'s `resolveProjectConflict`).
-- Use the narrow non-sensitive Google `drive.file` scope, not broad Drive access. Large image transfers use resumable uploads. A project deletion soft-deletes the Supabase row and moves its Drive folder to Trash before local data is removed.
+- Use the narrow non-sensitive Google `drive.file` scope, not broad Drive access. Uploads use a resumable-session endpoint; completed files are checkpointed, but byte-range resume across reloads is not implemented. Project deletion soft-deletes the Supabase row and retains Drive bytes because surviving copies may share them.
 
 Required public environment variables:
 
@@ -358,17 +358,85 @@ PR #12 (**Refine vertical pair and template resizing**) was squash-merged into `
 
 ---
 
+## Local safety fix — 2026-09-13 (not deployed)
+
+Historical first patch; the approved client safety release below supersedes its protection-result, retry and cache-lifecycle details.
+
+Prepared and tested against the supplied `scuri-main.zip` only. No Supabase, Google Drive, GitHub, Vercel or browser session was accessed. The reported Islands state in the handoff has **not** been revalidated or repaired. Earlier live-state entries above remain historical.
+
+**Safety invariant:** missing IndexedDB bytes, a missing/expired Drive token, failed downloads, and failed image decoding must never be interpreted as a user deleting a cloud photo. Supabase remains authoritative for projects, page/frame assignments and crop metadata. Drive stores originals/previews; localStorage/IndexedDB remains a cache.
+
+- `project-photos.ts` preserves unavailable assignments separately from loaded `PhotoAsset` objects. `serializePage` includes both. Page/template mismatches do not silently drop saved records.
+- The active editor adopts cloud metadata synchronously, reusing matching loaded bytes. Byte hydration runs separately, retries when Drive token restoration succeeds, and ignores late results for removed/replaced assignments. Push acknowledgements reconcile Drive ids without discarding edits made during the request.
+- `pushProjectToCloud` reads the current remote project before any Supabase mutation and refuses unexplained missing assignments **or pages**, including partially empty snapshots and page-deletion cascades. A protection result restores canonical cloud metadata in the library and open editor; it does not create a blank cloud copy.
+- Only explicit Remove (confirmed), Replace, rearrangement, confirmed layout change, or confirmed page deletion records deletion intent. Intent identifies each observed `(pageId, frameId, blobKey)`; page deletion also records the page id. It is cached locally across reloads and cleared only after a complete successful push. Old cached projects without this optional field remain readable; unexplained old-style deletions fail closed and must be repeated explicitly.
+- Asset deletion is scoped to the observed project/owner/row/page/frame/blob identity. There are no project-wide/`NOT IN` deletes. Confirmed page deletion removes known assets first and checks for remaining assets before deleting the page. Replacements/swaps retain row identity for the occupied slot; new rows get new ids, independently of blob keys. Conflict/recovery copies get fresh page ids and their own future Drive folder; shared cached originals are retained while another local project references them.
+- Future original/preview uploads include `scuriProjectId`, `scuriPageId`, `scuriFrameId`, and `scuriBlobKey`. These are **upload-time recovery hints**, not a live manifest: later moves/crops or reuse of a Drive file can make them stale. Existing files are not rewritten and need no new metadata to load normally.
+- No schema change or migration is needed. The existing revision gate and multi-request REST writes remain; this patch does not make all project writes transactional or protect against an old deployed client continuing to use the old deletion logic. Partial-write retries retain local intent. An unchanged failed backup is not retried endlessly; edits, reconnection or manual sync can retry it.
+
+**Islands recovery limitation:** this fix prevents this loss path; it cannot reconstruct already-lost frame mappings/crops. Later, with explicitly authorized live connectors, preserve read-only database/Drive evidence and the original device's browser cache before writes. Look for the original local mapping or an isolated historical database restore/export. If neither survives, use verified Drive originals to build a separate recovered copy and have the user place photos manually. Do not guess frame order, deduplicate/delete originals, or infer exact crops from old Drive files. See `ISLANDS_RECOVERY.md` for the manual procedure and `PHOTO_SYNC_FIX.md` for the trace and verification scope.
+
+Local verification: **85 tests passed** (54 baseline + 31 new), TypeScript passed, ESLint passed without warnings, and the Next.js production build completed. The suite uses synthetic service mocks, not live accounts. See `VERIFICATION.md`.
+
+---
+
 ## Product backlog / later ideas
 
 Confirmed upcoming feature:
 
-- Resize/reposition images within their frame.
+- Below-baseline photo scaling is included in the local zoom/arrangements release below; live deployment and physical-device acceptance are not established here.
 
 Continue adding new ideas to the **Scuri — Upcoming Features** document and periodically summarise accepted product decisions into this context file.
 
 ---
 
+## Approved client safety and backup release — 2026-09-13 (not deployed)
+
+The user approved the audit's recommended first implementation. This is a local source release; no live service, browser, real credentials, migration, deployment or Islands recovery was used. No dependency versions or SQL schema files changed.
+
+**Safety invariant:** temporary absence of photo bytes is never deletion intent. Supabase remains authoritative for project/page/frame/crop state; Drive remains an original/preview byte store. All unavailable assignments survive serialization, hydration, retry and active-editor reconciliation. Intentional Remove/Replace/page/layout actions still generate exact durable deletion intent. Undo is another explicit edit: it restores content using the latest revision, retains learned Drive IDs, cancels restored tombstones and records any new removals.
+
+Implemented:
+
+- Account-scoped project and template cache keys. Legacy/unscoped data is retained in Local workspace and is never silently assigned/uploaded to whichever account signs in next. To transfer a local project, download its portable backup, sign in, then restore it. Manual Drive connection can load older local originals; silent restoration is account-scoped. A workspace generation cancels stale asynchronous state changes, and queued project/template writes verify the expected account.
+- A serial queue reconstructs pending work from every cached dirty project, including inactive ones. It retries transient failures with bounded backoff, resumes on connectivity changes, and is reset at account changes. Focus/reconnect triggers pulls; pulls overlapping a push are scheduled again. This is a per-runtime queue, not a cross-device transaction lock.
+- The missing-assignment guard keeps meaningful local edits in a separate recovered copy before adopting remote metadata. Purely empty/stale caches are simply reconciled. Decoded original dimensions survive stale/null-derived stored dimensions. Filename, MIME type and file size are captured for future imports/uploads.
+- Drive original/preview IDs are checkpointed independently before the next upload, preserving progress across subsequent failures. In-memory originals remain available to the backup path when IndexedDB fails. Backup status distinguishes metadata save, originals/previews backed up, available local photos and expired Drive access.
+- IndexedDB success waits for transaction commit and handles aborts. Project records are validated as a whole; corrupt data is not silently filtered into a smaller library. Before a damaged raw library can be overwritten, its exact contents must be preserved under a recovery key. Failed writes leave a persistent warning and backup/retry actions.
+- Portable `.scuri.zip` backups include page snapshots, crops and available original bytes, with SHA-256 integrity checks. Missing originals are disclosed; imports validate and display a review dialog, then create fresh project/page/blob identities and discard imported cloud IDs/revisions. No existing project is replaced. The 256 MB package/expanded-size cap is explicit. A portable backup manifest is an export format only: it is never used as a Drive manifest/source of truth.
+- Project Undo/Redo keeps up to 40 content steps, coalescing crop gestures and retaining needed bytes. It preserves current sync acknowledgement state; opening another project, reloading or changing accounts resets history. Recently deleted projects can be restored as new copies during the same workspace session (up to 10). This is not persistent cloud version history.
+- Project deletion blocks queued work, waits for issued writes, then writes a cloud tombstone before removing the local entry. Drive folders and shared original/cache bytes are retained. Physical cleanup is deliberately separate from assignment deletion; there is no automatic orphan-file cleanup in this release.
+
+Verification: 110 offline automated tests (25 more than the prior 85), typecheck, lint and production build. See `CLIENT_RELEASE.md` and `VERIFICATION.md` for final results and manual acceptance limits.
+
+Remaining: A02's project/child write race is **not fixed** by this client queue. The current revision gate plus separate REST child writes cannot guarantee atomic cross-device saves. That needs a reviewed transactional write/read operation and a justified additive database migration. Full template conflict control, cloud pagination/completeness, persistent history/Trash, resumable byte ranges across reloads, a persistent photo tray and remaining UX/performance work are separate audit items. No existing assets may be deleted or rewritten by migration/seed/test helpers.
+
+**Recovery limitation:** this release cannot reconstruct already-lost Islands frame/crop mappings. Older Drive files do not acquire the new identity hints. Even newer hints describe upload-time placement only. Preserve and review live evidence later under separate authorization; never infer exact historic mappings/crops from file order or filenames. The existing `ISLANDS_RECOVERY.md` remains the manual plan.
+
+## Zoom and arrangement suggestions — 2026-09-13 (not deployed)
+
+The user authorized only below-baseline photo zoom and a focused non-AI arrangement feature on top of the preceding client safety release. No remaining audit recommendations were implemented. No live Supabase, Drive, Vercel, GitHub, browser session, credentials or recovery was used.
+
+**Final safety invariant:** Supabase owns project structure, page/frame assignments, crop metadata and the independent photo library. Drive stores original/preview bytes only. Browser storage and colour analysis are disposable caches. Missing local bytes, delayed Drive access, failed downloads or failed analysis must never remove a library original or imply deletion of a cloud assignment. Metadata adoption/reconciliation remains independent of byte hydration. Cloud pushes still fail closed on unexplained missing assignments/pages. Only explicit assignment actions record scoped deletion intent; removing a frame/page retains its originals in the library and does not trash Drive files. This release has no library-original deletion or automatic cleanup action.
+
+- Crop zoom remains a positive stored scale factor: 1 is the historic fill size, displayed as 0%. Negative displayed percentages use factors below 1. These shrink and centre the uncropped image within the same frame, exposing the page background. The slider minimum adapts to source/frame proportions so the whole image can fit with further surrounding space. Existing valid crops at or above 1 render as before; no saved crop rewrite or schema migration is needed. Editor, thumbnails, suggestion previews and exports share placement/drawing code. Panning below the baseline keeps the image centred; panning above it retains the existing constraints.
+- Optional local photoLibrary metadata is the union of known originals by immutable blobKey, seeded from existing assignments without needing new Drive metadata. Direct frame imports and independent library imports retain originals. Undo changes assignments without removing library membership. Portable backups now include unassigned originals and disclose missing bytes, while still accepting older backups. Analysis caches never establish membership. Photos can be manually assigned from the library even when their bytes still need hydration.
+- Independent cloud originals genuinely require a schema extension: existing project_assets rows require page_id/frame_id. The single proposed migration, 20260913180000_add_project_photo_library.sql, adds a projects.photo_library JSONB array under the existing project RLS/revision gate. It is **prepared for review only and has not been run**. All three previous migrations and package dependencies are unchanged. There is no asset DML, backfill, deletion, constraint repurposing or policy weakening. See PHOTO_LIBRARY_MIGRATION_REVIEW.md before any separately authorized rollout.
+- On an older schema, project reads and assigned-only saves work. A save with independent unassigned photos fails before page/asset writes with an explicit cloud-library setup error, retaining the local project. Newly displaced originals also count as unassigned; install the reviewed column before releasing the full library/removal workflow. Do not label such failed metadata saves as backed up. Old clients omit the new column, but cannot understand library-only photos or render new below-baseline crops correctly: update active clients before using the new workflow across devices.
+- The project/editor photo panel runs local analysis and proposal scoring in a module worker, with one image analysis at a time, progress, cancellation and retry. Uncropped previews are sampled at up to 96 pixels on the longest edge. Up to five weighted dominant OKLab palette colours, perceptual brightness and saturation describe each original; comparisons use weighted perceptual palette distance. Small thumbnails/analysis are cached by account, immutable photo identity/dimensions and analysis version. Unsupported worker/canvas APIs leave all metadata intact and manual editing available.
+- The bounded deterministic heuristic jointly evaluates photo groups and existing built-in/eligible saved custom templates, using actual output dimensions, template gutters and resolved frame proportions. It scores fill-size crop loss, palette compatibility and template repetition with separate Colour harmony, Best fit and Balanced mix weights. It returns up to three meaningfully different proposals, ignoring differences that merely reorder pages or rename layouts. It does not promise global optimality or recognize subjects/faces.
+- New independent imports/analysis are capped at 200 originals; proposals respect the existing 20-page limit and eligible templates have 1–12 frames. Existing larger libraries are never truncated. Each photo is placed at most once per proposal; unavailable/over-limit photos are explicitly listed as unplaced and retained. Previewing changes no assignments. Explicit Apply validates the current library and creates a new project with fresh project/page IDs, its own assignments at centred fill size, and the complete original library. The source arrangement and its crops remain available in the original project. Subsequent edits use normal editor/undo behaviour.
+- Future Drive uploads of unassigned originals/previews include project ID and blob key. Page/frame hints are included only when placement exists at upload time. Reused files are not rewritten, and identity hints are never used as an authoritative or complete manifest.
+
+Verification: **136 offline automated tests in 16 files**, TypeScript, ESLint and the production build passed, including the worker build. New tests cover panorama zoom/save/restore/shared rendering, palettes and colour grouping, actual frame/gutter matching, unique complete placement accounting, distinct proposals, unavailable photos, explicit new-copy application, library cloud/backup compatibility, missing-column failure before child writes, worker/cache handling and a synthetic 200-photo case. Browser pixel/device/OAuth/RLS checks and the SQL execution were not performed. See ZOOM_ARRANGEMENTS_RELEASE.md and VERIFICATION.md.
+
+**Remaining safety limitation:** A02's cross-device child-write race is unchanged. Separate REST writes are still not a transaction; a client queue and additive library column do not make project/child saves atomic across devices. Its transactional fix, pagination/completeness and the remaining audit roadmap are separate work.
+
+**Recovery limitation:** this feature cannot reconstruct already-lost Islands mappings or crops, and no current Islands state was inspected. Old Drive files do not contain the new metadata; even new upload hints can be stale after moves or copy reuse. Later, under separate live authorization, preserve the database/Drive inventory and original-device cache, seek a recoverable historical mapping, and use a separate recovery copy for any verified reconstruction. Without surviving mapping evidence, placement/crops require manual user reconstruction. Do not guess from filenames/order, overwrite the original project or delete suspected duplicates. ISLANDS_RECOVERY.md remains the separate manual plan.
+
 ## Guidance for future coding agents / chats
+
+Earlier deployment/version statements in this file are historical and have not been revalidated by the latest local release.
 
 Before making changes:
 

@@ -1,8 +1,18 @@
 import type { CropState, NormalizedFrame, ResolvedFrame, TemplateDefinition } from "./types";
 
 export const DEFAULT_CROP: CropState = { positionX: 0, positionY: 0, zoom: 1 };
-export const MIN_ZOOM = 1;
+// Stored zoom remains a scale factor: 1 is the historic fill-frame baseline.
+export const MIN_ZOOM = Number.EPSILON;
 export const MAX_ZOOM = 4;
+
+export const zoomPercent = (zoom: number): number => (zoom - 1) * 100;
+
+/** The slider always extends beyond contain-size, even for extreme panoramas. */
+export function minimumPhotoZoom(width: number, height: number, frame: ResolvedFrame): number {
+  const cover = Math.max(frame.width / width, frame.height / height);
+  const contain = Math.min(frame.width / width, frame.height / height);
+  return Math.max(MIN_ZOOM, Math.min(0.1, contain / cover / 4));
+}
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -68,12 +78,12 @@ export function coverPlacement(
   const height = sourceHeight * scale;
   const overflowX = Math.max(0, width - target.width);
   const overflowY = Math.max(0, height - target.height);
-  const positionX = clamp(crop.positionX, -1, 1);
-  const positionY = clamp(crop.positionY, -1, 1);
+  const positionX = zoom < 1 ? 0 : clamp(crop.positionX, -1, 1);
+  const positionY = zoom < 1 ? 0 : clamp(crop.positionY, -1, 1);
 
   return {
-    x: target.x - overflowX / 2 + (positionX * overflowX) / 2,
-    y: target.y - overflowY / 2 + (positionY * overflowY) / 2,
+    x: target.x + (target.width - width) / 2 + (positionX * overflowX) / 2,
+    y: target.y + (target.height - height) / 2 + (positionY * overflowY) / 2,
     width,
     height,
     scale,
@@ -90,6 +100,7 @@ export function moveCrop(
   deltaX: number,
   deltaY: number,
 ): CropState {
+  if (crop.zoom < 1) return { positionX: 0, positionY: 0, zoom: clamp(crop.zoom, MIN_ZOOM, MAX_ZOOM) };
   const placement = coverPlacement(sourceWidth, sourceHeight, target, crop);
   return {
     zoom: clamp(crop.zoom, MIN_ZOOM, MAX_ZOOM),
@@ -100,8 +111,8 @@ export function moveCrop(
 
 export function setCropZoom(crop: CropState, zoom: number): CropState {
   return {
-    positionX: clamp(crop.positionX, -1, 1),
-    positionY: clamp(crop.positionY, -1, 1),
+    positionX: zoom < 1 ? 0 : clamp(crop.positionX, -1, 1),
+    positionY: zoom < 1 ? 0 : clamp(crop.positionY, -1, 1),
     zoom: clamp(zoom, MIN_ZOOM, MAX_ZOOM),
   };
 }

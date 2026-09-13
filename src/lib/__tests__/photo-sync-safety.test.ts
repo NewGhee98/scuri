@@ -194,6 +194,20 @@ describe("fresh-device load -> hydrate -> autosave -> push", () => {
 });
 
 describe("cloud deletion protection and explicit intent", () => {
+  it("rejects a queued save owned by a different account before any mutation", async () => {
+    const cloud = fakeCloud();
+    await expect(pushProjectToCloud(cloud.initial, { ownerId: "another-synthetic-owner", isCurrent: () => true })).rejects.toThrow("account changed");
+    expect(cloud.mutations).toEqual([]);
+  });
+
+  it("stops child writes if a save is cancelled after the parent request commits", async () => {
+    const cloud = fakeCloud();
+    const isCurrent = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false);
+    const result = await pushProjectToCloud(cloud.initial, { ownerId: "test-owner", isCurrent });
+    expect(result).toMatchObject({ conflict: false, partial: true });
+    expect(cloud.mutations.every(item => item.table === "projects")).toBe(true);
+    expect(cloud.rows.project_assets).toHaveLength(2);
+  });
   it.each(["all photos", "one photo", "all pages"])("blocks missing %s before any write", async (missing) => {
     const cloud = fakeCloud();
     const local = structuredClone(cloud.initial);
@@ -413,12 +427,16 @@ describe("asynchronous acknowledgements", () => {
     const { initial } = fakeCloud();
     const removed = { ...removePhoto(initial, "frame-1"), updatedAt: created, cloudSyncedAt: committed };
     expect(isProjectDirty(removed)).toBe(true);
-    expect(mergeCloudProjectLibrary([removed], [initial], () => "unused").projects[0]).toBe(removed);
+    const merged = mergeCloudProjectLibrary([removed], [initial], () => "unused").projects[0];
+    expect({ ...merged, photoLibrary: undefined }).toEqual(removed);
+    expect(merged.photoLibrary).toHaveLength(2); // removed assignment remains a library original
   });
 
   it("ignores a stale cloud pull that arrives after a newer push acknowledgement", () => {
     const { initial } = fakeCloud();
     const acknowledged = { ...initial, name: "Just saved", revision: 8, updatedAt: committed, cloudSyncedAt: committed };
-    expect(mergeCloudProjectLibrary([acknowledged], [initial], () => "unused").projects[0]).toBe(acknowledged);
+    const merged = mergeCloudProjectLibrary([acknowledged], [initial], () => "unused").projects[0];
+    expect({ ...merged, photoLibrary: undefined }).toEqual(acknowledged);
+    expect(merged.photoLibrary).toHaveLength(2);
   });
 });

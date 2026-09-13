@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { coverPlacement, resolveFrames } from "@/lib/crop";
+import { resolveFrames } from "@/lib/crop";
+import { drawCroppedPhoto } from "@/lib/draw-photo";
 import type { CanvasFormat, ProjectPage, TemplateDefinition } from "@/lib/types";
 
 interface CompositionThumbnailProps {
@@ -55,10 +56,7 @@ export function CompositionThumbnail({ format, page, template }: CompositionThum
       if (photo) {
         const image = cacheRef.current.get(photo.previewUrl);
         if (image?.complete && image.naturalWidth) {
-          const placement = coverPlacement(photo.sourceWidth, photo.sourceHeight, frame, photo.crop);
-          context.imageSmoothingEnabled = true;
-          context.imageSmoothingQuality = "high";
-          context.drawImage(image, placement.x, placement.y, placement.width, placement.height);
+          drawCroppedPhoto(context, image, photo.sourceWidth, photo.sourceHeight, frame, photo.crop, page.background);
         }
       } else {
         context.fillStyle = "#e7e7e3";

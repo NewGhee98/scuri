@@ -3,6 +3,7 @@ import { resolveFrames } from "./crop";
 import { getFormat } from "./formats";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
 import { validateTemplate } from "./templates";
+import { workspaceKey } from "./workspace";
 import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
 
 const CUSTOM_TEMPLATES_KEY = "layouts.custom-templates.v1";
@@ -78,8 +79,8 @@ function isCustomTemplate(value: unknown): value is CustomTemplate {
   }).length === 0 || candidate.status === "draft";
 }
 
-export function loadCachedCustomTemplates(): CustomTemplate[] {
-  const raw = localStorage.getItem(CUSTOM_TEMPLATES_KEY);
+export function loadCachedCustomTemplates(ownerId?: string | null): CustomTemplate[] {
+  const raw = localStorage.getItem(workspaceKey(CUSTOM_TEMPLATES_KEY, ownerId));
   if (!raw) return [];
   try {
     const library = JSON.parse(raw) as StoredCustomTemplateLibrary;
@@ -90,9 +91,9 @@ export function loadCachedCustomTemplates(): CustomTemplate[] {
   }
 }
 
-export function cacheCustomTemplates(templates: readonly CustomTemplate[]): void {
+export function cacheCustomTemplates(templates: readonly CustomTemplate[], ownerId?: string | null): void {
   const library: StoredCustomTemplateLibrary = { version: 1, templates: [...templates] };
-  localStorage.setItem(CUSTOM_TEMPLATES_KEY, JSON.stringify(library));
+  localStorage.setItem(workspaceKey(CUSTOM_TEMPLATES_KEY, ownerId), JSON.stringify(library));
 }
 
 export function createBlankCustomTemplate(formatId: FormatId, name = "Untitled template"): CustomTemplate {
@@ -242,11 +243,12 @@ export async function loadCloudTemplates(): Promise<CustomTemplate[]> {
   return (data as TemplateRow[]).map(rowToTemplate).filter(isCustomTemplate);
 }
 
-export async function saveCloudTemplate(template: CustomTemplate): Promise<CustomTemplate> {
+export async function saveCloudTemplate(template: CustomTemplate, options?: { ownerId: string; isCurrent: () => boolean }): Promise<CustomTemplate> {
   const client = getTemplateCloudClient();
   if (!client) throw new Error("Template cloud storage has not been connected yet.");
   const { data: userData, error: userError } = await client.auth.getUser();
   if (userError || !userData.user) throw new Error("Sign in before saving this template to the cloud.");
+  if (options && (!options.isCurrent() || options.ownerId !== userData.user.id)) throw new Error("The account changed; this template save was stopped.");
   const row = {
     id: template.id,
     owner_id: userData.user.id,

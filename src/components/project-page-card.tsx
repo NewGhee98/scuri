@@ -40,6 +40,8 @@ export function ProjectPageCard({
 }: ProjectPageCardProps) {
   const dragRef = useRef<{ pageId: string; moved: boolean } | null>(null);
   const missing = getMissingPhotoCount(page, template);
+  const unavailable = template.frames.filter(frame => page.unavailablePhotos?.[frame.id]).length;
+  const empty = missing - unavailable;
 
   const startDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -92,7 +94,7 @@ export function ProjectPageCard({
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{template.name}</p>
             <p className={`mt-1 text-xs ${missing ? "text-amber-700" : "text-emerald-700"}`}>
-              {missing ? `${missing} ${missing === 1 ? "photo" : "photos"} missing` : "Ready to export"}
+              {missing ? [empty ? `${empty} empty frames` : "", unavailable ? `${unavailable} photos awaiting download` : ""].filter(Boolean).join(" · ") : "Ready to export"}
             </p>
           </div>
           <button className="small-button compact" type="button" onClick={() => onEdit(page.id)}>Edit</button>
