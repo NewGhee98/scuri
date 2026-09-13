@@ -61,6 +61,7 @@ export interface CropState {
 }
 
 export interface PhotoAsset {
+  cloudAssetId?: string;
   frameId: string;
   blobKey: string;
   sourceBlob: Blob;
@@ -78,6 +79,8 @@ export interface PhotoAsset {
 }
 
 export interface StoredPhotoAsset {
+  /** Database row identity; older cached records used blobKey as the row id. */
+  cloudAssetId?: string;
   frameId: string;
   blobKey: string;
   sourceName?: string;
@@ -109,6 +112,8 @@ export interface ProjectPage {
   gutter: number;
   selectedFrameId: string | null;
   photos: Record<string, PhotoAsset>;
+  /** Assigned photos whose bytes are unavailable. These are never empty frames. */
+  unavailablePhotos?: Record<string, StoredPhotoAsset>;
   createdAt: string;
   updatedAt: string;
 }
@@ -158,8 +163,16 @@ export interface StoredProject {
   cloudSyncedAt?: string;
   /** Google Drive folder holding this project's originals/previews/exports. */
   driveFolderId?: string;
+  /** Local-only, durable intent from explicit remove/replace/page/layout actions.
+   * Cleared only after the corresponding cloud push fully succeeds. */
+  pendingDeletions?: ProjectDeletions;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProjectDeletions {
+  photos: Array<{ pageId: string; frameId: string; blobKey: string }>;
+  pageIds: string[];
 }
 
 export interface StoredProjectLibrary {

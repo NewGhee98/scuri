@@ -9,7 +9,6 @@ import { FORMATS, getFormat } from "@/lib/formats";
 import Script from "next/script";
 import { createPhotoPreview, disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/image";
 import {
-  downloadGoogleDrivePhoto,
   ensureProjectDriveFolders,
   isGoogleDriveConfigured,
   requestGoogleDriveAccessToken,
@@ -59,9 +58,11 @@ import {
   saveProjects,
 } from "@/lib/storage";
 import {
+  acknowledgeProjectPush,
   getProjectCloudUser,
   getProjectSyncStatus,
   isProjectCloudConfigured,
+  isProjectDirty,
   mergeCloudProjectLibrary,
   projectHasUnbackedAssets,
   pullProjectsFromCloud,
@@ -69,6 +70,7 @@ import {
   resolveProjectConflict,
   softDeleteCloudProject,
 } from "@/lib/project-sync";
+import { applyHydratedPhotos, hydrateProjectPhotos, isPhotoReferencedByAnotherProject, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage } from "@/lib/project-photos";
 import { filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
 import type {
   AppScreen,
@@ -157,36 +159,6 @@ function Header({
   );
 }
 
-function serializePage(page: ProjectPage): StoredProjectPage {
-  return {
-    id: page.id,
-    templateId: page.templateId,
-    templateSnapshot: page.templateSnapshot,
-    background: page.background,
-    gutter: page.gutter,
-    selectedFrameId: page.selectedFrameId,
-    photos: Object.fromEntries(
-      Object.entries(page.photos).map(([frameId, photo]) => [
-        frameId,
-        {
-          frameId,
-          blobKey: photo.blobKey,
-          sourceName: photo.sourceName,
-          mimeType: photo.mimeType,
-          fileSize: photo.fileSize,
-          driveOriginalId: photo.driveOriginalId,
-          drivePreviewId: photo.drivePreviewId,
-          sourceWidth: photo.sourceWidth,
-          sourceHeight: photo.sourceHeight,
-          crop: photo.crop,
-        },
-      ]),
-    ),
-    createdAt: page.createdAt,
-    updatedAt: page.updatedAt,
-  };
-}
-
 export function LayoutsApp() {
   const [screen, setScreen] = useState<AppScreen>("projects");
   const [projects, setProjects] = useState<StoredProject[]>([]);
@@ -196,6 +168,7 @@ export function LayoutsApp() {
   const [projectUpdatedAt, setProjectUpdatedAt] = useState("");
   const [formatId, setFormatId] = useState<FormatId | null>(null);
   const [pages, setPages] = useState<ProjectPage[]>([]);
+  const [pendingDeletions, setPendingDeletions] = useState<StoredProject["pendingDeletions"]>();
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState<BusyState>(null);
@@ -239,8 +212,10 @@ export function LayoutsApp() {
   const driveAccessTokenRef = useRef<string | null>(null);
   const driveTokenExpiresAtRef = useRef(0);
   const projectsRef = useRef<StoredProject[]>([]);
+  const activeProjectRef = useRef<StoredProject | null>(null);
   const projectSyncTimerRef = useRef<number | null>(null);
   const projectPushInFlightRef = useRef(new Set<string>());
+  const lastAutoPushRef = useRef<{ id: string; updatedAt: string; token: string | null } | null>(null);
 
   const format = formatId ? getFormat(formatId) : null;
   const templates = formatId ? getTemplatesForFormat(formatId, customTemplates) : [];
@@ -261,6 +236,8 @@ export function LayoutsApp() {
   ), [customTemplates]);
   const template = activePage ? resolvePageTemplate(activePage) : null;
   const selectedPhoto = activePage?.selectedFrameId ? activePage.photos[activePage.selectedFrameId] : undefined;
+  const selectedStoredPhoto = activePage?.selectedFrameId ? serializePage(activePage).photos[activePage.selectedFrameId] : undefined;
+  const unavailablePhotoCount = pages.reduce((count, page) => count + Object.keys(page.unavailablePhotos ?? {}).length, 0);
   const missingPhotoCount = activePage && template ? getMissingPhotoCount(activePage, template) : 0;
   const completePageCount = pages.reduce((count, page) => count + (isPageComplete(page, resolvePageTemplate(page)) ? 1 : 0), 0);
   const incompletePageCount = pages.length - completePageCount;
@@ -456,7 +433,7 @@ export function LayoutsApp() {
     for (const photo of Object.values(page.photos)) {
       disposePhotoAsset(photo);
       try {
-        await deletePhotoBlob(photo.blobKey);
+        if (!isPhotoReferencedByAnotherProject(projectsRef.current, projectId, photo.blobKey)) await deletePhotoBlob(photo.blobKey);
       } catch {
         // The in-memory project can still be cleared if browser storage is unavailable.
       }
@@ -471,7 +448,7 @@ export function LayoutsApp() {
     for (const page of project.pages) {
       for (const photo of Object.values(page.photos)) {
         try {
-          await deletePhotoBlob(photo.blobKey);
+          if (!isPhotoReferencedByAnotherProject(projectsRef.current, project.id, photo.blobKey)) await deletePhotoBlob(photo.blobKey);
         } catch {
           // Project metadata can still be removed if a stored blob is already missing.
         }
@@ -479,38 +456,26 @@ export function LayoutsApp() {
     }
   };
 
-  const hydrateProjectPages = async (project: StoredProject): Promise<ProjectPage[]> => {
-    const restoredFormat = getFormat(project.formatId);
-    const restoredPages: ProjectPage[] = [];
-    for (const storedPage of project.pages) {
-      const restoredTemplate = storedPage.templateSnapshot ?? getTemplate(storedPage.templateId, customTemplatesRef.current);
-      if (restoredTemplate.formatId !== restoredFormat.id) continue;
-      const restoredPhotos: Record<string, PhotoAsset> = {};
-      for (const item of Object.values(storedPage.photos)) {
-        let blob = await loadPhotoBlob(item.blobKey).catch(() => null);
-        const driveToken = getValidDriveToken();
-        if (!blob && driveToken && item.driveOriginalId) {
-          blob = await downloadGoogleDrivePhoto(driveToken, item.driveOriginalId).catch(() => null);
-          if (blob) await savePhotoBlob(item.blobKey, blob).catch(() => undefined);
-        }
-        if (!blob || !restoredTemplate.frames.some((frame) => frame.id === item.frameId)) continue;
-        try {
-          const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
-          asset.crop = item.crop;
-          asset.sourceName = item.sourceName;
-          asset.mimeType = item.mimeType || blob.type;
-          asset.fileSize = item.fileSize;
-          asset.driveOriginalId = item.driveOriginalId;
-          asset.drivePreviewId = item.drivePreviewId;
-          restoredPhotos[item.frameId] = asset;
-        } catch {
-          // A single damaged stored photo should not prevent the rest of the project opening.
-        }
-      }
-      restoredPages.push({ ...storedPage, photos: restoredPhotos });
-    }
-    return restoredPages;
-  };
+  // Library and active editor must adopt the same metadata in one synchronous
+  // step. Bytes hydrate later and cannot create a transient empty project.
+  const adoptActiveProject = useCallback((project: StoredProject | null) => {
+    const restored = project ? reconcileProjectPages(project, pagesRef.current) : [];
+    const retained = new Set(restored.flatMap((page) => Object.values(page.photos).map((photo) => photo.previewUrl)));
+    pagesRef.current.flatMap((page) => Object.values(page.photos)).forEach((photo) => {
+      if (!retained.has(photo.previewUrl)) disposePhotoAsset(photo);
+    });
+    pagesRef.current = restored;
+    activeProjectRef.current = project;
+    setPages(restored);
+    setPendingDeletions(project?.pendingDeletions);
+    setProjectId(project?.id ?? "");
+    setProjectName(project?.name ?? "Untitled project");
+    setProjectCreatedAt(project?.createdAt ?? "");
+    setProjectUpdatedAt(project?.updatedAt ?? "");
+    setFormatId(project?.formatId ?? null);
+    setActivePageId(restored.some((page) => page.id === project?.activePageId) ? project!.activePageId : restored[0]?.id ?? null);
+    if (!project) setScreen("projects");
+  }, []);
 
   const syncProjectsFromCloud = useCallback(async (): Promise<void> => {
     if (!isProjectCloudConfigured()) return;
@@ -522,20 +487,26 @@ export function LayoutsApp() {
     if (!user) return;
     try {
       const remote = await pullProjectsFromCloud();
-      const localSnapshot = projectsRef.current;
+      if (projectPushInFlightRef.current.size) return;
+      const active = activeProjectRef.current;
+      const localSnapshot = active ? [...projectsRef.current.filter((item) => item.id !== active.id), active] : projectsRef.current;
       const { projects: merged, removedLocalIds } = mergeCloudProjectLibrary(localSnapshot, remote, () => crypto.randomUUID());
       const sorted = sortProjectsByLastEdited(merged);
       projectsRef.current = sorted;
       setProjects(sorted);
       saveProjects(sorted);
+      if (active) {
+        const reconciled = sorted.find((item) => item.id === active.id) ?? null;
+        if (reconciled !== active) adoptActiveProject(reconciled);
+      }
       for (const id of removedLocalIds) {
         const stale = localSnapshot.find((project) => project.id === id);
-        if (stale && stale.id !== projectId) await deleteStoredProjectPhotos(stale);
+        if (stale && stale.id !== active?.id) await deleteStoredProjectPhotos(stale);
       }
     } catch {
       setNotice({ kind: "error", text: "Cloud projects could not be loaded. Your local projects are unchanged." });
     }
-  }, [projectId]);
+  }, [adoptActiveProject]);
 
   const pushProjectNow = useCallback(async (project: StoredProject): Promise<void> => {
     if (!isProjectCloudConfigured() || !templateUserRef.current) return;
@@ -552,7 +523,7 @@ export function LayoutsApp() {
         for (const page of working.pages) {
           const updatedPhotos: StoredProjectPage["photos"] = {};
           for (const [frameId, photo] of Object.entries(page.photos)) {
-            if (photo.driveOriginalId) {
+            if (photo.driveOriginalId && photo.drivePreviewId) {
               updatedPhotos[frameId] = photo;
               continue;
             }
@@ -563,7 +534,7 @@ export function LayoutsApp() {
             }
             const preview = await createPhotoPreview(source);
             URL.revokeObjectURL(preview.previewUrl);
-            const uploaded = await uploadPhotoAssetToDrive(driveToken, folders, working.id, photo, source, preview.blob).catch(() => null);
+            const uploaded = await uploadPhotoAssetToDrive(driveToken, folders, working.id, page.id, photo, source, preview.blob).catch(() => null);
             updatedPhotos[frameId] = uploaded ? { ...photo, driveOriginalId: uploaded.driveOriginalId, drivePreviewId: uploaded.drivePreviewId } : photo;
           }
           updatedPages.push({ ...page, photos: updatedPhotos });
@@ -573,35 +544,35 @@ export function LayoutsApp() {
       }
 
       const result = await pushProjectToCloud(working);
+      if ("assetProtection" in result) {
+        const next = sortProjectsByLastEdited([...projectsRef.current.filter((item) => item.id !== working.id), result.remote]);
+        projectsRef.current = next;
+        setProjects(next);
+        saveProjects(next);
+        if (activeProjectRef.current?.id === working.id) adoptActiveProject(result.remote);
+        setNotice({ kind: "info", text: "Scuri protected this project's cloud photos and restored their saved assignments. Reconnect Google Drive to load unavailable photos." });
+        setProjectSyncErrors((current) => ({ ...current, [working.id]: false }));
+        return;
+      }
+      const latest = activeProjectRef.current?.id === working.id ? activeProjectRef.current : projectsRef.current.find((item) => item.id === working.id) ?? project;
       if (result.conflict) {
-        const duplicate = resolveProjectConflict(working, result.remote, crypto.randomUUID()).duplicate;
-        setProjects((current) => {
-          const next = sortProjectsByLastEdited([...current.filter((item) => item.id !== working.id && item.id !== result.remote.id), result.remote, duplicate]);
-          projectsRef.current = next;
-          saveProjects(next);
-          return next;
-        });
-        if (projectId === working.id) {
-          setProjectId(duplicate.id);
-          setProjectName(duplicate.name);
-          setProjectCreatedAt(duplicate.createdAt);
-          setProjectUpdatedAt(duplicate.updatedAt);
-        }
+        const duplicate = resolveProjectConflict(latest, result.remote, crypto.randomUUID()).duplicate;
+        const next = sortProjectsByLastEdited([...projectsRef.current.filter((item) => item.id !== working.id), result.remote, duplicate]);
+        projectsRef.current = next;
+        saveProjects(next);
+        setProjects(next);
+        if (activeProjectRef.current?.id === working.id) adoptActiveProject(duplicate);
         setNotice({ kind: "info", text: `"${working.name}" changed on another device. The cloud version was kept, and your changes were kept separately as "${duplicate.name}".` });
         setProjectSyncErrors((current) => ({ ...current, [working.id]: false }));
         return;
       }
 
-      setProjects((current) => {
-        const next = sortProjectsByLastEdited([...current.filter((item) => item.id !== result.project.id), result.project]);
-        projectsRef.current = next;
-        saveProjects(next);
-        return next;
-      });
-      if (projectId === result.project.id) {
-        setProjectCreatedAt(result.project.createdAt);
-        setProjectUpdatedAt(result.project.updatedAt);
-      }
+      const acknowledged = acknowledgeProjectPush(latest, project, result);
+      const next = sortProjectsByLastEdited([...projectsRef.current.filter((item) => item.id !== acknowledged.id), acknowledged]);
+      projectsRef.current = next;
+      setProjects(next);
+      saveProjects(next);
+      if (activeProjectRef.current?.id === acknowledged.id) adoptActiveProject(acknowledged);
       setProjectSyncErrors((current) => ({ ...current, [working.id]: result.partial }));
     } catch {
       setProjectSyncErrors((current) => ({ ...current, [project.id]: true }));
@@ -614,12 +585,13 @@ export function LayoutsApp() {
       });
       setDriveProgress(null);
     }
-  }, [getValidDriveToken, projectId]);
+  }, [getValidDriveToken, adoptActiveProject]);
 
   useEffect(() => {
     const restore = () => {
       try {
         const saved = sortProjectsByLastEdited(loadProjects());
+        projectsRef.current = saved;
         setProjects(saved);
         const savedTemplates = loadCachedCustomTemplates();
         customTemplatesRef.current = savedTemplates;
@@ -705,23 +677,44 @@ export function LayoutsApp() {
       revision: existing?.revision,
       cloudSyncedAt: existing?.cloudSyncedAt,
       driveFolderId: existing?.driveFolderId,
+      pendingDeletions,
       createdAt: projectCreatedAt || now(),
       updatedAt: projectUpdatedAt || projectCreatedAt || now(),
     };
-  }, [activePageId, formatId, pages, projectCreatedAt, projectId, projectName, projectUpdatedAt]);
+  }, [activePageId, formatId, pages, pendingDeletions, projectCreatedAt, projectId, projectName, projectUpdatedAt]);
+
+  useEffect(() => {
+    activeProjectRef.current = buildStoredProject();
+  }, [buildStoredProject]);
+
+  useEffect(() => {
+    if (!pages.some((page) => Object.keys(page.unavailablePhotos ?? {}).length)) return;
+    let cancelled = false;
+    void hydrateProjectPhotos(pages, getValidDriveToken).then((hydrated) => {
+      if (cancelled) {
+        hydrated.forEach(({ photo }) => disposePhotoAsset(photo));
+        return;
+      }
+      const next = applyHydratedPhotos(pagesRef.current, hydrated);
+      const retained = new Set(next.flatMap((page) => Object.values(page.photos).map((photo) => photo.previewUrl)));
+      hydrated.forEach(({ photo }) => { if (!retained.has(photo.previewUrl)) disposePhotoAsset(photo); });
+      if (next === pagesRef.current) return;
+      pagesRef.current = next;
+      setPages(next);
+    });
+    return () => { cancelled = true; };
+  }, [pages, projectId, driveAccessToken, getValidDriveToken]);
 
   useEffect(() => {
     if (!ready || !projectId || !formatId) return;
     const timer = window.setTimeout(() => {
-      const saved = buildStoredProject();
+      const saved = activeProjectRef.current;
       if (!saved) return;
       try {
-        setProjects((current) => {
-          const next = sortProjectsByLastEdited([...current.filter((project) => project.id !== saved.id), saved]);
-          projectsRef.current = next;
-          saveProjects(next);
-          return next;
-        });
+        const next = sortProjectsByLastEdited([...projectsRef.current.filter((project) => project.id !== saved.id), saved]);
+        projectsRef.current = next;
+        saveProjects(next);
+        setProjects(next);
       } catch {
         setNotice({ kind: "error", text: "This project could not be autosaved in this browser." });
       }
@@ -734,16 +727,21 @@ export function LayoutsApp() {
     if (projectSyncTimerRef.current) window.clearTimeout(projectSyncTimerRef.current);
     const project = buildStoredProject();
     if (!project) return;
+    const dirty = isProjectDirty(project);
+    if (!dirty && !(driveAccessToken && projectHasUnbackedAssets(project))) return;
     projectSyncTimerRef.current = window.setTimeout(() => {
-      void pushProjectNow(project);
+      const latest = activeProjectRef.current;
+      if (latest?.id !== project.id || projectPushInFlightRef.current.has(latest.id)) return;
+      const last = lastAutoPushRef.current;
+      if (last?.id === latest.id && last.updatedAt === latest.updatedAt && last.token === driveAccessToken) return;
+      lastAutoPushRef.current = { id: latest.id, updatedAt: latest.updatedAt, token: driveAccessToken };
+      void pushProjectNow(latest);
     }, 1800);
     return () => {
       if (projectSyncTimerRef.current) window.clearTimeout(projectSyncTimerRef.current);
       projectSyncTimerRef.current = null;
     };
-    // Re-runs whenever the project actually changes (projectUpdatedAt), not on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectUpdatedAt]);
+  }, [buildStoredProject, driveAccessToken, formatId, projectId, pushProjectNow, ready, templateUser]);
 
   useEffect(() => {
     if (!hasAnyPhotos) return;
@@ -774,8 +772,8 @@ export function LayoutsApp() {
 
   const persistActiveProject = (): StoredProject[] => {
     const saved = buildStoredProject();
-    if (!saved) return projects;
-    const next = sortProjectsByLastEdited([...projects.filter((project) => project.id !== saved.id), saved]);
+    if (!saved) return projectsRef.current;
+    const next = sortProjectsByLastEdited([...projectsRef.current.filter((project) => project.id !== saved.id), saved]);
     projectsRef.current = next;
     saveProjects(next);
     setProjects(next);
@@ -802,6 +800,9 @@ export function LayoutsApp() {
     pagesRef.current.forEach(disposePagePreviews);
     pagesRef.current = [];
     setProjects(nextProjects);
+    projectsRef.current = nextProjects;
+    activeProjectRef.current = project;
+    setPendingDeletions(undefined);
     setProjectId(id);
     setProjectName(name);
     setProjectCreatedAt(createdAt);
@@ -821,7 +822,9 @@ export function LayoutsApp() {
         setScreen("editor");
         return;
       }
-      if (Object.keys(activePage.photos).length && !window.confirm("Change this page layout and remove its photographs?")) return;
+      const removedPhotos = Object.values(serializePage(activePage).photos);
+      if (removedPhotos.length && !window.confirm("Change this page layout and remove its photographs, including unavailable photos?")) return;
+      setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id, removedPhotos));
       await deletePagePhotos(activePage);
       updatePage(activePage.id, (page) => ({
         ...page,
@@ -831,6 +834,7 @@ export function LayoutsApp() {
         gutter: nextTemplate.defaultGutter,
         selectedFrameId: nextTemplate.frames[0]?.id ?? null,
         photos: {},
+        unavailablePhotos: {},
       }));
       setRearrangeMode(false);
       setScreen("editor");
@@ -871,7 +875,8 @@ export function LayoutsApp() {
     const currentPage = pagesRef.current.find((page) => page.id === target.pageId);
     if (!currentPage) return;
     const currentTemplate = resolvePageTemplate(currentPage);
-    const targetFrameIds = getPhotoFillTargets(currentTemplate, currentPage.photos, target.frameId, files.length);
+    const storedPhotos = serializePage(currentPage).photos;
+    const targetFrameIds = getPhotoFillTargets(currentTemplate, storedPhotos, target.frameId, files.length);
     const selectedFiles = files.slice(0, targetFrameIds.length);
     if (!selectedFiles.length) return;
     setBusy("image");
@@ -896,14 +901,16 @@ export function LayoutsApp() {
         .map((frameId) => currentPage.photos[frameId])
         .filter((photo): photo is PhotoAsset => Boolean(photo));
       const additions = Object.fromEntries(preparedAssets.map((asset) => [asset.frameId, asset]));
+      setPendingDeletions((current) => recordPhotoDeletions(current, target.pageId, targetFrameIds.flatMap((frameId) => storedPhotos[frameId] ? [storedPhotos[frameId]] : [])));
       updatePage(target.pageId, (page) => ({
         ...page,
         selectedFrameId: targetFrameIds[0],
         photos: { ...page.photos, ...additions },
+        unavailablePhotos: Object.fromEntries(Object.entries(page.unavailablePhotos ?? {}).filter(([frameId]) => !additions[frameId])),
       }));
       for (const previous of replacedPhotos) {
         disposePhotoAsset(previous);
-        void deletePhotoBlob(previous.blobKey).catch(() => undefined);
+        if (!isPhotoReferencedByAnotherProject(projectsRef.current, projectId, previous.blobKey)) void deletePhotoBlob(previous.blobKey).catch(() => undefined);
       }
       if (preparedAssets.length > 1) setRearrangeMode(true);
 
@@ -938,6 +945,13 @@ export function LayoutsApp() {
 
   const movePhoto = (sourceFrameId: string, targetFrameId: string) => {
     if (!activePage || sourceFrameId === targetFrameId) return;
+    if (Object.keys(activePage.unavailablePhotos ?? {}).length) {
+      setNotice({ kind: "info", text: "Load this page's unavailable photos before rearranging them." });
+      return;
+    }
+    if (!activePage.photos[sourceFrameId]) return;
+    setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id,
+      [activePage.photos[sourceFrameId], activePage.photos[targetFrameId]].filter(Boolean)));
     updatePage(activePage.id, (page) => ({
       ...page,
       selectedFrameId: targetFrameId,
@@ -948,15 +962,13 @@ export function LayoutsApp() {
   const removeSelected = () => {
     if (!activePage?.selectedFrameId) return;
     const frameId = activePage.selectedFrameId;
-    const removed = activePage.photos[frameId];
+    const removed = serializePage(activePage).photos[frameId];
     if (!removed) return;
-    disposePhotoAsset(removed);
-    void deletePhotoBlob(removed.blobKey).catch(() => undefined);
-    updatePage(activePage.id, (page) => {
-      const photos = { ...page.photos };
-      delete photos[frameId];
-      return { ...page, photos };
-    });
+    if (!window.confirm("Remove this photo from the project? This also applies to its cloud assignment.")) return;
+    setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id, [removed]));
+    if (activePage.photos[frameId]) disposePhotoAsset(activePage.photos[frameId]);
+    if (!isPhotoReferencedByAnotherProject(projectsRef.current, projectId, removed.blobKey)) void deletePhotoBlob(removed.blobKey).catch(() => undefined);
+    updatePage(activePage.id, (page) => removePagePhoto(page, frameId));
   };
 
   const resetSelected = () => {
@@ -1149,26 +1161,10 @@ export function LayoutsApp() {
     const savedProjects = persistActiveProject();
     const stored = savedProjects.find((project) => project.id === id);
     if (!stored) return;
-    if (projectId === id && formatId === stored.formatId) {
-      setScreen("project");
-      return;
-    }
     setBusy("project");
     clearExportItems();
     try {
-      const restoredPages = await hydrateProjectPages(stored);
-      pagesRef.current.forEach(disposePagePreviews);
-      pagesRef.current = restoredPages;
-      const restoredActiveId = restoredPages.some((page) => page.id === stored.activePageId)
-        ? stored.activePageId
-        : restoredPages[0]?.id ?? null;
-      setProjectId(stored.id);
-      setProjectName(stored.name);
-      setProjectCreatedAt(stored.createdAt);
-      setProjectUpdatedAt(stored.updatedAt);
-      setFormatId(stored.formatId);
-      setPages(restoredPages);
-      setActivePageId(restoredActiveId);
+      adoptActiveProject(stored);
       setRearrangeMode(false);
       setScreen("project");
     } catch {
@@ -1216,6 +1212,8 @@ export function LayoutsApp() {
       setProjectUpdatedAt("");
       setFormatId(null);
       setPages([]);
+      setPendingDeletions(undefined);
+      activeProjectRef.current = null;
       setActivePageId(null);
     } else {
       await deleteStoredProjectPhotos(project);
@@ -1246,6 +1244,10 @@ export function LayoutsApp() {
   const duplicatePage = async (pageId: string) => {
     const source = pagesRef.current.find((page) => page.id === pageId);
     if (!source) return;
+    if (Object.keys(source.unavailablePhotos ?? {}).length) {
+      setNotice({ kind: "info", text: "Load this page's unavailable photos before duplicating it." });
+      return;
+    }
     if (pagesRef.current.length >= MAX_PROJECT_PAGES) {
       setNotice({ kind: "error", text: `A project can contain up to ${MAX_PROJECT_PAGES} pages.` });
       return;
@@ -1286,6 +1288,7 @@ export function LayoutsApp() {
   const deletePage = async (pageId: string) => {
     const page = pagesRef.current.find((item) => item.id === pageId);
     if (!page || !window.confirm("Delete this page and its photographs from the project?")) return;
+    setPendingDeletions((current) => recordPhotoDeletions(current, pageId, Object.values(serializePage(page).photos), true));
     await deletePagePhotos(page);
     setPages((current) => current.filter((item) => item.id !== pageId));
     setProjectUpdatedAt(now());
@@ -1482,6 +1485,11 @@ export function LayoutsApp() {
         onNew={screen === "templates" ? beginNewTemplate : beginNewProject}
         templatesSynced={templateLibrarySynced}
       />
+      {unavailablePhotoCount > 0 && ["project", "editor", "template"].includes(screen) ? (
+        <p role="status" className="mx-auto mt-4 max-w-[1240px] px-4 text-sm text-neutral-600 sm:px-6">
+          {unavailablePhotoCount} {unavailablePhotoCount === 1 ? "photo is" : "photos are"} unavailable on this device. Their saved assignments and crops are preserved. Reconnect Google Drive or reopen the project to retry loading them.
+        </p>
+      ) : null}
       <input
         ref={inputRef}
         className="sr-only"
@@ -1936,6 +1944,7 @@ export function LayoutsApp() {
               background={activePage.background}
               gutter={activePage.gutter}
               photos={activePage.photos}
+              unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
               selectedFrameId={activePage.selectedFrameId}
               rearrangeMode={rearrangeMode}
               onSelectFrame={(frameId) => updatePage(activePage.id, (page) => ({ ...page, selectedFrameId: frameId }))}
@@ -1962,7 +1971,7 @@ export function LayoutsApp() {
             <div className="control-section">
               <div className="flex items-center justify-between gap-3">
                 <label className="control-label" htmlFor="zoom">Selected photo</label>
-                <span className="text-xs tabular-nums text-neutral-500">{selectedPhoto ? `${Math.round(selectedPhoto.crop.zoom * 100)}%` : "Empty frame"}</span>
+                <span className="text-xs tabular-nums text-neutral-500">{selectedPhoto ? `${Math.round(selectedPhoto.crop.zoom * 100)}%` : selectedStoredPhoto ? "Photo unavailable" : "Empty frame"}</span>
               </div>
               <input
                 id="zoom"
@@ -1978,16 +1987,16 @@ export function LayoutsApp() {
               />
               <div className="mt-4 grid grid-cols-3 gap-2">
                 <button className="small-button" type="button" disabled={!activePage.selectedFrameId} onClick={() => activePage.selectedFrameId && requestPhoto(activePage.selectedFrameId)}>
-                  {selectedPhoto ? "Replace" : "Add photo"}
+                  {selectedStoredPhoto ? "Replace" : "Add photo"}
                 </button>
                 <button className="small-button" type="button" disabled={!selectedPhoto} onClick={resetSelected}>Reset</button>
-                <button className="small-button danger" type="button" disabled={!selectedPhoto} onClick={removeSelected}>Remove</button>
+                <button className="small-button danger" type="button" disabled={!selectedStoredPhoto} onClick={removeSelected}>Remove</button>
               </div>
               <button
                 className={`secondary-button mt-2 w-full ${rearrangeMode ? "rearrange-active" : ""}`}
                 type="button"
                 aria-pressed={rearrangeMode}
-                disabled={!Object.keys(activePage.photos).length || template.frames.length < 2}
+                disabled={!Object.keys(activePage.photos).length || Object.keys(activePage.unavailablePhotos ?? {}).length > 0 || template.frames.length < 2}
                 onClick={() => setRearrangeMode((current) => !current)}
               >
                 {rearrangeMode ? "Done rearranging" : "Rearrange photos"}
