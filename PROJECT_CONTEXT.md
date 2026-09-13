@@ -434,9 +434,25 @@ Verification: **136 offline automated tests in 16 files**, TypeScript, ESLint an
 
 **Recovery limitation:** this feature cannot reconstruct already-lost Islands mappings or crops, and no current Islands state was inspected. Old Drive files do not contain the new metadata; even new upload hints can be stale after moves or copy reuse. Later, under separate live authorization, preserve the database/Drive inventory and original-device cache, seek a recoverable historical mapping, and use a separate recovery copy for any verified reconstruction. Without surviving mapping evidence, placement/crops require manual user reconstruction. Do not guess from filenames/order, overwrite the original project or delete suspected duplicates. ISLANDS_RECOVERY.md remains the separate manual plan.
 
+## Upload-checkpoint protection recovery — 2026-09-13
+
+Focused fix for PR #15 review discussion_r4001065158, prepared from main commit a8b0e5417ff0685929580e791a05e6e75ae7fecd. The preceding release was observed on GitHub main and Vercel's current Ready production deployment during the separate read-only deployment check. This checkpoint fix is being submitted for review and has not been deployed to production by this session.
+
+On 14 September, the user relayed a live connector confirmation that projects.photo_library exists as required JSONB with an empty-array default and array-only constraint, with owner-only RLS, authenticated grants and the revision trigger unchanged. The connector reported no asset, Drive-file or existing-project-row changes. This session did not independently query Supabase. The applied migration was recorded as 20260913224149_add_project_photo_library, while the committed filename still begins 20260913180000; filename/documentation alignment is separate from this checkpoint fix. Do not run the additive SQL again merely to reconcile those names.
+
+The previous protection handler adopted result.remote directly after Drive uploads. When uploads were the only local changes, preserveProtectedLocalEdits returned no copy, so newly checkpointed original/preview/folder IDs were discarded. The same gap could lose the project folder even when meaningful edits were preserved in a copy.
+
+reconcileProtectedProject now combines protection reconciliation and edit preservation: cloud pages, order, assignments, crops, asset-row identities, revision and acknowledgement remain authoritative; only missing original/preview IDs for matching immutable blob keys and a missing project folder ID are filled from known checkpoints. Existing cloud IDs win. Both assigned and cloud-library-only photos are covered, without adding local-only placements to the canonical project. Local-only photos and genuine edits still use the existing separate recovery-copy path. Checkpoint progress alone does not create a recovery copy.
+
+Retained checkpoint metadata is marked dirty using a timestamp later than the cloud acknowledgement, even with a lagging device clock, so the existing queue can persist it on the next metadata push. The cache, project list and active editor adopt that same canonical result. Partial byte-upload failure remains a retryable error. Missing bytes still never mean deletion; no absence guard or explicit-deletion requirement was weakened.
+
+The synthetic regression reproduced the old loss before the fix. Coverage includes protection -> cache reload -> active-page reconciliation -> cloud retry; original/preview checkpoints independently; no repeated original upload after preview failure; cloud ID precedence; frame moves; unassigned originals; preserved local edits; and unchanged already-acknowledged snapshots. All 144 tests, TypeScript, ESLint and the production build pass. Final check/package details are in UPLOAD_CHECKPOINT_FIX.md and VERIFICATION.md.
+
+No schema/migration, dependency, RLS, live database, Drive byte/file, project asset or recovery changes are included. Existing SQL files are untouched. This cannot rediscover upload IDs already lost by older clients; it prevents future loss in this protection path. The previously documented cross-device child-write transaction gap and Islands recovery limitations remain separate.
+
 ## Guidance for future coding agents / chats
 
-Earlier deployment/version statements in this file are historical and have not been revalidated by the latest local release.
+Earlier deployment/version statements are historical except for the separate read-only production check recorded above.
 
 Before making changes:
 

@@ -67,7 +67,7 @@ import {
   pullProjectsFromCloud,
   pushProjectToCloud,
   resolveProjectConflict,
-  preserveProtectedLocalEdits,
+  reconcileProtectedProject,
   softDeleteCloudProject,
 } from "@/lib/project-sync";
 import { applyHydratedPhotos, hydrateProjectPhotos, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage } from "@/lib/project-photos";
@@ -621,18 +621,18 @@ export function LayoutsApp() {
       const latest = activeProjectRef.current?.id === working.id ? activeProjectRef.current : projectsRef.current.find(item => item.id === working.id);
       if (!latest) return true;
       if ("assetProtection" in result) {
-        const copy = preserveProtectedLocalEdits(latest, result.remote, crypto.randomUUID());
-        const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== working.id), result.remote, ...(copy ? [copy] : [])]);
+        const { canonical, copy } = reconcileProtectedProject(latest, result.remote, crypto.randomUUID());
+        const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== working.id), canonical, ...(copy ? [copy] : [])]);
         // Copy runtime-only originals before changing the active project.
         for (const photo of retainedPhotosRef.current.values()) retainVolatileForOwner(ownerId, photo.blobKey, photo.sourceBlob);
         for (const page of pagesRef.current) for (const photo of Object.values(page.photos)) retainVolatileForOwner(ownerId, photo.blobKey, photo.sourceBlob);
         saveWorkspaceProjects(next, ownerId);
         projectsRef.current = next;
         setProjects(next);
-        if (activeProjectRef.current?.id === working.id) adoptActiveProject(copy ?? result.remote);
+        if (activeProjectRef.current?.id === working.id) adoptActiveProject(copy ?? canonical);
         setNotice({ kind: "info", text: copy ? "Cloud photos were protected. Your local edits were kept in a separate recovered project." : "Cloud photo assignments restored. Unavailable photos will load when Drive is connected." });
-        setProjectSyncErrors(current => ({ ...current, [working.id]: false }));
-        return true;
+        setProjectSyncErrors(current => ({ ...current, [working.id]: backupFailed }));
+        return !backupFailed;
       }
       if (result.conflict) {
         const duplicate = resolveProjectConflict(latest, result.remote, crypto.randomUUID()).duplicate;

@@ -3,7 +3,9 @@ import { getSupabaseClient } from "../supabase-client";
 import { downloadGoogleDrivePhoto } from "../google-drive";
 import { preparePhotoAsset } from "../image";
 import { loadPhotoBlob, loadProjects, savePhotoBlob, saveProjects } from "../storage";
-import { acknowledgeProjectPush, isProjectDirty, mergeCloudProjectLibrary, pullProjectsFromCloud, pushProjectToCloud, resolveProjectConflict, rowsToStoredProject } from "../project-sync";
+import { acknowledgeProjectPush, isProjectDirty, mergeCloudProjectLibrary, pullProjectsFromCloud, pushProjectToCloud, reconcileProtectedProject, resolveProjectConflict, rowsToStoredProject } from "../project-sync";
+import { applyPhotoBackupCheckpoint } from "../photo-backup";
+import { getProjectPhotos } from "../project-photo-library";
 import { applyHydratedPhotos, hydrateProjectPhotos, isPhotoReferencedByAnotherProject, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage } from "../project-photos";
 import { moveLayoutPhoto } from "../project";
 import type { StoredPhotoAsset, StoredProject } from "../types";
@@ -194,6 +196,45 @@ describe("fresh-device load -> hydrate -> autosave -> push", () => {
 });
 
 describe("cloud deletion protection and explicit intent", () => {
+  it("retains completed uploads through protection, cache/editor restoration and the next cloud push", async () => {
+    const cloud = fakeCloud();
+    cloud.rows.projects[0].drive_folder_id = null;
+    cloud.rows.project_assets[0].drive_file_id = null;
+    cloud.rows.project_assets[0].drive_preview_id = null;
+    const [remote] = await pullProjectsFromCloud();
+    const local = structuredClone(remote);
+    delete local.pages[0].photos["frame-2"]; // An incomplete stale snapshot, not user intent.
+    const uploaded = applyPhotoBackupCheckpoint(local, { blobKey: "test-blob-1", driveFolderId: "test-new-folder",
+      driveOriginalId: "test-new-original", drivePreviewId: "test-new-preview" }, edited);
+    const result = await pushProjectToCloud(uploaded);
+    expect(result).toMatchObject({ assetProtection: true });
+    expect(cloud.mutations).toEqual([]);
+    if (!("assetProtection" in result)) throw new Error("Expected synthetic protection result");
+
+    const { canonical, copy } = reconcileProtectedProject(uploaded, result.remote, "unused-copy");
+    expect(copy).toBeNull(); // Backup progress alone must not create an empty recovered project.
+    expect(canonical.driveFolderId).toBe("test-new-folder");
+    expect(canonical.pages[0].photos["frame-1"]).toMatchObject({ driveOriginalId: "test-new-original", drivePreviewId: "test-new-preview" });
+    expect(canonical.pages[0].photos["frame-2"]).toEqual(remote.pages[0].photos["frame-2"]);
+    expect(canonical.pages[0].photos["frame-1"].crop).toEqual(remote.pages[0].photos["frame-1"].crop);
+    expect(isProjectDirty(canonical)).toBe(true);
+    expect(canonical.revision).toBe(remote.revision);
+    expect(canonical.cloudSyncedAt).toBe(remote.cloudSyncedAt);
+
+    saveProjects([canonical]);
+    const [cached] = loadProjects();
+    const openPages = reconcileProjectPages(cached);
+    expect(openPages.map(serializePage)).toEqual(canonical.pages);
+    expect(getProjectPhotos(cached).find(photo => photo.blobKey === "test-blob-1")).toMatchObject({
+      driveOriginalId: "test-new-original", drivePreviewId: "test-new-preview" });
+    const retried = await pushProjectToCloud(cached);
+    expect(retried).toMatchObject({ conflict: false, partial: false });
+    expect(cloud.rows.projects[0].drive_folder_id).toBe("test-new-folder");
+    expect(cloud.rows.project_assets[0]).toMatchObject({ drive_file_id: "test-new-original", drive_preview_id: "test-new-preview" });
+    expect(cloud.rows.project_assets).toHaveLength(2);
+    expect(cloud.mutations.some(operation => operation.operation === "delete")).toBe(false);
+  });
+
   it("rejects a queued save owned by a different account before any mutation", async () => {
     const cloud = fakeCloud();
     await expect(pushProjectToCloud(cloud.initial, { ownerId: "another-synthetic-owner", isCurrent: () => true })).rejects.toThrow("account changed");

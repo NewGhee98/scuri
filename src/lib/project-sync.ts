@@ -2,6 +2,7 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
 import { getProjectPhotos, hasUnassignedPhotos, mergePhotoLibraries, preserveProjectLibrary } from "./project-photo-library";
 import { isProjectPhoto } from "./project-validation";
+import { nextProjectEditTime } from "./project-time";
 import type {
   CropState,
   FormatId,
@@ -490,6 +491,31 @@ export function preserveProtectedLocalEdits(local: StoredProject, remote: Stored
   if (!meaningful && !local.pendingDeletions?.photos.length && !local.pendingDeletions?.pageIds.length) return null;
   const copy = resolveProjectConflict(local, remote, newId).duplicate;
   return { ...copy, name: `${local.name} (recovered local edits)`.slice(0, 120) };
+}
+
+/** Restore cloud structure without discarding completed uploads. Fill missing
+ * byte references by immutable blob key; existing cloud references win. Newly
+ * retained checkpoints remain dirty until a later metadata push acknowledges them. */
+export function reconcileProtectedProject(local: StoredProject, remote: StoredProject, newId: string,
+  timestamp = new Date().toISOString()): { canonical: StoredProject; copy: StoredProject | null } {
+  if (local.id !== remote.id) throw new Error("Cannot reconcile backup checkpoints from another project.");
+  const remotePhotos = getProjectPhotos(remote);
+  const backups = new Map(mergePhotoLibraries(getProjectPhotos(local), remotePhotos).map(photo => [photo.blobKey, photo]));
+  const driveFolderId = remote.driveFolderId ?? local.driveFolderId;
+  let changed = driveFolderId !== remote.driveFolderId;
+  const retainUploads = <T extends ProjectPhoto>(photo: T): T => {
+    const known = backups.get(photo.blobKey);
+    const driveOriginalId = photo.driveOriginalId ?? known?.driveOriginalId;
+    const drivePreviewId = photo.drivePreviewId ?? known?.drivePreviewId;
+    if (driveOriginalId === photo.driveOriginalId && drivePreviewId === photo.drivePreviewId) return photo;
+    changed = true;
+    return { ...photo, driveOriginalId, drivePreviewId };
+  };
+  const photoLibrary = remotePhotos.map(retainUploads);
+  const pages = remote.pages.map(page => ({ ...page,
+    photos: Object.fromEntries(Object.entries(page.photos).map(([frameId, photo]) => [frameId, retainUploads(photo)])) }));
+  const canonical = changed ? { ...remote, driveFolderId, photoLibrary, pages, updatedAt: nextProjectEditTime(remote, timestamp) } : remote;
+  return { canonical, copy: preserveProtectedLocalEdits(local, remote, newId) };
 }
 
 export function getProjectBackupCounts(project: StoredProject): { total: number; originals: number; previews: number } {
