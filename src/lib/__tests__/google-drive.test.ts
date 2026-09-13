@@ -4,6 +4,22 @@ import { uploadPhotoAssetToDrive } from "../google-drive";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Drive upload recovery hints", () => {
+  it("backs up an unassigned original without inventing page or frame identities", async () => {
+    const metadata: Array<{ appProperties: Record<string, string> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "POST") {
+        metadata.push(JSON.parse(String(options.body)));
+        return new Response(null, { status: 200, headers: { Location: "https://example.invalid/synthetic-upload" } });
+      }
+      return Response.json({ id: `synthetic-unassigned-${metadata.length}` });
+    }));
+    const bytes = new Blob(["synthetic bytes"], { type: "image/jpeg" });
+    await uploadPhotoAssetToDrive("synthetic-token", { projectFolderId: "p", originalsFolderId: "o", previewsFolderId: "v", exportsFolderId: "e" },
+      "synthetic-project", null, { blobKey: "synthetic-library-photo" }, bytes, bytes);
+    expect(metadata.map(item => item.appProperties)).toEqual(["original", "preview"].map(scuriType => ({
+      scuriType, scuriProjectId: "synthetic-project", scuriBlobKey: "synthetic-library-photo",
+    })));
+  });
   it("attaches project/page/frame/blob identity to both uploads", async () => {
     const metadata: Array<{ appProperties: Record<string, string> }> = [];
     const fetch = vi.fn(async (_url: string, options: RequestInit) => {

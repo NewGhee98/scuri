@@ -93,6 +93,9 @@ export interface StoredPhotoAsset {
   crop: CropState;
 }
 
+/** Project-owned original, independent of any page/frame assignment. */
+export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "crop">;
+
 export type AppScreen =
   | "projects"
   | "project"
@@ -143,6 +146,7 @@ export type ProjectCloudSyncState =
   | "synced"
   | "waiting-for-connection"
   | "drive-reconnect-required"
+  | "photos-pending"
   | "sync-error";
 
 export interface StoredProject {
@@ -152,6 +156,8 @@ export interface StoredProject {
   formatId: FormatId;
   activePageId: string | null;
   pages: StoredProjectPage[];
+  /** Missing on older projects; their assigned originals seed the library. */
+  photoLibrary?: ProjectPhoto[];
   /**
    * Last Supabase `projects.revision` this device knows it is in sync with.
    * Undefined means this project has never been pushed to Supabase. Used as

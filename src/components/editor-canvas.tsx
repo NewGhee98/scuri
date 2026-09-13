@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { coverPlacement, moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
+import { moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
+import { drawCroppedPhoto } from "@/lib/draw-photo";
 import type { CanvasFormat, CropState, PhotoAsset, ResolvedFrame, TemplateDefinition } from "@/lib/types";
 
 interface EditorCanvasProps {
@@ -131,10 +132,7 @@ export function EditorCanvas({
       if (photo) {
         const image = imageCacheRef.current.get(photo.previewUrl);
         if (image?.complete && image.naturalWidth) {
-          const placement = coverPlacement(photo.sourceWidth, photo.sourceHeight, frame, photo.crop);
-          context.imageSmoothingEnabled = true;
-          context.imageSmoothingQuality = "high";
-          context.drawImage(image, placement.x, placement.y, placement.width, placement.height);
+          drawCroppedPhoto(context, image, photo.sourceWidth, photo.sourceHeight, frame, photo.crop, background);
         } else {
           context.fillStyle = "#e8e8e5";
           context.fillRect(frame.x, frame.y, frame.width, frame.height);

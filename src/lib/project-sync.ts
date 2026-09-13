@@ -1,5 +1,7 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
+import { getProjectPhotos, hasUnassignedPhotos, mergePhotoLibraries, preserveProjectLibrary } from "./project-photo-library";
+import { isProjectPhoto } from "./project-validation";
 import type {
   CropState,
   FormatId,
@@ -8,6 +10,7 @@ import type {
   StoredProject,
   StoredProjectPage,
   TemplateDefinition,
+  ProjectPhoto,
 } from "./types";
 
 // Supabase is the source of truth for project structure/state; Google Drive
@@ -17,6 +20,7 @@ import type {
 // PROJECT_CONTEXT.md for the architecture this implements.
 
 interface ProjectRow {
+  photo_library?: ProjectPhoto[];
   id: string;
   owner_id: string;
   name: string;
@@ -104,7 +108,9 @@ export async function getProjectCloudUser(): Promise<User | null> {
   return data.session?.user ?? null;
 }
 
-const PROJECT_COLUMNS = "id, owner_id, name, format_id, active_page_id, drive_folder_id, revision, created_at, updated_at, deleted_at";
+// '*' allows reads against the previous schema while the additive column is
+// awaiting review. Only the typed project metadata below is consumed.
+const PROJECT_COLUMNS = "*";
 const PAGE_COLUMNS = "id, project_id, owner_id, position, template_id, template_snapshot, background, gutter, selected_frame_id, created_at, updated_at";
 const ASSET_COLUMNS = "id, project_id, page_id, owner_id, frame_id, blob_key, drive_file_id, drive_preview_id, source_filename, mime_type, width, height, file_size, crop, created_at, updated_at";
 
@@ -148,6 +154,9 @@ export function rowsToStoredProject(
   pages: ProjectPageRow[],
   assets: ProjectAssetRow[],
 ): StoredProject {
+  if (project.photo_library !== undefined && (!Array.isArray(project.photo_library) || !project.photo_library.every(isProjectPhoto))) {
+    throw new Error("Cloud photo library metadata could not be validated; local photos were retained.");
+  }
   const orderedPages = [...pages].sort((a, b) => a.position - b.position);
   return {
     version: 3,
@@ -156,6 +165,7 @@ export function rowsToStoredProject(
     formatId: project.format_id,
     activePageId: project.active_page_id,
     pages: orderedPages.map((page) => pageRowToStoredPage(page, assets)),
+    photoLibrary: project.photo_library,
     revision: project.revision,
     cloudSyncedAt: project.updated_at,
     driveFolderId: project.drive_folder_id ?? undefined,
@@ -170,7 +180,7 @@ function storedProjectToRows(project: StoredProject, ownerId: string, remote: St
 } {
   const pages: Omit<ProjectPageRow, "created_at" | "updated_at">[] = [];
   const assets: Omit<ProjectAssetRow, "created_at" | "updated_at">[] = [];
-  const remotePhotos = new Map(remote?.pages.flatMap((page) => Object.values(page.photos).map((photo) => [photo.blobKey, photo] as const)));
+  const remotePhotos = new Map(remote ? getProjectPhotos(remote).map(photo => [photo.blobKey, photo] as const) : []);
   project.pages.forEach((page, index) => {
     pages.push({
       id: page.id,
@@ -279,24 +289,32 @@ export async function pullProjectsFromCloud(): Promise<StoredProject[]> {
  * After the safety read, the project row is written first, gated by
  * `.eq('revision', project.revision)` (or a plain insert when the project
  * has never been synced). Only once that gate succeeds are pages/assets
- * written — so a device that loses the race never overwrites the winner's
- * data, it simply detects a conflict and stops before child writes.
+ * written. A device rejected at that gate stops before child writes.
+ * Separate child writes can still interleave across devices after the gate;
+ * this feature does not resolve the previously documented transactional gap.
  * These REST requests are not a database transaction; a partial result
  * retains deletion intent and the committed revision for a checked retry.
  * See CloudConflict / resolveProjectConflict for what happens next.
  */
-export async function pushProjectToCloud(project: StoredProject): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+  const assertCurrent = () => { if (options && !options.isCurrent()) throw new Error("The workspace changed; this save was stopped."); };
+  assertCurrent();
   const client = getProjectCloudClient();
   if (!client) throw new Error("Project cloud storage has not been connected yet.");
   const { data: userData, error: userError } = await client.auth.getUser();
   if (userError || !userData.user) throw new Error("Sign in before saving this project to the cloud.");
   const ownerId = userData.user.id;
+  if (options && options.ownerId !== ownerId) throw new Error("The signed-in account changed; this save was stopped.");
+  assertCurrent();
 
   // Read before ANY writes (including page deletes which cascade to assets).
   // Fail closed on read errors. Covers empty and partially hydrated old caches.
   const remote = await fetchCloudProject(client, project.id);
+  assertCurrent();
   if (remote && hasUnexplainedPhotoLoss(project, remote)) return { assetProtection: true, remote };
   if (remote && remote.revision !== project.revision) return { conflict: true, remote };
+
+  project = preserveProjectLibrary(project, ...(remote ? [remote] : []));
 
   const projectRowInput = {
     id: project.id,
@@ -305,11 +323,25 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
     format_id: project.formatId,
     active_page_id: project.activePageId,
     drive_folder_id: project.driveFolderId ?? null,
+    photo_library: project.photoLibrary,
   };
 
-  let committedRow: ProjectRow;
+  const writeParent = (input: Omit<typeof projectRowInput, "photo_library"> & { photo_library?: ProjectPhoto[] }) => project.revision === undefined
+    ? client.from("projects").insert(input).select(PROJECT_COLUMNS).single()
+    : client.from("projects").update(input).eq("id", project.id).eq("owner_id", ownerId)
+      .eq("revision", project.revision).is("deleted_at", null).select(PROJECT_COLUMNS).maybeSingle();
+  let parentResult = await writeParent(projectRowInput);
+  if (parentResult.error && ["42703", "PGRST204"].includes(parentResult.error.code) && parentResult.error.message.includes("photo_library")) {
+    // A missing-column error commits nothing. Existing assigned-only projects
+    // can still save; never acknowledge independent library metadata as synced.
+    if (hasUnassignedPhotos(project)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
+    const legacyInput = { ...projectRowInput } as Partial<typeof projectRowInput>;
+    delete legacyInput.photo_library;
+    assertCurrent();
+    parentResult = await writeParent(legacyInput as typeof projectRowInput);
+  }
+  const { data, error } = parentResult;
   if (project.revision === undefined) {
-    const { data, error } = await client.from("projects").insert(projectRowInput).select(PROJECT_COLUMNS).single();
     if (error) {
       // 23505 = unique_violation: this id already exists remotely (created
       // by another device, or resurrected after a soft delete this device
@@ -320,17 +352,7 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
       }
       throw error;
     }
-    committedRow = data as ProjectRow;
   } else {
-    const { data, error } = await client
-      .from("projects")
-      .update(projectRowInput)
-      .eq("id", project.id)
-      .eq("owner_id", ownerId)
-      .eq("revision", project.revision)
-      .is("deleted_at", null)
-      .select(PROJECT_COLUMNS)
-      .maybeSingle();
     if (error) throw error;
     if (!data) {
       const remote = await fetchCloudProject(client, project.id);
@@ -338,8 +360,8 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
       // The row vanished (deleted elsewhere) rather than being edited elsewhere.
       throw new Error("This project was deleted from another device.");
     }
-    committedRow = data as ProjectRow;
   }
+  const committedRow = data as ProjectRow;
 
   const syncedProject: StoredProject = {
     ...project,
@@ -349,6 +371,7 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
   };
 
   try {
+    assertCurrent();
     const { pages, assets } = storedProjectToRows(project, ownerId, remote);
 
     if (pages.length) {
@@ -356,14 +379,17 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
       if (error) throw error;
     }
     if (assets.length) {
+      assertCurrent();
       const { error } = await client.from("project_assets").upsert(assets, { onConflict: "id" });
       if (error) throw error;
     }
     // Only exact, previously observed and explicitly removed assignments.
     // No project-wide or NOT IN deletion, including the empty-project case.
     for (const page of remote?.pages ?? []) {
+      assertCurrent();
       const incoming = project.pages.find((item) => item.id === page.id);
       for (const photo of Object.values(page.photos)) {
+        assertCurrent();
         if (incoming?.photos[photo.frameId]) continue; // updated in place above
         const { error } = await client.from("project_assets").delete()
           .eq("project_id", project.id).eq("owner_id", ownerId)
@@ -377,6 +403,7 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
           .select("id").eq("page_id", page.id);
         if (readError) throw readError;
         if (remaining?.length) throw new Error("This page still has cloud photos; reload before deleting it.");
+        assertCurrent();
         const { error } = await client.from("project_pages").delete()
           .eq("project_id", project.id).eq("owner_id", ownerId).eq("id", page.id);
         if (error) throw error;
@@ -397,11 +424,12 @@ export async function pushProjectToCloud(project: StoredProject): Promise<CloudC
 }
 
 /** Soft-deletes a project in Supabase (tombstone, not a hard delete). */
-export async function softDeleteCloudProject(projectId: string): Promise<void> {
+export async function softDeleteCloudProject(projectId: string, options?: { ownerId: string; isCurrent: () => boolean }): Promise<void> {
   const client = getProjectCloudClient();
   if (!client) return;
   const { data: userData, error: userError } = await client.auth.getUser();
   if (userError || !userData.user) throw new Error("Sign in before deleting this project from the cloud.");
+  if (options && (!options.isCurrent() || options.ownerId !== userData.user.id)) throw new Error("The account changed; deletion was stopped.");
   const { error } = await client
     .from("projects")
     .update({ deleted_at: new Date().toISOString() })
@@ -446,6 +474,30 @@ export function resolveProjectConflict(
   return { canonical: remote, duplicate };
 }
 
+/** Keep meaningful local work when the absence guard restores remote metadata.
+ * An otherwise identical empty cache needs reconciliation, not another project. */
+export function preserveProtectedLocalEdits(local: StoredProject, remote: StoredProject, newId: string): StoredProject | null {
+  const remoteKeys = new Set(getProjectPhotos(remote).map(photo => photo.blobKey));
+  const meaningful = getProjectPhotos(local).some(photo => !remoteKeys.has(photo.blobKey)) || local.name !== remote.name || local.pages.some(page => {
+    const other = remote.pages.find(item => item.id === page.id);
+    return !other || page.templateId !== other.templateId || page.background !== other.background || page.gutter !== other.gutter ||
+      JSON.stringify(page.templateSnapshot) !== JSON.stringify(other.templateSnapshot) ||
+      Object.values(page.photos).some(photo => {
+        const previous = other.photos[photo.frameId];
+        return !previous || previous.blobKey !== photo.blobKey || JSON.stringify(previous.crop) !== JSON.stringify(photo.crop);
+      });
+  });
+  if (!meaningful && !local.pendingDeletions?.photos.length && !local.pendingDeletions?.pageIds.length) return null;
+  const copy = resolveProjectConflict(local, remote, newId).duplicate;
+  return { ...copy, name: `${local.name} (recovered local edits)`.slice(0, 120) };
+}
+
+export function getProjectBackupCounts(project: StoredProject): { total: number; originals: number; previews: number } {
+  const photos = getProjectPhotos(project);
+  return { total: photos.length, originals: photos.filter(photo => photo.driveOriginalId).length,
+    previews: photos.filter(photo => photo.drivePreviewId).length };
+}
+
 /** Keep edits made during an async push; merge only acknowledged sync/byte ids.
  * New deletion intent survives an older acknowledgement, including offline retries. */
 export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProject, result: CloudPushResult): StoredProject {
@@ -456,11 +508,13 @@ export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProjec
     pageIds: latest.pendingDeletions.pageIds.filter((id) => !sent.pendingDeletions?.pageIds.includes(id)),
   };
   const edited = latest.updatedAt !== sent.updatedAt || latest.name !== sent.name ||
+    JSON.stringify(latest.photoLibrary) !== JSON.stringify(sent.photoLibrary) ||
     JSON.stringify(latest.pages) !== JSON.stringify(sent.pages) ||
     JSON.stringify(latest.pendingDeletions) !== JSON.stringify(sent.pendingDeletions);
   const acknowledgedPhotos = new Map(result.project.pages.flatMap((page) => Object.values(page.photos).map((photo) => [photo.blobKey, photo] as const)));
   return {
     ...latest,
+    photoLibrary: mergePhotoLibraries(getProjectPhotos(result.project), getProjectPhotos(latest)),
     revision: result.project.revision,
     cloudSyncedAt: result.project.cloudSyncedAt,
     driveFolderId: result.project.driveFolderId,
@@ -480,7 +534,7 @@ export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProjec
 }
 
 export function projectHasUnbackedAssets(project: StoredProject): boolean {
-  return project.pages.some((page) => Object.values(page.photos).some((photo) => !photo.driveOriginalId));
+  return getProjectPhotos(project).some(photo => !photo.driveOriginalId || !photo.drivePreviewId);
 }
 
 export function isProjectDirty(project: StoredProject): boolean {
@@ -503,11 +557,13 @@ export function getProjectSyncStatus(project: StoredProject, context: ProjectSyn
   if (context.hasError) return "sync-error";
   if (!context.signedIn) return "local-only";
   const dirty = isProjectDirty(project);
-  if (!context.online) return dirty ? "waiting-for-connection" : "synced";
+  const unbacked = projectHasUnbackedAssets(project);
+  if (!context.online) return dirty || unbacked ? "waiting-for-connection" : "synced";
   if (dirty) return "saved-locally";
-  if (context.driveConfigured && !context.driveTokenValid && projectHasUnbackedAssets(project)) {
+  if (context.driveConfigured && !context.driveTokenValid && unbacked) {
     return "drive-reconnect-required";
   }
+  if (unbacked) return "photos-pending";
   return "synced";
 }
 
@@ -537,7 +593,12 @@ export function mergeCloudProjectLibrary(local: StoredProject[], remote: StoredP
       // A pull started before an acknowledged push can arrive afterwards.
       // Never roll the active editor/cache back to that older revision.
       const olderCloud = project.revision !== undefined && cloud.revision !== undefined && project.revision > cloud.revision;
-      merged.set(project.id, isProjectDirty(project) || olderCloud ? project : cloud);
+      const chosen = isProjectDirty(project) || olderCloud ? project : cloud;
+      const combined = preserveProjectLibrary(chosen, project, cloud);
+      // Old clients omit the new column; never let that hide unassigned photos.
+      const missingLibrary = getProjectPhotos(project).some(photo => !getProjectPhotos(cloud).some(item => item.blobKey === photo.blobKey));
+      if (missingLibrary && !isProjectDirty(combined)) combined.updatedAt = new Date(Math.max(Date.now(), Date.parse(combined.cloudSyncedAt ?? combined.updatedAt) + 1)).toISOString();
+      merged.set(project.id, combined);
       continue;
     }
     if (project.revision === undefined) {

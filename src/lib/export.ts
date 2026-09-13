@@ -1,4 +1,5 @@
-import { coverPlacement, resolveFrames } from "./crop";
+import { resolveFrames } from "./crop";
+import { drawCroppedPhoto } from "./draw-photo";
 import { decodeImage } from "./image";
 import type { CanvasFormat, PhotoAsset, TemplateDefinition } from "./types";
 
@@ -27,14 +28,11 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
     if (!photo) continue;
     const decoded = await decodeImage(photo.sourceBlob);
     try {
-      const placement = coverPlacement(decoded.width, decoded.height, frame, photo.crop);
       context.save();
       context.beginPath();
       context.roundRect(frame.x, frame.y, frame.width, frame.height, frame.cornerRadius);
       context.clip();
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = "high";
-      context.drawImage(decoded.drawable, placement.x, placement.y, placement.width, placement.height);
+      drawCroppedPhoto(context, decoded.drawable, decoded.width, decoded.height, frame, photo.crop, background);
       context.restore();
     } finally {
       decoded.close();
