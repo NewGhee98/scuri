@@ -4,8 +4,8 @@ import type { TemplateDefinition } from "../types";
 
 describe("template library", () => {
   it("contains valid built-in templates for each format", () => {
-    expect(TEMPLATES).toHaveLength(45);
-    expect(getTemplatesForFormat("instagram-post")).toHaveLength(17);
+    expect(TEMPLATES).toHaveLength(49);
+    expect(getTemplatesForFormat("instagram-post")).toHaveLength(21);
     expect(getTemplatesForFormat("instagram-square")).toHaveLength(14);
     expect(getTemplatesForFormat("instagram-story")).toHaveLength(14);
     for (const template of TEMPLATES) expect(validateTemplate(template)).toEqual([]);
@@ -80,7 +80,7 @@ describe("template library", () => {
       updatedAt: "2026-08-10T00:00:00.000Z",
       syncState: "synced",
     };
-    expect(getTemplatesForFormat("instagram-post", [custom])).toHaveLength(18);
+    expect(getTemplatesForFormat("instagram-post", [custom])).toHaveLength(22);
     expect(getTemplatesForFormat("instagram-story", [custom])).toHaveLength(14);
   });
 
