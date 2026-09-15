@@ -18,7 +18,41 @@ const frame = (id: string, x: number, y: number, width: number, height: number, 
   cornerRadius,
 });
 
-const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier" | "outerInsetMultiplier"> & { slug: string; formatIds?: readonly FormatId[] }> = [
+type BuiltInLayout = Pick<TemplateDefinition, "name" | "defaultGutter" | "frames" | "frameInsetMultiplier" | "outerInsetMultiplier"> & {
+  slug: string;
+  formatIds?: readonly FormatId[];
+};
+
+function panoramaLayouts(label: string, slug: string, aspectRatio: number, count: number): BuiltInLayout[] {
+  const { width, height } = getFormat("instagram-post");
+
+  return [false, true].map((borderless) => {
+    const margin = borderless ? 0 : 32;
+    const gap = borderless ? 0 : 32;
+    const frameWidth = width - 2 * margin;
+    // Borderless rows fill the page; normal cover cropping trims the image sides.
+    const frameHeight = borderless ? height / count : frameWidth / aspectRatio;
+    const stackHeight = count * frameHeight + (count - 1) * gap;
+    const top = (height - stackHeight) / 2;
+    return {
+      slug: `${slug}-${count}${borderless ? "-borderless" : ""}`,
+      name: `${count} ${label}${borderless ? " · Borderless" : ""}`,
+      formatIds: ["instagram-post"],
+      // Spacing is in the bounds, as with materialized custom templates.
+      // No additional inset: exact ratios for bordered layouts, no gaps for borderless.
+      defaultGutter: 0,
+      frames: Array.from({ length: count }, (_, i) => frame(
+        `photo-${i + 1}`,
+        margin / width,
+        borderless ? i / count : (top + i * (frameHeight + gap)) / height,
+        frameWidth / width,
+        borderless ? 1 / count : frameHeight / height,
+      )),
+    };
+  });
+}
+
+const layouts: BuiltInLayout[] = [
   {
     slug: "full-frame",
     name: "Full frame",
@@ -182,6 +216,8 @@ const layouts: Array<Pick<TemplateDefinition, "name" | "defaultGutter" | "frames
     ],
   },
 
+  ...panoramaLayouts("Pano · 40:9", "pano-40-9", 40 / 9, 5),
+  ...panoramaLayouts("Ultra Pano · 768:115", "ultra-pano-768-115", 768 / 115, 7),
 ];
 
 export const TEMPLATES: readonly TemplateDefinition[] = FORMATS.flatMap((format) =>
