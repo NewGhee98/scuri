@@ -1,6 +1,24 @@
-# Local verification — 2026-09-13
+# Local verification — 2026-09-15
 
-## Upload-checkpoint protection recovery (latest, not deployed)
+## Four built-in panorama choices (latest local change, not deployed)
+
+Base: fetched GitHub main `6df71f9b0f51392694ff628c79cb15c370d96a32`. The final panorama set contains exact-ratio five/seven-photo layouts and a borderless version of each; smaller panorama counts from the initial local proposal were retired. No production crop, editor, thumbnail, export, storage, custom-template or sync code changes.
+
+| Check | Result |
+| --- | --- |
+| Panorama regression cases | 41 passed as part of the full suite |
+| Full existing test script (`pnpm test`) | **185 tests passed in 18 files** |
+| Typecheck (`pnpm typecheck`) | Passed |
+| Lint (`pnpm lint`) | Passed without warnings or errors |
+| Production build (`pnpm build`) | Passed webpack compilation, TypeScript, all 4 static pages and build traces |
+| Previous built-in definitions | All 45 compared equal to the fetched base; both exact pano layouts match their initial local definitions |
+| Picker visual review | Rendered the actual picker SVGs; inspected all four layouts, including gapless rows |
+
+Both bordered templates are checked for exact physical aspect ratios, bounds, non-overlap, equal 32px gaps/margins and vertical centering; matching 6400×1440 and 1536×230 sources have no baseline overflow/underfill. Borderless templates are checked for full-page coverage, equal-height rows, zero margins/gaps, unchanged image proportions, normal panning without exposed background and the expected 10% / 16.1458333% horizontal crop. All four templates' SVGs and shared geometry are checked at picker, thumbnail, editor, export and doubled-output sizes. The real JPEG export function uses mocked decoding/canvas encoding and is compared with shared preview drawing calls at baseline, negative and positive zoom. Custom copies and project save/restore retain geometry, assignments and crops; unavailable local bytes retain metadata.
+
+Tests use synthetic data and in-memory storage/canvas adapters. No helper seeds, resets, overwrites or deletes existing project assets. No service configuration, credentials, migration or live cloud operations were used. Vitest was run through the permitted local process path after Windows sandbox `spawn EPERM`. Commands use the unchanged package scripts through bundled pnpm (npm is not installed in this environment). Real browser pixel/JPEG encoding comparisons, touch gestures and live cloud persistence are outside this local verification.
+
+## Upload-checkpoint protection recovery (earlier local verification)
 
 Based on GitHub main a8b0e5417ff0685929580e791a05e6e75ae7fecd. The new integration regression first failed against the previous handler behaviour with a lost upload-folder ID. After the fix, **144 tests passed in 17 files** (eight additional regressions), TypeScript and ESLint passed, and the final production build compiled, typechecked, prerendered all four static pages and completed traces. A test callback's async type was corrected before the final successful checks.
 

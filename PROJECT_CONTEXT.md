@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-09-13_
+_Last updated: 2026-09-15_
 
 ## How to use this file
 
@@ -449,6 +449,18 @@ Retained checkpoint metadata is marked dirty using a timestamp later than the cl
 The synthetic regression reproduced the old loss before the fix. Coverage includes protection -> cache reload -> active-page reconciliation -> cloud retry; original/preview checkpoints independently; no repeated original upload after preview failure; cloud ID precedence; frame moves; unassigned originals; preserved local edits; and unchanged already-acknowledged snapshots. All 144 tests, TypeScript, ESLint and the production build pass. Final check/package details are in UPLOAD_CHECKPOINT_FIX.md and VERIFICATION.md.
 
 No schema/migration, dependency, RLS, live database, Drive byte/file, project asset or recovery changes are included. Existing SQL files are untouched. This cannot rediscover upload IDs already lost by older clients; it prevents future loss in this protection path. The previously documented cross-device child-write transaction gap and Islands recovery limitations remain separate.
+
+## Four built-in panorama choices — 2026-09-15 (local, not deployed)
+
+Implemented on `feat/exact-panorama-templates` from freshly fetched main `6df71f9b0f51392694ff628c79cb15c370d96a32`. This change adds only the requested panorama layouts and their verification; it does not implement further UX audit recommendations.
+
+- The user refined the initial local proposal to four panorama choices: `5 Pano · 40:9`, `5 Pano · 40:9 · Borderless`, `7 Ultra Pano · 768:115`, and `7 Ultra Pano · 768:115 · Borderless`. Lower-count panorama variants are removed from the registry. All 45 preceding built-ins and custom-template behavior remain unchanged; the portrait picker contains 21 built-ins and the total across formats is 49.
+- Exact layouts retain IDs `instagram-post-pano-40-9-5` and `instagram-post-ultra-pano-768-115-7` and their original bounds. Both have 1016px-wide frames, 32px symmetric side margins and 32px gaps, with vertically centred stacks. Five Standard Panos have 228.6px-tall frames and 39.5px top/bottom space; seven Ultra Panos have `1016 * 115 / 768`-pixel-tall frames and approximately 46.5260417px top/bottom space. Matching originals remain entirely visible at 0% zoom.
+- The new `-borderless` ID variants divide the unchanged 1080×1350 canvas into five or seven equal full-width rows, with no border or gutter. Their actual frame ratios are **4:1** and **28:5**, intentionally differing from the source ratios to fill the page without stretching. Normal centred cover placement at 0% zoom crops **10%** of a 40:9 original's width (5% per side) and **31/192 ≈ 16.1458333%** of a 768:115 original's width (approximately 8.07% per side). The full original height is retained, and normal panning can choose the horizontal crop. Names identify the intended source family, not an exact frame ratio for the borderless variant.
+- Bounds remain normalized directly. `defaultGutter: 0` means no **additional** inset: exact layouts already encode their 32px spacing; borderless layouts have none. The existing Border and gutter control remains a manual adjustment. Default crop stays `{ positionX: 0, positionY: 0, zoom: 1 }` (displayed 0%). No special renderer, crop offset, baked-in negative zoom, stretching or new metadata fields are used. Existing shared frame/crop code handles the editor, all previews, arrangement scoring and JPEG export. Deliberate negative zoom can still expose background as normal.
+- Verification: **185 tests passed in 18 files**, including 41 panorama cases, plus typecheck, lint and production build. Coverage includes the four-choice registry, exact geometry, borderless complete-page coverage, expected crop loss, safe panning, real picker SVGs, scaled shared drawing/JPEG calls, custom copies and crop/assignment persistence with unavailable bytes. Comparisons confirm all 45 earlier definitions and both retained exact panorama definitions are unchanged. Rendered picker SVGs were visually reviewed. Browser pixel comparisons, device gestures and live cloud sync were not run.
+
+The photo safety invariant remains unchanged: unavailable cached/Drive bytes never imply deletion; Supabase owns project structure/assignments/crops/library metadata and Drive stores bytes. No migration, dependency, existing asset or live-service changes are included. This layout addition cannot recover lost Islands mappings or create metadata on old Drive files. The existing manual recovery plan remains separate. The production build is a local verification, not a deployment.
 
 ## Guidance for future coding agents / chats
 
