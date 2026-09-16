@@ -1,7 +1,7 @@
 import { resolveFrames } from "./crop";
 import { drawCroppedPhoto } from "./draw-photo";
 import { decodeImage } from "./image";
-import type { CanvasFormat, PhotoAsset, TemplateDefinition } from "./types";
+import type { CanvasFormat, PhotoAsset, ProjectPage, TemplateDefinition } from "./types";
 
 export interface ExportOptions {
   format: CanvasFormat;
@@ -10,10 +10,19 @@ export interface ExportOptions {
   gutter: number;
   photos: Record<string, PhotoAsset>;
   quality?: number;
+  signal?: AbortSignal;
+}
+
+/** Read-only preview uses the actual JPEG path, and never shows a missing
+ * assigned original as an empty frame. Empty draft frames remain background. */
+export function renderPagePreview(page: ProjectPage, format: CanvasFormat, template: TemplateDefinition, signal?: AbortSignal): Promise<Blob> {
+  if (Object.keys(page.unavailablePhotos ?? {}).length) return Promise.reject(new Error("Assigned photos are unavailable."));
+  return renderComposition({ format, template, background: page.background, gutter: page.gutter, photos: page.photos, signal });
 }
 
 export async function renderComposition(options: ExportOptions): Promise<Blob> {
-  const { format, template, background, gutter, photos, quality = 0.94 } = options;
+  const { format, template, background, gutter, photos, quality = 0.94, signal } = options;
+  signal?.throwIfAborted();
   const canvas = document.createElement("canvas");
   canvas.width = format.width;
   canvas.height = format.height;
@@ -24,10 +33,12 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
 
   const frames = resolveFrames(template, gutter, format.width, format.height);
   for (const frame of frames) {
+    signal?.throwIfAborted();
     const photo = photos[frame.id];
     if (!photo) continue;
     const decoded = await decodeImage(photo.sourceBlob);
     try {
+      signal?.throwIfAborted();
       context.save();
       context.beginPath();
       context.roundRect(frame.x, frame.y, frame.width, frame.height, frame.cornerRadius);
@@ -41,7 +52,7 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
 
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("The JPEG export could not be created."))),
+      (blob) => signal?.aborted ? reject(signal.reason) : (blob ? resolve(blob) : reject(new Error("The JPEG export could not be created."))),
       "image/jpeg",
       quality,
     );

@@ -1,7 +1,7 @@
 import { DEFAULT_CROP, resolveFrames } from "./crop";
 import { getFormat } from "./formats";
 import { MAX_PROJECT_PAGES } from "./project";
-import { getProjectPhotos, MAX_PROJECT_PHOTOS } from "./project-photo-library";
+import { getProjectPhotos, getVisibleProjectPhotos, MAX_PROJECT_PHOTOS } from "./project-photo-library";
 import { paletteDescription, paletteDistance, type PhotoAnalysis } from "./photo-palette";
 import { validateTemplate } from "./templates";
 import type { FormatId, ProjectPhoto, StoredProject, StoredProjectPage, TemplateDefinition } from "./types";
@@ -149,7 +149,8 @@ export function applyArrangementAsCopy(source: StoredProject, proposal: Arrangem
   generateId = () => crypto.randomUUID(), timestamp = new Date().toISOString()): StoredProject {
   if (!proposal.pages.length || proposal.pages.length > MAX_PROJECT_PAGES) throw new Error("This suggestion exceeds the project page limit.");
   const library = getProjectPhotos(source);
-  const photos = new Map(library.map(photo => [photo.blobKey, photo]));
+  const visible = getVisibleProjectPhotos(source);
+  const photos = new Map(visible.map(photo => [photo.blobKey, photo]));
   const used = new Set<string>();
   const pages: StoredProjectPage[] = proposal.pages.map(page => {
     if (!eligibleArrangementTemplates([page.template], source.formatId).length) throw new Error("This suggestion contains an ineligible layout.");
@@ -163,7 +164,7 @@ export function applyArrangementAsCopy(source: StoredProject, proposal: Arrangem
       })) };
   });
   const unplaced = new Set(proposal.unplaced.map(item => item.blobKey));
-  if (unplaced.size !== proposal.unplaced.length || [...unplaced].some(key => used.has(key) || !photos.has(key)) || library.some(photo => !used.has(photo.blobKey) && !unplaced.has(photo.blobKey))) {
+  if (unplaced.size !== proposal.unplaced.length || [...unplaced].some(key => used.has(key) || !photos.has(key)) || visible.some(photo => !used.has(photo.blobKey) && !unplaced.has(photo.blobKey))) {
     throw new Error("The photo library changed. Generate fresh suggestions before applying one.");
   }
   return { version: 3, id: generateId(), name: `${source.name} (${ARRANGEMENT_LABELS[proposal.mode]})`.slice(0, 120),
