@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSupabaseClient } from "../supabase-client";
 import { acknowledgeProjectPush, getProjectBackupCounts, isProjectDirty, mergeCloudProjectLibrary, pushProjectToCloud, rowsToStoredProject } from "../project-sync";
-import { getProjectPhotos, mergePhotoLibraries } from "../project-photo-library";
+import { getProjectPhotos, getVisibleProjectPhotos, mergePhotoLibraries } from "../project-photo-library";
+import { consolidateLibraryDuplicates, scanExactDuplicates } from "../photo-duplicates";
 import { reconcileProjectPages, serializePage } from "../project-photos";
 import { loadProjects, saveProjects } from "../storage";
 import { createProjectBackup, inspectProjectBackup, materializeProjectBackup } from "../project-backup";
@@ -62,6 +63,27 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("library membership and below-baseline crop persistence", () => {
+  it("round-trips explicit duplicate grouping in cloud JSON without deleting or reconfiguring a placed asset", async () => {
+    const fixture = cloud(), original = source();
+    const scan = await scanExactDuplicates(original, async () => new Blob(["identical synthetic original"]));
+    const combined = consolidateLibraryDuplicates(original, scan, scan.groups, edit);
+    expect(getVisibleProjectPhotos(combined)).toHaveLength(1);
+    const result = await pushProjectToCloud(combined);
+    expect("partial" in result && result.partial).toBe(false);
+    expect(fixture.rows.project_assets).toHaveLength(1);
+    expect(fixture.rows.project_assets[0]).toMatchObject({ id: "synthetic-row", blob_key: assigned.blobKey,
+      frame_id: "photo-1", crop: original.pages[0].photos["photo-1"].crop });
+    expect(getVisibleProjectPhotos(fixture.stored())).toHaveLength(1);
+    expect(getProjectPhotos(fixture.stored())).toHaveLength(2);
+    expect(getProjectPhotos(fixture.stored()).find(photo => photo.blobKey === loose.blobKey)?.driveOriginalId).toBe(loose.driveOriginalId);
+    expect(fixture.writes.some(write => write.includes("delete"))).toBe(false);
+  });
+  it("never silently drops grouping/undo metadata through the old-schema fallback", async () => {
+    const fixture = cloud(false), legacy = source();
+    legacy.photoLibrary = [{ ...assigned, duplicateOf: null }];
+    await expect(pushProjectToCloud(legacy)).rejects.toThrow("Cloud photo library setup is required");
+    expect(fixture.writes).toEqual([]);
+  });
   it("round-trips unassigned and unavailable originals and negative-display zoom through cache and reconciliation", () => {
     const original = source(); saveProjects([original], "synthetic-owner");
     const [restored] = loadProjects("synthetic-owner");

@@ -4,7 +4,8 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { ARRANGEMENT_LABELS, type ArrangementProposal } from "@/lib/arrangements";
 import { PhotoAnalysisClient } from "@/lib/photo-analysis-client";
-import { getProjectPhotos, MAX_PROJECT_PHOTOS } from "@/lib/project-photo-library";
+import { projectPhotoGroups, MAX_PROJECT_PHOTOS } from "@/lib/project-photo-library";
+import type { DuplicateGroup, DuplicateScan } from "@/lib/photo-duplicates";
 import { loadPhotoBlob } from "@/lib/storage";
 import { downloadGoogleDrivePhoto } from "@/lib/google-drive";
 import { getFormat } from "@/lib/formats";
@@ -12,6 +13,7 @@ import { DEFAULT_CROP } from "@/lib/crop";
 import type { PhotoAnalysis } from "@/lib/photo-palette";
 import type { PhotoAsset, ProjectPhoto, ProjectPage, StoredProject, TemplateDefinition } from "@/lib/types";
 import { CompositionThumbnail } from "./composition-thumbnail";
+import { DuplicatePhotoReview } from "./duplicate-photo-review";
 
 type Analysed = { analysis: PhotoAnalysis; thumbnail: Blob; url: string };
 interface Props {
@@ -19,10 +21,12 @@ interface Props {
   getVolatileBlob: (key: string) => Blob | undefined; getDriveToken: () => string | null;
   onImport: (files: File[]) => void; onApply: (proposal: ArrangementProposal) => void;
   onChoose?: (photo: ProjectPhoto) => void;
+  onCombineDuplicates: (scan: DuplicateScan, groups: DuplicateGroup[]) => void;
 }
 
-export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose }: Props) {
-  const photos = getProjectPhotos(project);
+export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose, onCombineDuplicates }: Props) {
+  const groups = projectPhotoGroups(project);
+  const photos = groups.map(group => group.photo);
   const libraryKey = JSON.stringify([project.id, photos]);
   const [analysed, setAnalysed] = useState<Record<string, Analysed>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -31,6 +35,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   const [message, setMessage] = useState("");
   const [proposals, setProposals] = useState<ArrangementProposal[]>([]);
   const [retry, setRetry] = useState(0);
+  const [reviewDuplicates, setReviewDuplicates] = useState(false);
   const clientRef = useRef<PhotoAnalysisClient | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
   const generationRef = useRef(0);
@@ -106,9 +111,10 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
 
   return <section className="photo-library-panel" aria-label="Project photo library">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div><h2 className="text-lg font-semibold">Project photos</h2><p className="mt-1 text-xs text-neutral-600">{photos.length} originals · {Object.keys(analysed).length} analysed · up to {MAX_PROJECT_PHOTOS} photos</p></div>
+      <div><h2 className="text-lg font-semibold">Project photos</h2><p className="mt-1 text-xs text-neutral-600">{photos.length} photos · {Object.keys(analysed).length} analysed · up to {MAX_PROJECT_PHOTOS} photos</p></div>
       <div className="flex flex-wrap gap-2">
         <button type="button" className="small-button" disabled={busy || photos.length >= MAX_PROJECT_PHOTOS} onClick={() => inputRef.current?.click()}>Add photos to library</button>
+        <button type="button" className="small-button" disabled={busy || photos.length < 2 || suggesting} onClick={() => setReviewDuplicates(true)}>Find duplicates</button>
         <button type="button" className="primary-button" disabled={busy || processing || suggesting || !Object.keys(analysed).length} onClick={() => void suggest()}>Suggest arrangements</button>
       </div>
     </div>
@@ -120,10 +126,11 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
     {!photos.length ? <p className="mt-4 text-sm text-neutral-500">Add photos here before choosing any layouts, or keep adding them directly to frames.</p> :
       <div className="photo-library-grid mt-4">{photos.map((photo, index) => {
         const item = analysed[photo.blobKey];
+        const placements = groups[index].members.reduce((count, member) => count + (placementCounts.get(member.blobKey) ?? 0), 0);
         return <article key={photo.blobKey} className="rounded-xl border border-black/10 bg-white p-2">
           <div className="grid aspect-square place-items-center rounded-lg bg-neutral-100">{item ? <Image unoptimized src={item.url} width={160} height={160} alt={photo.sourceName ?? `Photo ${index + 1}`} className="h-full w-full object-contain" /> : <span className="p-2 text-center text-xs text-neutral-600">Awaiting analysis</span>}</div>
           <p className="mt-2 truncate text-xs font-medium" title={photo.sourceName}>{photo.sourceName ?? `Photo ${index + 1}`}</p>
-          <p className="mt-1 text-xs text-neutral-500">{placementCounts.get(photo.blobKey) ? `Used ${placementCounts.get(photo.blobKey)}×` : "Unplaced"}</p>
+          <p className="mt-1 text-xs text-neutral-500">{placements ? `Used ${placements}×` : "Unplaced"}</p>
           {errors[photo.blobKey] ? <p className="mt-1 text-xs text-amber-800">{errors[photo.blobKey]}</p> : null}
           {onChoose ? <button type="button" className="card-action mt-2 w-full" disabled={busy} onClick={() => onChoose(photo)}>Use in selected frame</button> : null}
         </article>;
@@ -136,5 +143,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       {proposal.unplaced.length ? <details className="mt-3 text-sm text-amber-900"><summary>{proposal.unplaced.length} photos remain unplaced in the library</summary><ul className="mt-2 list-disc pl-4">{proposal.unplaced.map(item => <li key={item.blobKey}>{photos.find(photo => photo.blobKey === item.blobKey)?.sourceName ?? "Photo"}: {item.reason}</li>)}</ul></details> : null}
       <button type="button" className="primary-button mt-4 w-full" disabled={busy || processing || suggesting} onClick={() => onApply(proposal)}>Apply as new project</button>
     </article>)}</div> : null}
+    {reviewDuplicates ? <DuplicatePhotoReview project={project} ownerId={ownerId} thumbnails={analysed}
+      getVolatileBlob={getVolatileBlob} getDriveToken={getDriveToken} onApply={onCombineDuplicates} onClose={() => setReviewDuplicates(false)} /> : null}
   </section>;
 }

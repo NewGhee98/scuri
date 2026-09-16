@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { PRODUCT } from "@/config/product";
-import { DEFAULT_CROP, MAX_ZOOM, minimumPhotoZoom, resolveFrames, setCropZoom, zoomPercent } from "@/lib/crop";
+import { DEFAULT_CROP, minimumPhotoZoom, resolveFrames, setCropZoom } from "@/lib/crop";
+import { snapPhotoZoom, type AlignmentGuide } from "@/lib/editor-alignment";
+import { movePageFrame, reorderPageFrame } from "@/lib/page-frames";
+import { consolidateLibraryDuplicates, type DuplicateGroup, type DuplicateScan } from "@/lib/photo-duplicates";
+import { PhotoZoomControl } from "./photo-zoom-control";
+import { PagePreview } from "./page-preview";
 import { createExportFilename, createExportZip, renderComposition } from "@/lib/export";
 import { FORMATS, getFormat } from "@/lib/formats";
 import Script from "next/script";
@@ -79,7 +84,7 @@ import { nextProjectEditTime } from "@/lib/project-time";
 import { createProjectBackup, inspectProjectBackup, materializeProjectBackup, type ProjectBackupPreview } from "@/lib/project-backup";
 import { BackupReview } from "./backup-review";
 import { ProjectPhotoPanel } from "./project-photo-panel";
-import { getProjectPhotos, libraryPhoto, MAX_PROJECT_PHOTOS, mergePhotoLibraries } from "@/lib/project-photo-library";
+import { getProjectPhotos, getVisibleProjectPhotos, libraryPhoto, MAX_PROJECT_PHOTOS, mergePhotoLibraries } from "@/lib/project-photo-library";
 import { applyArrangementAsCopy, type ArrangementProposal } from "@/lib/arrangements";
 import { filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
 import type {
@@ -194,6 +199,11 @@ export function LayoutsApp() {
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [rearrangeMode, setRearrangeMode] = useState(false);
+  const [moveFrameMode, setMoveFrameMode] = useState(false);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
+  const [editorWidth, setEditorWidth] = useState(320);
+  const [showPagePreview, setShowPagePreview] = useState(false);
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
   const [templateDraft, setTemplateDraft] = useState<CustomTemplate | null>(null);
   const [templateFilter, setTemplateFilter] = useState<FormatId | "all">("all");
@@ -265,6 +275,11 @@ export function LayoutsApp() {
   const selectedPhoto = activePage?.selectedFrameId ? activePage.photos[activePage.selectedFrameId] : undefined;
   const selectedResolvedFrame = template && format && activePage ? resolveFrames(template, activePage.gutter, format.width, format.height).find(frame => frame.id === activePage.selectedFrameId) : undefined;
   const selectedStoredPhoto = activePage?.selectedFrameId ? serializePage(activePage).photos[activePage.selectedFrameId] : undefined;
+  const editorContext = `${projectId}:${activePageId}:${screen}`;
+  const [previousEditorContext, setPreviousEditorContext] = useState(editorContext);
+  if (previousEditorContext !== editorContext) {
+    setPreviousEditorContext(editorContext); setAlignmentGuides([]); setMoveFrameMode(false); setShowPagePreview(false);
+  }
   const unavailablePhotoCount = pages.reduce((count, page) => count + Object.keys(page.unavailablePhotos ?? {}).length, 0);
   const missingPhotoCount = activePage && template ? getMissingPhotoCount(activePage, template) : 0;
   const completePageCount = pages.reduce((count, page) => count + (isPageComplete(page, resolvePageTemplate(page)) ? 1 : 0), 0);
@@ -936,7 +951,7 @@ export function LayoutsApp() {
     if (!initial || !files.length) return;
     const sameWorkspace = workspaceRef.current.capture();
     const ownerId = workspaceRef.current.ownerId;
-    const available = Math.max(0, MAX_PROJECT_PHOTOS - getProjectPhotos(initial).length);
+    const available = Math.max(0, MAX_PROJECT_PHOTOS - getVisibleProjectPhotos(initial).length);
     if (files.length > available) { setNotice({ kind: "info", text: `This project has room for ${available} more photos. Select a smaller batch; nothing was imported.` }); return; }
     setBusy("image");
     let added = 0;
@@ -975,6 +990,18 @@ export function LayoutsApp() {
       const cleared = removePagePhoto(page, frameId);
       return { ...cleared, unavailablePhotos: { ...cleared.unavailablePhotos, [frameId]: { ...photo, frameId, crop: { ...DEFAULT_CROP } } } };
     });
+  };
+
+  const combineLibraryDuplicates = (scan: DuplicateScan, groups: DuplicateGroup[]) => {
+    const current = buildStoredProject();
+    if (!current) throw new Error("Open the project again before combining duplicates.");
+    const updated = consolidateLibraryDuplicates(current, scan, groups);
+    if (updated === current) return;
+    historyRef.current.observe(current, historyGroupRef.current);
+    historyGroupRef.current = undefined;
+    setProjectPhotoLibrary(updated.photoLibrary ?? []);
+    setProjectUpdatedAt(updated.updatedAt);
+    setNotice({ kind: "success", text: "Duplicate library entries combined. All page placements and crops are preserved. Use Undo to separate the entries again." });
   };
 
   const applySuggestedArrangement = (proposal: ArrangementProposal) => {
@@ -1227,6 +1254,32 @@ export function LayoutsApp() {
       return photo ? { ...page, photos: { ...page.photos, [frameId]: { ...photo, crop } } } : page;
     });
     historyGroupRef.current = `crop:${activePage.id}:${frameId}`;
+  };
+
+  const updatePhotoZoom = (frameId: string, zoom: number, tolerance = 5 * (format?.width ?? 1080) / editorWidth) => {
+    if (!activePage || !template) return;
+    const frames = resolveFrames(template, activePage.gutter);
+    const frame = frames.find(item => item.id === frameId), photo = activePage.photos[frameId];
+    if (!frame || !photo) return;
+    const minimum = Math.min(photo.crop.zoom, minimumPhotoZoom(photo.sourceWidth, photo.sourceHeight, frame));
+    const result = snapPhotoZoom(activePage.photos, frames, frameId, zoom, snapEnabled ? tolerance : -1, minimum);
+    if (!result) return;
+    setAlignmentGuides(result.guides);
+    updateCrop(frameId, result.crop);
+  };
+
+  const updateFramePosition = (frameId: string, x: number, y: number) => {
+    if (!activePage || !template) return;
+    const moved = movePageFrame(activePage, template, frameId, x, y);
+    if (moved === activePage) return;
+    updatePage(activePage.id, page => movePageFrame(page, resolvePageTemplate(page), frameId, x, y));
+    historyGroupRef.current = `frame-move:${activePage.id}:${frameId}`;
+  };
+
+  const changeFrameLayer = (offset: -1 | 1) => {
+    if (!activePage?.selectedFrameId || !template) return;
+    updatePage(activePage.id, page => reorderPageFrame(page, resolvePageTemplate(page), activePage.selectedFrameId!, offset));
+    setAlignmentGuides([]);
   };
 
   const movePhoto = (sourceFrameId: string, targetFrameId: string) => {
@@ -1811,6 +1864,7 @@ export function LayoutsApp() {
           <button type="button" className="small-button" disabled={!historyState.undo || busy !== null} onClick={() => travelProjectHistory("undo")}>Undo</button>
           <button type="button" className="small-button" disabled={!historyState.redo || busy !== null} onClick={() => travelProjectHistory("redo")}>Redo</button>
           <button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button>
+          {pages.length > 0 ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => setShowPagePreview(true)}>Preview</button> : null}
           <p className="w-full text-xs leading-5 text-neutral-600">Undo history resets when you open another project, reload or change accounts. Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length} · Assigned photos available here: {assignedPhotos.length - unavailablePhotoCount}/{assignedPhotos.length}</p>
         </section>
       ) : null}
@@ -2279,7 +2333,7 @@ export function LayoutsApp() {
       {screen === "editor" && format && template && activePage ? (
         <main className="editor-shell">
           <section className="min-w-0 rounded-[20px] bg-[#e8e8e4] p-3 sm:p-6 lg:min-h-[calc(100dvh-104px)] lg:p-8">
-            <EditorCanvas
+            <EditorCanvas key={activePage.id}
               format={format}
               template={template}
               background={activePage.background}
@@ -2288,6 +2342,9 @@ export function LayoutsApp() {
               unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
               selectedFrameId={activePage.selectedFrameId}
               rearrangeMode={rearrangeMode}
+              moveFrameMode={moveFrameMode} snapEnabled={snapEnabled} guides={alignmentGuides}
+              onZoomChange={updatePhotoZoom} onFrameMove={updateFramePosition}
+              onGuidesChange={setAlignmentGuides} onViewWidthChange={setEditorWidth}
               onSelectFrame={(frameId) => updatePage(activePage.id, (page) => ({ ...page, selectedFrameId: frameId }))}
               onRequestPhoto={requestPhoto}
               onCropChange={updateCrop}
@@ -2305,29 +2362,20 @@ export function LayoutsApp() {
                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-600">{Object.keys(activePage.photos).length}/{template.frames.length}</span>
               </div>
               <p className="mt-2 text-sm leading-5 text-neutral-600">
-                {rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. You can select several photos at once."}
+                {moveFrameMode ? "Drag a frame with its photo. Edges snap gently; keep dragging to move past. Changes apply to this page." : rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. You can select several photos at once."}
               </p>
             </div>
 
             <div className="control-section">
-              <div className="flex items-center justify-between gap-3">
-                <label className="control-label" htmlFor="zoom">Selected photo</label>
-                <span className="text-xs tabular-nums text-neutral-500">{selectedPhoto ? `${zoomPercent(selectedPhoto.crop.zoom) > 0 ? "+" : ""}${Number(zoomPercent(selectedPhoto.crop.zoom).toFixed(2))}%` : selectedStoredPhoto ? "Photo unavailable" : "Empty frame"}</span>
-              </div>
-              <input
-                id="zoom"
-                className="range mt-3"
-                type="range"
-                min={selectedPhoto && selectedResolvedFrame ? Math.min(selectedPhoto.crop.zoom, minimumPhotoZoom(selectedPhoto.sourceWidth, selectedPhoto.sourceHeight, selectedResolvedFrame)) : 0.1}
-                max={MAX_ZOOM}
-                step="any"
-                value={selectedPhoto?.crop.zoom ?? 1}
-                disabled={!selectedPhoto}
-                onChange={(event) => activePage.selectedFrameId && selectedPhoto && updateCrop(activePage.selectedFrameId, setCropZoom(selectedPhoto.crop, Number(event.target.value)))}
-                aria-label="Photo zoom"
-                aria-valuetext={selectedPhoto ? `${Number(zoomPercent(selectedPhoto.crop.zoom).toFixed(2))}% from fill-frame size` : undefined}
-              />
-              <p className="mt-2 text-xs text-neutral-500">0% fills the frame. Negative zoom centres the image and reveals the page background.</p>
+              {selectedPhoto && selectedResolvedFrame ? <PhotoZoomControl key={`${activePage.id}:${selectedPhoto.frameId}:${selectedPhoto.blobKey}`}
+                zoom={selectedPhoto.crop.zoom} minimum={Math.min(selectedPhoto.crop.zoom, minimumPhotoZoom(selectedPhoto.sourceWidth, selectedPhoto.sourceHeight, selectedResolvedFrame))}
+                onChange={(zoom, snap) => {
+                  if (snap) updatePhotoZoom(selectedPhoto.frameId, zoom);
+                  else { setAlignmentGuides([]); updateCrop(selectedPhoto.frameId, setCropZoom(selectedPhoto.crop, zoom)); }
+                }} onGestureEnd={() => setAlignmentGuides([])} /> :
+                <p className="control-label">Selected photo · {selectedStoredPhoto ? "Photo unavailable" : "Empty frame"}</p>}
+              <p id="photo-zoom-help" className="mt-2 text-xs text-neutral-500">0% fills the frame. Negative zoom centres the image and reveals the page background. Type a percentage for an exact size.</p>
+              <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges</label>
               <div className="mt-4 grid grid-cols-3 gap-2">
                 <button className="small-button" type="button" disabled={!activePage.selectedFrameId} onClick={() => activePage.selectedFrameId && requestPhoto(activePage.selectedFrameId)}>
                   {selectedStoredPhoto ? "Replace" : "Add photo"}
@@ -2340,10 +2388,28 @@ export function LayoutsApp() {
                 type="button"
                 aria-pressed={rearrangeMode}
                 disabled={!Object.keys(activePage.photos).length || Object.keys(activePage.unavailablePhotos ?? {}).length > 0 || template.frames.length < 2}
-                onClick={() => setRearrangeMode((current) => !current)}
+                onClick={() => { setRearrangeMode((current) => !current); setMoveFrameMode(false); setAlignmentGuides([]); }}
               >
                 {rearrangeMode ? "Done rearranging" : "Rearrange photos"}
               </button>
+              <button type="button" className={`secondary-button mt-2 w-full ${moveFrameMode ? "rearrange-active" : ""}`}
+                aria-pressed={moveFrameMode} onClick={() => { setMoveFrameMode(value => !value); setRearrangeMode(false); setAlignmentGuides([]); }}>
+                {moveFrameMode ? "Done moving frames" : "Move frames"}
+              </button>
+              {moveFrameMode ? <div className="mt-3 grid gap-2">
+                <label className="text-xs font-medium" htmlFor="selected-page-frame">Selected frame</label>
+                <select id="selected-page-frame" className="rounded-lg border border-black/15 bg-white p-2 text-sm" value={activePage.selectedFrameId ?? ""}
+                  onChange={event => { setAlignmentGuides([]); updatePage(activePage.id, page => ({ ...page, selectedFrameId: event.target.value })); }}>
+                  <option value="" disabled>Choose a frame</option>
+                  {template.frames.map((frame, index) => <option key={frame.id} value={frame.id}>Frame {index + 1}{selectedStoredPhoto?.frameId === frame.id ? " · selected" : ""}</option>)}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" className="small-button" disabled={!activePage.selectedFrameId || template.frames[0]?.id === activePage.selectedFrameId} onClick={() => changeFrameLayer(-1)}>Send backward</button>
+                  <button type="button" className="small-button" disabled={!activePage.selectedFrameId || template.frames.at(-1)?.id === activePage.selectedFrameId} onClick={() => changeFrameLayer(1)}>Bring forward</button>
+                </div>
+                <p className="text-xs text-neutral-500">Frames can overlap. Select a covered frame above. Arrow keys move by 1px; Shift moves by 10px. Hold Alt while dragging to bypass snapping.</p>
+                <p className="text-xs text-neutral-500">Moving keeps the current spacing. The gutter slider then adds extra space around frames.</p>
+              </div> : null}
               <p className="mt-2 text-[11px] leading-4 text-neutral-500">
                 Selecting multiple photos fills this tile first, then the other empty tiles.
               </p>
@@ -2394,14 +2460,17 @@ export function LayoutsApp() {
 
       {format && projectId && (screen === "project" || screen === "editor") ? (
         <div className="screen-shell max-w-[1120px] pb-8">
-          <ProjectPhotoPanel project={{ version: 3, id: projectId, name: projectName, formatId: format.id,
+          <ProjectPhotoPanel key={`${templateUser?.id ?? "local"}:${projectId}`} project={{ version: 3, id: projectId, name: projectName, formatId: format.id,
             activePageId, pages: pages.map(serializePage), photoLibrary: projectPhotoLibrary, createdAt: projectCreatedAt, updatedAt: projectUpdatedAt }}
             templates={templates} ownerId={templateUser?.id} accessRevision={driveExpiry} busy={busy !== null}
             getVolatileBlob={getVolatileBlob} getDriveToken={getValidDriveToken}
-            onImport={files => void importLibraryPhotos(files)} onApply={applySuggestedArrangement}
+            onImport={files => void importLibraryPhotos(files)} onApply={applySuggestedArrangement} onCombineDuplicates={combineLibraryDuplicates}
             onChoose={screen === "editor" && activePage?.selectedFrameId ? chooseLibraryPhoto : undefined} />
         </div>
       ) : null}
+
+      {showPagePreview && format && projectId && pages.length ? <PagePreview key={projectId} pages={pages} initialPageId={activePageId}
+        format={format} resolveTemplate={resolvePageTemplate} onClose={() => setShowPagePreview(false)} /> : null}
 
       {screen === "export" && format && exportItems.length ? (
         <main className="screen-shell max-w-[1080px] py-7 sm:py-10">

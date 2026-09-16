@@ -335,7 +335,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   if (parentResult.error && ["42703", "PGRST204"].includes(parentResult.error.code) && parentResult.error.message.includes("photo_library")) {
     // A missing-column error commits nothing. Existing assigned-only projects
     // can still save; never acknowledge independent library metadata as synced.
-    if (hasUnassignedPhotos(project)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
+    if (hasUnassignedPhotos(project) || getProjectPhotos(project).some(photo => photo.duplicateOf !== undefined)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
     const legacyInput = { ...projectRowInput } as Partial<typeof projectRowInput>;
     delete legacyInput.photo_library;
     assertCurrent();
@@ -478,8 +478,9 @@ export function resolveProjectConflict(
 /** Keep meaningful local work when the absence guard restores remote metadata.
  * An otherwise identical empty cache needs reconciliation, not another project. */
 export function preserveProtectedLocalEdits(local: StoredProject, remote: StoredProject, newId: string): StoredProject | null {
-  const remoteKeys = new Set(getProjectPhotos(remote).map(photo => photo.blobKey));
-  const meaningful = getProjectPhotos(local).some(photo => !remoteKeys.has(photo.blobKey)) || local.name !== remote.name || local.pages.some(page => {
+  const remotePhotos = new Map(getProjectPhotos(remote).map(photo => [photo.blobKey, photo]));
+  const meaningful = getProjectPhotos(local).some(photo => !remotePhotos.has(photo.blobKey) ||
+    (photo.duplicateOf !== undefined && photo.duplicateOf !== remotePhotos.get(photo.blobKey)?.duplicateOf)) || local.name !== remote.name || local.pages.some(page => {
     const other = remote.pages.find(item => item.id === page.id);
     return !other || page.templateId !== other.templateId || page.background !== other.background || page.gutter !== other.gutter ||
       JSON.stringify(page.templateSnapshot) !== JSON.stringify(other.templateSnapshot) ||
@@ -622,7 +623,8 @@ export function mergeCloudProjectLibrary(local: StoredProject[], remote: StoredP
       const chosen = isProjectDirty(project) || olderCloud ? project : cloud;
       const combined = preserveProjectLibrary(chosen, project, cloud);
       // Old clients omit the new column; never let that hide unassigned photos.
-      const missingLibrary = getProjectPhotos(project).some(photo => !getProjectPhotos(cloud).some(item => item.blobKey === photo.blobKey));
+      const missingLibrary = getProjectPhotos(project).some(photo => !getProjectPhotos(cloud).some(item => item.blobKey === photo.blobKey &&
+        (photo.duplicateOf === undefined || item.duplicateOf !== undefined)));
       if (missingLibrary && !isProjectDirty(combined)) combined.updatedAt = new Date(Math.max(Date.now(), Date.parse(combined.cloudSyncedAt ?? combined.updatedAt) + 1)).toISOString();
       merged.set(project.id, combined);
       continue;

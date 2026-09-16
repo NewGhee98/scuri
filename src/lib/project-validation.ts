@@ -17,7 +17,8 @@ export function isStoredPhoto(value: unknown): value is StoredPhotoAsset {
 }
 
 export function isProjectPhoto(value: unknown): boolean {
-  return record(value) && isStoredPhoto({ ...value, frameId: "library-photo", crop: { positionX: 0, positionY: 0, zoom: 1 } });
+  return record(value) && (value.duplicateOf === undefined || value.duplicateOf === null || text(value.duplicateOf)) &&
+    isStoredPhoto({ ...value, frameId: "library-photo", crop: { positionX: 0, positionY: 0, zoom: 1 } });
 }
 
 export function isStoredPage(value: unknown): value is StoredProjectPage {

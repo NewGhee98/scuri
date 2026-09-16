@@ -94,7 +94,11 @@ export interface StoredPhotoAsset {
 }
 
 /** Project-owned original, independent of any page/frame assignment. */
-export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "crop">;
+export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "crop"> & {
+  /** Explicit, exact-file library grouping only. Assignments/bytes keep their
+   * original identities. null explicitly undoes grouping; absence is legacy. */
+  duplicateOf?: string | null;
+};
 
 export type AppScreen =
   | "projects"

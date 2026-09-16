@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-09-15_
+_Last updated: 2026-09-16_
 
 ## How to use this file
 
@@ -462,9 +462,40 @@ Implemented on `feat/exact-panorama-templates` from freshly fetched main `6df71f
 
 The photo safety invariant remains unchanged: unavailable cached/Drive bytes never imply deletion; Supabase owns project structure/assignments/crops/library metadata and Drive stores bytes. No migration, dependency, existing asset or live-service changes are included. This layout addition cannot recover lost Islands mappings or create metadata on old Drive files. The existing manual recovery plan remains separate. The production build is a local verification, not a deployment.
 
+## Panorama production release — 2026-09-15
+
+The user approved deployment of the final four panorama choices. PR [#17](https://github.com/NewGhee98/scuri/pull/17) is merged and closed; main is `88f95bb836728ab4471622481ab84a91406d5d72`. The review head `ddd763fc49270ed9c0313a8bda4275f080aa9cb2` and the merge commit both have exactly the tested local `e0eb5af` tree (`5cd97f68a5b756a685b007880134b20d907e5d44`). The 185 passing tests, typecheck, lint and production build therefore apply to the deployed source unchanged. GitHub reported two successful checks and no conflicts before merge.
+
+Vercel [deployment BB8WfW2Rh7ApH82EEnVrrSiag3sA](https://vercel.com/nugee/scuri/BB8WfW2Rh7ApH82EEnVrrSiag3sA) was verified Ready, Production and Latest, built from `88f95bb` on main, with `scuri.vercel.app` in Current Domains. A refreshed signed-in production browser showed all four named panorama choices among the 21 portrait built-ins. Their five/seven-strip previews, exact-layout whitespace and borderless coverage were visually checked. Verification stayed in the project overview/template library; no project was opened or edited, and no migration, service setting or Drive operation was performed.
+
+This release supersedes the panorama section's pre-deployment status above. The new production result is recorded in the local handoff and `../../outputs/SCURI_PANORAMA_PRODUCTION_2026-09-15.md`; the committed implementation documents describe verification before deployment. The photo safety invariant, separate Islands recovery limitation and previously documented sync limitations are unchanged. Live photo upload/export, cross-device persistence and physical-device gestures were not exercised by this deployment check.
+
+## Editor alignment, preview and library cleanup — 2026-09-16
+
+Implemented locally on `feat/editor-alignment-preview-library`, based on main `88f95bb`. These changes are for review and are **not a production deployment**. The preceding panorama production record is retained as historical evidence.
+
+- **Selected-photo zoom:** gentle alignment to other photos' clipped, visible image edges, with guides and a Snap toggle. Slider, pinch and wheel use raw gesture values so continuing past a snap point releases it; Alt bypasses canvas snapping. Typed signed percentages and keyboard adjustments are exact and bypass snapping. The numeric field accepts decimals, validates the existing zoom range, and never rounds a saved crop merely because it received/lost focus. Zero remains the existing fill-frame baseline; stored scale/crop representation is unchanged.
+- **Preview:** a fullscreen, read-only view starts on the active page and supports Previous/Next, arrow keys and horizontal swipes. It calls the actual JPEG renderer with originals and the existing background, frame order and crop geometry. Obsolete renders are cancelled and object URLs released. Unavailable assigned photos block a misleading preview; genuinely empty frames are disclosed as a draft. Preview navigation never changes the active editor page or arrangement.
+- **Move frames:** a separate mode translates frames with their photos, allows overlap, gently snaps frame edges, and provides a frame selector plus Bring forward/Send backward. Arrow keys move by one output pixel, Shift by ten. Movement stays within page bounds. Only an explicit move materializes the page's already-rendered frame bounds into its existing `templateSnapshot`; IDs, sizes, corner radii, assignments and crop objects remain intact. Existing spacing becomes part of those bounds and the gutter slider starts at zero additional inset. Undo restores the original snapshot/gutter. Reusable built-ins/custom templates are never edited by this operation.
+- **Exact duplicates:** Find duplicates compares SHA-256 plus byte length of untouched originals, sequentially and asynchronously, with a disposable account/original-scoped fingerprint cache. Names, dimensions, palette analysis and Drive previews are not evidence of equality. The review requires an explicit Combine action and can be cancelled. Unverifiable originals remain listed. Library cards and new arrangement suggestions show each combined photo once; usage counts include every retained placement.
+
+### Preservation and compatibility invariant
+
+Opening, hydrating, previewing or inspecting a project must not rewrite its image configuration. An unavailable local/Drive original never represents deletion. Explicit duplicate cleanup changes **library grouping only**: optional `ProjectPhoto.duplicateOf` links in the existing `projects.photo_library` JSONB combine cards while retaining all original metadata. Every page/frame/blob/cloud-row identity, crop, Drive original/preview reference and assignment remains unchanged, including repeated placements on one page. `null` explicitly undoes grouping; an omitted legacy field does not clear it. Invalid or dangling links show entries separately rather than hiding photographs. Raw original references remain available to backup/sync and are remapped only when deliberately restoring a new project copy.
+
+No migration, dependency, Drive deletion, project-asset deletion or automatic deduplication is added. Supabase remains authoritative; Drive stores bytes and browser storage is a cache. Revision/conflict and explicit-deletion guards remain in place. An old-schema fallback cannot acknowledge library grouping as saved if `photo_library` is missing. In-flight save acknowledgements retain newer grouping/undo edits and upload checkpoints. Older clients may display duplicate cards again; grouping never rewrites their existing assignments. Undo remains session-scoped as stated in the app.
+
+This work does not recover Islands or reconstruct lost frame mappings from old Drive files. The previously documented live-connector recovery plan remains a separate manual task; new metadata cannot repair old files retroactively.
+
+### Verification
+
+234 automated tests in 20 files pass, including all prior sync/protection, panorama, crop, custom-template, backup and arrangement tests. New cases cover clipped-edge snapping/release/bypass; exact signed input; moved frame sizes/IDs/crops and unavailable assignments; save/hydration/undo; matching preview/editor/thumbnail/JPEG geometry and cancellation; exact-byte duplicate proof, unavailable originals, explicit review/stale-scan rejection, aliases, cloud writes without asset deletion, old-client merges, upload checkpoints, undo/redo and portable restore. Typecheck, lint and the production build pass.
+
+Chrome verification used only `127.0.0.1:3016` with all Supabase/Drive public configuration explicitly blank and generated synthetic photographs. Checked exact `-12.34567%` retention through blur and reload, invalid input, frame movement/undo/layer controls, duplicate review/cancel/apply/undo/redo, two retained placements with different crops, carousel preview navigation/Escape, complete-page fitting at desktop and 390×844, and actual 1080×1350 JPEG rendering. No browser errors/warnings were recorded. Physical iPad gestures and live cross-device cloud synchronization were not exercised; snapping mathematics and persistence were covered with automated fixtures. No live project or Drive data was accessed or modified.
+
 ## Guidance for future coding agents / chats
 
-Earlier deployment/version statements are historical except for the separate read-only production check recorded above.
+Earlier deployment/version statements are historical; the latest verified release is recorded in the panorama production section above. Recheck live state before further changes.
 
 Before making changes:
 

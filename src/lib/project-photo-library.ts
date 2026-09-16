@@ -5,7 +5,8 @@ export const MAX_PROJECT_PHOTOS = 200;
 export function libraryPhoto(photo: ProjectPhoto | StoredPhotoAsset): ProjectPhoto {
   return { blobKey: photo.blobKey, sourceWidth: photo.sourceWidth, sourceHeight: photo.sourceHeight,
     sourceName: photo.sourceName, mimeType: photo.mimeType, fileSize: photo.fileSize,
-    driveOriginalId: photo.driveOriginalId, drivePreviewId: photo.drivePreviewId };
+    driveOriginalId: photo.driveOriginalId, drivePreviewId: photo.drivePreviewId,
+    ...("duplicateOf" in photo && photo.duplicateOf !== undefined ? { duplicateOf: photo.duplicateOf } : {}) };
 }
 
 /** Absence never removes an original. Frame deletion is separate from membership. */
@@ -25,6 +26,30 @@ export function mergePhotoLibraries(...libraries: Array<readonly ProjectPhoto[] 
 
 export function getProjectPhotos(project: Pick<StoredProject, "pages" | "photoLibrary">): ProjectPhoto[] {
   return mergePhotoLibraries(project.photoLibrary, project.pages.flatMap(page => Object.values(page.photos)));
+}
+
+/** UI grouping never removes original metadata. Invalid/missing/cyclic links
+ * fail open in the library: show the entry instead of hiding a photograph. */
+export function projectPhotoGroups(project: Pick<StoredProject, "pages" | "photoLibrary">): Array<{ photo: ProjectPhoto; members: ProjectPhoto[] }> {
+  const photos = getProjectPhotos(project), byKey = new Map(photos.map(photo => [photo.blobKey, photo]));
+  const groups = new Map<string, { photo: ProjectPhoto; members: ProjectPhoto[] }>();
+  for (const photo of photos) {
+    let root = photo;
+    const visited = new Set<string>();
+    while (root.duplicateOf) {
+      visited.add(root.blobKey);
+      const next = byKey.get(root.duplicateOf);
+      if (!next || visited.has(next.blobKey)) { root = photo; break; }
+      root = next;
+    }
+    const group = groups.get(root.blobKey) ?? { photo: root, members: [] };
+    group.members.push(photo); groups.set(root.blobKey, group);
+  }
+  return [...groups.values()];
+}
+
+export function getVisibleProjectPhotos(project: Pick<StoredProject, "pages" | "photoLibrary">): ProjectPhoto[] {
+  return projectPhotoGroups(project).map(group => group.photo);
 }
 
 export function hasUnassignedPhotos(project: StoredProject): boolean {

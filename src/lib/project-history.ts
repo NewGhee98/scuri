@@ -1,11 +1,13 @@
 import type { StoredPhotoAsset, StoredProject } from "./types";
 import { recordPhotoDeletions } from "./project-photos";
 import { nextProjectEditTime } from "./project-time";
+import { getProjectPhotos } from "./project-photo-library";
 
 /** Only content belongs in undo history, not sync timestamps/IDs or selection. */
 export function projectContentKey(project: StoredProject): string {
   return JSON.stringify([project.name, project.formatId, project.pages.map(page => [page.id, page.templateId,
-    page.templateSnapshot, page.background, page.gutter, Object.entries(page.photos).map(([id, photo]) => [id, photo.blobKey, photo.crop])])]);
+    page.templateSnapshot, page.background, page.gutter, Object.entries(page.photos).map(([id, photo]) => [id, photo.blobKey, photo.crop])]),
+    getProjectPhotos(project).filter(photo => photo.duplicateOf).map(photo => [photo.blobKey, photo.duplicateOf]).sort()]);
 }
 
 export function restoreProjectContent(latest: StoredProject, target: StoredProject, knownPhotos: Map<string, StoredPhotoAsset>, timestamp: string): StoredProject {
@@ -27,7 +29,11 @@ export function restoreProjectContent(latest: StoredProject, target: StoredProje
     const removed = Object.values(page.photos).filter(photo => restored?.photos[photo.frameId]?.blobKey !== photo.blobKey);
     if (removed.length || !restored) pending = recordPhotoDeletions(pending, page.id, removed, !restored);
   }
-  return { ...latest, name: target.name, formatId: target.formatId, activePageId: target.activePageId,
+  const targetPhotos = new Map(getProjectPhotos(target).map(photo => [photo.blobKey, photo]));
+  const photoLibrary = getProjectPhotos(latest).map(photo => targetPhotos.has(photo.blobKey) &&
+    (photo.duplicateOf || targetPhotos.get(photo.blobKey)?.duplicateOf || photo.duplicateOf === null)
+    ? { ...photo, duplicateOf: targetPhotos.get(photo.blobKey)?.duplicateOf ?? null } : photo);
+  return { ...latest, name: target.name, formatId: target.formatId, activePageId: target.activePageId, photoLibrary,
     pages, updatedAt: timestamp, pendingDeletions: pending?.photos.length || pending?.pageIds.length ? pending : undefined };
 }
 
