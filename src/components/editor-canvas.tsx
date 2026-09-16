@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
+import { MAX_ZOOM, minimumPhotoZoom, moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
 import { drawCroppedPhoto } from "@/lib/draw-photo";
+import { snapFramePosition, type AlignmentGuide } from "@/lib/editor-alignment";
 import type { CanvasFormat, CropState, PhotoAsset, ResolvedFrame, TemplateDefinition } from "@/lib/types";
 
 interface EditorCanvasProps {
@@ -14,10 +15,17 @@ interface EditorCanvasProps {
   unavailableFrameIds?: string[];
   selectedFrameId: string | null;
   rearrangeMode: boolean;
+  moveFrameMode: boolean;
+  snapEnabled: boolean;
+  guides: AlignmentGuide[];
   onSelectFrame: (frameId: string) => void;
   onRequestPhoto: (frameId: string) => void;
   onCropChange: (frameId: string, crop: CropState) => void;
   onMovePhoto: (sourceFrameId: string, targetFrameId: string) => void;
+  onZoomChange: (frameId: string, zoom: number, tolerance: number) => void;
+  onFrameMove: (frameId: string, x: number, y: number) => void;
+  onGuidesChange: (guides: AlignmentGuide[]) => void;
+  onViewWidthChange: (width: number) => void;
 }
 
 interface Point {
@@ -53,10 +61,17 @@ export function EditorCanvas({
   unavailableFrameIds,
   selectedFrameId,
   rearrangeMode,
+  moveFrameMode,
+  snapEnabled,
+  guides,
   onSelectFrame,
   onRequestPhoto,
   onCropChange,
   onMovePhoto,
+  onZoomChange,
+  onFrameMove,
+  onGuidesChange,
+  onViewWidthChange,
 }: EditorCanvasProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -65,9 +80,22 @@ export function EditorCanvas({
   const dragRef = useRef<{ frameId: string; last: Point; distance: number } | null>(null);
   const pinchRef = useRef<{ frameId: string; startDistance: number; startZoom: number } | null>(null);
   const swapDragRef = useRef<{ pointerId: number; sourceFrameId: string; targetFrameId: string } | null>(null);
+  const frameDragRef = useRef<{ pointerId: number; start: Point; frame: ResolvedFrame } | null>(null);
+  const wheelRef = useRef<{ frameId: string; rawZoom: number; time: number } | null>(null);
   const [size, setSize] = useState({ width: 320, height: (320 * format.height) / format.width });
   const [imageRevision, setImageRevision] = useState(0);
   const [swapTargetFrameId, setSwapTargetFrameId] = useState<string | null>(null);
+
+  useEffect(() => {
+    pointersRef.current.clear(); dragRef.current = null; pinchRef.current = null;
+    swapDragRef.current = null; frameDragRef.current = null; wheelRef.current = null;
+  }, [moveFrameMode, rearrangeMode]);
+
+  useEffect(() => {
+    if (!guides.length) return;
+    const timeout = window.setTimeout(() => onGuidesChange([]), 800);
+    return () => window.clearTimeout(timeout);
+  }, [guides, onGuidesChange]);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -77,6 +105,7 @@ export function EditorCanvas({
       const availableHeight = Math.max(340, window.innerHeight - (window.innerWidth >= 900 ? 150 : 250));
       const width = Math.max(240, Math.min(availableWidth, (availableHeight * format.width) / format.height));
       setSize({ width, height: (width * format.height) / format.width });
+      onViewWidthChange(width);
     };
     update();
     const observer = new ResizeObserver(update);
@@ -86,7 +115,7 @@ export function EditorCanvas({
       observer.disconnect();
       window.removeEventListener("orientationchange", update);
     };
-  }, [format.height, format.width]);
+  }, [format.height, format.width, onViewWidthChange]);
 
   useEffect(() => {
     const cache = imageCacheRef.current;
@@ -149,7 +178,7 @@ export function EditorCanvas({
       }
       context.restore();
 
-      if (swapTargetFrameId === frame.id && swapDragRef.current?.sourceFrameId !== frame.id) {
+      if (rearrangeMode && swapDragRef.current && swapTargetFrameId === frame.id && swapDragRef.current.sourceFrameId !== frame.id) {
         context.save();
         context.strokeStyle = "#1f8f55";
         context.lineWidth = 5;
@@ -168,7 +197,18 @@ export function EditorCanvas({
         context.restore();
       }
     }
-  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId, unavailableFrameIds]);
+    if (guides.length) {
+      context.save(); context.strokeStyle = "#c43588"; context.lineWidth = 1.5; context.setLineDash([5, 4]);
+      for (const guide of guides) {
+        const value = guide.value * (guide.axis === "x" ? size.width / format.width : size.height / format.height);
+        context.beginPath();
+        if (guide.axis === "x") { context.moveTo(value, 0); context.lineTo(value, size.height); }
+        else { context.moveTo(0, value); context.lineTo(size.width, value); }
+        context.stroke();
+      }
+      context.restore();
+    }
+  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId, unavailableFrameIds, guides, format.width, format.height, rearrangeMode]);
 
   const canvasPoint = useCallback((event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -180,13 +220,29 @@ export function EditorCanvas({
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     event.preventDefault();
+    event.currentTarget.focus({ preventScroll: true });
+    onGuidesChange([]); wheelRef.current = null;
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = canvasPoint(event);
     pointersRef.current.set(event.pointerId, point);
     if (swapDragRef.current) return;
-    const target = hitTest(frames, point);
+    const selected = moveFrameMode ? frames.filter(frame => frame.id === selectedFrameId) : [];
+    const target = hitTest(selected, point) ?? hitTest(frames, point);
     if (!target) return;
+    // A second finger may land on a different (or empty) frame. Keep the
+    // first finger's photo selected and make this one continuous gesture.
+    if (!moveFrameMode && !rearrangeMode && pointersRef.current.size === 2 && dragRef.current && photos[dragRef.current.frameId]) {
+      pinchRef.current = { frameId: dragRef.current.frameId, startDistance: Math.max(1, pointerDistance([...pointersRef.current.values()])),
+        startZoom: photos[dragRef.current.frameId].crop.zoom };
+      dragRef.current = null;
+      return;
+    }
+    if (pointersRef.current.size > 1) return;
     onSelectFrame(target.id);
+    if (moveFrameMode) {
+      if (!frameDragRef.current) frameDragRef.current = { pointerId: event.pointerId, start: point, frame: target };
+      return;
+    }
     if (rearrangeMode && photos[target.id]) {
       swapDragRef.current = { pointerId: event.pointerId, sourceFrameId: target.id, targetFrameId: target.id };
       setSwapTargetFrameId(target.id);
@@ -200,14 +256,6 @@ export function EditorCanvas({
     }
     if (pointersRef.current.size === 1) {
       dragRef.current = { frameId: target.id, last: point, distance: 0 };
-    } else if (pointersRef.current.size === 2) {
-      const points = [...pointersRef.current.values()];
-      pinchRef.current = {
-        frameId: target.id,
-        startDistance: Math.max(1, pointerDistance(points)),
-        startZoom: photos[target.id].crop.zoom,
-      };
-      dragRef.current = null;
     }
   };
 
@@ -216,6 +264,15 @@ export function EditorCanvas({
     event.preventDefault();
     const point = canvasPoint(event);
     pointersRef.current.set(event.pointerId, point);
+    const frameDrag = frameDragRef.current;
+    if (moveFrameMode) {
+      if (frameDrag?.pointerId !== event.pointerId) return;
+      const result = snapFramePosition(frameDrag.frame, frames, frameDrag.frame.x + point.x - frameDrag.start.x,
+        frameDrag.frame.y + point.y - frameDrag.start.y, size.width, size.height, snapEnabled && !event.altKey ? 5 : -1);
+      onGuidesChange(result.guides.map(guide => ({ ...guide, value: guide.value * (guide.axis === "x" ? format.width / size.width : format.height / size.height) })));
+      onFrameMove(frameDrag.frame.id, result.x * format.width / size.width, result.y * format.height / size.height);
+      return;
+    }
     const swapDrag = swapDragRef.current;
     if (swapDrag?.pointerId === event.pointerId) {
       const target = hitTest(frames, point);
@@ -227,9 +284,10 @@ export function EditorCanvas({
       const photo = photos[pinchRef.current.frameId];
       if (!photo) return;
       const distance = pointerDistance([...pointersRef.current.values()]);
-      onCropChange(
+      onZoomChange(
         pinchRef.current.frameId,
-        setCropZoom(photo.crop, pinchRef.current.startZoom * (distance / pinchRef.current.startDistance)),
+        pinchRef.current.startZoom * (distance / pinchRef.current.startDistance),
+        event.altKey ? -1 : 5 * format.width / size.width,
       );
       return;
     }
@@ -251,12 +309,14 @@ export function EditorCanvas({
 
   const endPointer = (event: React.PointerEvent<HTMLCanvasElement>, commitSwap: boolean) => {
     event.preventDefault();
+    onGuidesChange([]);
+    if (frameDragRef.current?.pointerId === event.pointerId) frameDragRef.current = null;
     const swapDrag = swapDragRef.current;
     if (commitSwap && swapDrag?.pointerId === event.pointerId && swapDrag.sourceFrameId !== swapDrag.targetFrameId) {
       onMovePhoto(swapDrag.sourceFrameId, swapDrag.targetFrameId);
     }
     const drag = dragRef.current;
-    if (drag && drag.distance < 6 && !photos[drag.frameId] && !unavailableFrameIds?.includes(drag.frameId)) onRequestPhoto(drag.frameId);
+    if (commitSwap && !moveFrameMode && drag && drag.distance < 6 && !photos[drag.frameId] && !unavailableFrameIds?.includes(drag.frameId)) onRequestPhoto(drag.frameId);
     pointersRef.current.delete(event.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
     if (swapDrag?.pointerId === event.pointerId) {
@@ -269,16 +329,31 @@ export function EditorCanvas({
   };
 
   const handleWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
-    if (rearrangeMode || !selectedFrameId || !photos[selectedFrameId]) return;
+    if (moveFrameMode || rearrangeMode || !selectedFrameId || !photos[selectedFrameId]) return;
     event.preventDefault();
     const photo = photos[selectedFrameId];
-    onCropChange(selectedFrameId, setCropZoom(photo.crop, photo.crop.zoom * (event.deltaY > 0 ? 0.94 : 1.06)));
+    const frame = frames.find(item => item.id === selectedFrameId);
+    if (!frame) return;
+    const last = wheelRef.current;
+    const rawZoom = Math.max(Math.min(photo.crop.zoom, minimumPhotoZoom(photo.sourceWidth, photo.sourceHeight, frame)), Math.min(MAX_ZOOM,
+      (last?.frameId === selectedFrameId && Date.now() - last.time < 300 ? last.rawZoom : photo.crop.zoom) * (event.deltaY > 0 ? 0.94 : 1.06)));
+    wheelRef.current = { frameId: selectedFrameId, rawZoom, time: Date.now() };
+    onZoomChange(selectedFrameId, rawZoom, event.altKey ? -1 : 5 * format.width / size.width);
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>) => {
     if (!selectedFrameId) return;
     const photo = photos[selectedFrameId];
     const target = frames.find((frame) => frame.id === selectedFrameId);
+    if (moveFrameMode) {
+      if (target && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        event.preventDefault(); onGuidesChange([]);
+        const step = event.shiftKey ? 10 : 1;
+        onFrameMove(selectedFrameId, target.x * format.width / size.width + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0),
+          target.y * format.height / size.height + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0));
+      }
+      return;
+    }
     if (!photo) {
       if (event.key === "Enter" || event.key === " ") onRequestPhoto(selectedFrameId);
       return;
@@ -313,8 +388,9 @@ export function EditorCanvas({
     <div ref={shellRef} className="flex min-h-[340px] w-full items-center justify-center overflow-hidden">
       <canvas
         ref={canvasRef}
-        className={`ios-gesture-surface block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4 ${rearrangeMode ? "cursor-grab" : ""}`}
-        aria-label={rearrangeMode
+        className={`ios-gesture-surface block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4 ${moveFrameMode || rearrangeMode ? "cursor-grab" : ""}`}
+        aria-label={moveFrameMode ? "Photo layout canvas in move frame mode. Drag the selected frame or use arrow keys to move it."
+          : rearrangeMode
           ? "Photo layout canvas in rearrange mode. Drag a filled frame onto another frame to swap or move its photo."
           : "Photo layout canvas. Tap a frame to select it, drag to reposition, and pinch to zoom."}
         role="application"
