@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-09-16_
+_Last updated: 2026-09-17_
 
 ## How to use this file
 
@@ -493,9 +493,41 @@ This work does not recover Islands or reconstruct lost frame mappings from old D
 
 Chrome verification used only `127.0.0.1:3016` with all Supabase/Drive public configuration explicitly blank and generated synthetic photographs. Checked exact `-12.34567%` retention through blur and reload, invalid input, frame movement/undo/layer controls, duplicate review/cancel/apply/undo/redo, two retained placements with different crops, carousel preview navigation/Escape, complete-page fitting at desktop and 390×844, and actual 1080×1350 JPEG rendering. No browser errors/warnings were recorded. Physical iPad gestures and live cross-device cloud synchronization were not exercised; snapping mathematics and persistence were covered with automated fixtures. No live project or Drive data was accessed or modified.
 
+## Editor production release — 2026-09-16
+
+After explicit deployment approval, PR [#18](https://github.com/NewGhee98/scuri/pull/18) was merged and closed. Freshly fetched main is `52b3b2088dc61d51517d9d8428ba8e2fd96da361`. Both the review head `b4be84d04d0f010c1ef87c8b2da5c63fd8dc5033` and merged main have exactly the tested local `0bdbf07` tree (`099bdf0f5030af5679513c931744d4dcf57aa1a4`), so the 234 passing tests, typecheck, lint and production build apply unchanged. GitHub reported two successful checks and no conflicts before merge.
+
+Vercel Preview [DYG8BSuq62zaY1FXupkjLSEHRhEy](https://vercel.com/nugee/scuri/DYG8BSuq62zaY1FXupkjLSEHRhEy) was Ready from the review head. Its signed-out workspace was checked using synthetic photos: exact negative zoom, frame movement/undo, actual JPEG preview, explicit duplicate combination and saved/reopened crop/grouping all worked, with both photos restored and no browser errors/warnings. Immediately after combining, the analysis counter briefly counted original records (2 cards / 3 analysed); reopening showed 2/2. This cosmetic summary follow-up does not affect assignments or crops.
+
+Vercel's deployment listing showed [Production FDDUpGXj1tziY7sx1q4zpcrXb16v](https://vercel.com/nugee/scuri/FDDUpGXj1tziY7sx1q4zpcrXb16v) Ready from `52b3b20` on main, with a 43-second build. A session-free public check at 11:36:06 UTC received HTTP 200 from `https://scuri.vercel.app` and found all five new UI markers in its published JavaScript. No production project was opened or edited, and no migration, Drive operation or service configuration change was performed. Physical iPad gestures and live cross-device sync were not tested.
+
+This verified release supersedes the implementation section's pre-deployment status. The post-deployment record is local only, with full evidence in `../../outputs/SCURI_EDITOR_PRODUCTION_2026-09-16.md`; the deployed commit retains its pre-deployment implementation/test record. Photo safety, storage authority, explicit cleanup and separate Islands recovery limitations remain as documented above.
+
+## Add-page replacement diagnosis — 2026-09-17
+
+User requested diagnosis of Add page sometimes warning about replacement and overwriting an existing page. GitHub main and Vercel production were rechecked: both remain `52b3b208`, with production deployment `FDDUpGXj1tziY7sx1q4zpcrXb16v` Ready at `scuri.vercel.app`. Local `src` matches that commit. No application code or production/project/Drive data was changed.
+
+Confirmed cause: Add page uses `activePageId = null` as implicit creation intent. A background pull, push acknowledgement or Drive upload checkpoint calls `adoptActiveProject`, which restores an incoming selection or falls back to the first page. `selectTemplate` then sees an active page and executes Change layout. Accepting its confirmation records deliberate assignment deletion intent and replaces the existing page, so the cloud safety guard permits it. Choosing the same template instead silently reopens the existing page. Autosave can persist this before Save page, which only returns to the overview.
+
+Twelve isolated probes executing extracted unchanged handlers and real pure helpers reproduced the race with loaded/unavailable photos, all three reconciliation paths, same-template selection, cancel, first-page/control flows and session Undo. These were offline synthetic state tests, not a React/browser scheduling or live-account reproduction. Full diagnosis and executable evidence are in `../../outputs/SCURI_ADD_PAGE_DIAGNOSIS_2026-09-17.md`, `diagnose-scuri-add-page.mjs` and `SCURI_ADD_PAGE_DIAGNOSIS_RESULTS.json`.
+
+The fix below implements the recommended explicit project-scoped picker intent separating Add from Replace with a pinned page target. Originals remain in the library after this bug, but lost mappings/crops need surviving session Undo or prior backup/evidence; no live recovery was attempted.
+
+## Add-page intent fix — 2026-09-17 (verified locally; deployment pending)
+
+The user authorized implementation and immediate deployment after validation. `layouts-app.tsx` now captures an explicit Add or Replace action when opening the template picker. Add always appends a fresh page, independently of selected-page changes from cloud pulls, save acknowledgements, upload checkpoints or history reconciliation. Replace is pinned to its requested page. Picker heading and highlighting use the same intent; selecting the existing template in Add still creates a new page.
+
+Leaving the picker or changing projects/accounts clears intent synchronously. Completed choices consume it before a second click can act, and stale callbacks cannot reuse a cancelled/reopened picker. A missing replacement target safely returns to the project without choosing another page. Template selection checks the latest page limit. Explicit layout changes retain confirmation, library originals, exact deletion intent and Undo.
+
+No schema, dependency, asset, crop-format, template or rendering changes. Existing pages/frames/assignments/crops/library and Drive references remain untouched by Add. Cloud metadata adoption and upload checkpoint handling continue normally; temporary unavailable bytes still never mean deletion. This patch prevents future accidental replacement; it does not reconstruct previously lost layouts/crops.
+
+Validation: **257 tests in 21 files**, typecheck, ESLint and production build passed. The 23 new component-handler integration regressions execute extracted production handlers with controlled state commits and deferred real sync-helper results. The 12 primary race cases first failed on the production baseline and then passed: same/different templates following acknowledgement/checkpoint/pull, with loaded/unavailable photos. Additional checks cover save/reload, first page, repeated/stale clicks, navigation cancellation, project/workspace changes, pinned deliberate replacement/Undo, disappearing targets, page limits and format mismatch. These are handler-integration tests, not a DOM test-runner replacement.
+
+An isolated Chrome production build at `127.0.0.1:3017`, with all cloud/Drive configuration blank, used a generated photo only. Undo/Redo while the Add picker was open exercised the real React project-adoption path; same-template and different-template choices appended separate pages (three total). Page 1 retained its photo and exact stored zoom `0.8765433` (-12.34567%). Explicit Change layout still displayed its normal confirmation, which was cancelled. Reopening from a fresh tab restored all three pages, the original image and exact zoom; no browser errors/warnings were recorded. No live project, Drive original or database was modified. Physical-device and real-account cross-device sync were not exercised.
+
 ## Guidance for future coding agents / chats
 
-Earlier deployment/version statements are historical; the latest verified release is recorded in the panorama production section above. Recheck live state before further changes.
+Earlier deployment/version statements are historical; the latest verified release is recorded in the editor production section above. Recheck live state before further changes.
 
 Before making changes:
 

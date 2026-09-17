@@ -108,6 +108,7 @@ import { TemplateDesigner } from "./template-designer";
 type Notice = { kind: "error" | "success" | "info"; text: string } | null;
 type BusyState = "image" | "export" | "duplicate" | "project" | "drive" | "backup" | null;
 type ExportItem = { pageId: string; pageNumber: number; blob: Blob; url: string; filename: string };
+type TemplatePickerIntent = { projectId: string } & ({ kind: "add" } | { kind: "replace"; pageId: string });
 
 const BACKGROUNDS = ["#ffffff", "#f3f1ec", "#d9d6cf", "#1b1b1b", "#c9d2cc", "#e1d2c6"];
 
@@ -175,7 +176,20 @@ function Header({
 }
 
 export function LayoutsApp() {
-  const [screen, setScreen] = useState<AppScreen>("projects");
+  const [screen, setScreenState] = useState<AppScreen>("projects");
+  // Navigation selection can change during sync. It must never decide whether
+  // choosing a template appends a page or deliberately replaces one.
+  const [templatePickerIntent, setTemplatePickerIntent] = useState<TemplatePickerIntent | null>(null);
+  const templatePickerRef = useRef<TemplatePickerIntent | null>(null);
+  const setTemplatePicker = useCallback((intent: TemplatePickerIntent | null) => {
+    templatePickerRef.current = intent;
+    setTemplatePickerIntent(intent);
+  }, []);
+  const setScreen = useCallback((next: AppScreen) => {
+    // Invalidate immediately, including a second click before React rerenders.
+    if (next !== "template") setTemplatePicker(null);
+    setScreenState(next);
+  }, [setTemplatePicker]);
   const [projects, setProjects] = useState<StoredProject[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("Untitled project");
@@ -264,6 +278,8 @@ export function LayoutsApp() {
   );
   const hasActiveTemplateFilters = templateFilter !== "all" || templatePhotoCountFilter !== "all" || templateEdgeFilter !== "all";
   const activePage = pages.find((page) => page.id === activePageId) ?? null;
+  const pickerPage = templatePickerIntent?.kind === "replace" && templatePickerIntent.projectId === projectId
+    ? pages.find(page => page.id === templatePickerIntent.pageId) ?? null : null;
   const resolvePageTemplate = useCallback((page: Pick<ProjectPage, "templateId" | "templateSnapshot">): TemplateDefinition => (
     page.templateSnapshot ?? getTemplate(page.templateId, customTemplates)
   ), [customTemplates]);
@@ -518,6 +534,7 @@ export function LayoutsApp() {
     const previous = activeProjectRef.current;
     const sameProject = project?.id === previous?.id;
     if (!sameProject) {
+      if (templatePickerRef.current) setScreen(project ? "project" : "projects");
       const urls = new Map([...retainedPhotosRef.current.values(), ...pagesRef.current.flatMap(page => Object.values(page.photos))].map(photo => [photo.previewUrl, photo]));
       urls.forEach(disposePhotoAsset);
       retainedPhotosRef.current.clear();
@@ -543,7 +560,7 @@ export function LayoutsApp() {
     setFormatId(project?.formatId ?? null);
     setActivePageId(restored.some((page) => page.id === project?.activePageId) ? project!.activePageId : restored[0]?.id ?? null);
     if (!project) setScreen("projects");
-  }, []);
+  }, [setScreen]);
 
   const syncProjectsFromCloud = useCallback(async (): Promise<void> => {
     if (!isProjectCloudConfigured()) return;
@@ -1116,19 +1133,28 @@ export function LayoutsApp() {
   };
 
   const selectTemplate = async (nextTemplate: TemplateDefinition) => {
+    const intent = templatePickerIntent;
+    if (!intent || templatePickerRef.current !== intent || activeProjectRef.current?.id !== intent.projectId) return;
     historyGroupRef.current = undefined;
     if (!formatId || nextTemplate.formatId !== formatId) return;
-    if (activePage) {
-      if (activePage.templateId === nextTemplate.id) {
+    const targetPage = intent.kind === "replace" ? pagesRef.current.find(page => page.id === intent.pageId) : null;
+    if (intent.kind === "replace" && !targetPage) {
+      setScreen("project");
+      setNotice({ kind: "info", text: "That page is no longer available. Choose a page or add a new one." });
+      return;
+    }
+    if (targetPage) {
+      if (targetPage.templateId === nextTemplate.id) {
+        setActivePageId(targetPage.id);
         setRearrangeMode(false);
         setScreen("editor");
         return;
       }
-      const removedPhotos = Object.values(serializePage(activePage).photos);
+      const removedPhotos = Object.values(serializePage(targetPage).photos);
       if (removedPhotos.length && !window.confirm("Change this page layout and clear its frames? All photos, including unavailable ones, stay in the project library.")) return;
-      setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id, removedPhotos));
-      retainPagePhotos(activePage);
-      updatePage(activePage.id, (page) => ({
+      setPendingDeletions((current) => recordPhotoDeletions(current, targetPage.id, removedPhotos));
+      retainPagePhotos(targetPage);
+      updatePage(targetPage.id, (page) => ({
         ...page,
         templateId: nextTemplate.id,
         templateSnapshot: { ...nextTemplate, frames: nextTemplate.frames.map((frame) => ({ ...frame })) },
@@ -1138,11 +1164,12 @@ export function LayoutsApp() {
         photos: {},
         unavailablePhotos: {},
       }));
+      setActivePageId(targetPage.id);
       setRearrangeMode(false);
       setScreen("editor");
       return;
     }
-    if (pages.length >= MAX_PROJECT_PAGES) {
+    if (pagesRef.current.length >= MAX_PROJECT_PAGES) {
       setNotice({ kind: "error", text: `A project can contain up to ${MAX_PROJECT_PAGES} pages.` });
       return;
     }
@@ -1577,8 +1604,16 @@ export function LayoutsApp() {
       setNotice({ kind: "error", text: `A project can contain up to ${MAX_PROJECT_PAGES} pages.` });
       return;
     }
+    if (!projectId) return;
+    setTemplatePicker({ kind: "add", projectId });
     setActivePageId(null);
     setRearrangeMode(false);
+    setScreen("template");
+  };
+
+  const changePageLayout = () => {
+    if (!activePage || !projectId) return;
+    setTemplatePicker({ kind: "replace", projectId, pageId: activePage.id });
     setScreen("template");
   };
 
@@ -2308,7 +2343,7 @@ export function LayoutsApp() {
         <main className="screen-shell max-w-[1100px]">
           <section className="flex flex-wrap items-end justify-between gap-4 pt-7 sm:pt-10">
             <div>
-              <p className="eyebrow">{activePage ? "Change page layout" : `Add page ${pages.length + 1}`} · {format.aspectRatio}</p>
+              <p className="eyebrow">{templatePickerIntent?.kind === "replace" ? "Change page layout" : `Add page ${pages.length + 1}`} · {format.aspectRatio}</p>
               <h1 className="mt-2 text-3xl font-medium tracking-[-0.04em] sm:text-4xl">Choose a layout</h1>
               <p className="mt-2 text-sm text-neutral-600">All project pages export at {format.width} × {format.height}px.</p>
             </div>
@@ -2318,7 +2353,7 @@ export function LayoutsApp() {
             {templates.map((item) => (
               <button key={item.id} className="template-card" type="button" onClick={() => void selectTemplate(item)}>
                 <span className="template-preview" style={{ aspectRatio: `${item.canvasWidth}/${item.canvasHeight}` }}>
-                  <TemplateThumbnail template={item} selected={item.id === activePage?.templateId} />
+                  <TemplateThumbnail template={item} selected={item.id === pickerPage?.templateId} />
                 </span>
                 <span className="mt-3 flex w-full items-center justify-between gap-2 text-left">
                   <span className="text-sm font-semibold tracking-[-0.01em]">{item.name}</span>
@@ -2355,7 +2390,7 @@ export function LayoutsApp() {
             <div>
               <div className="flex items-center justify-between gap-3">
                 <p className="eyebrow">Page {pages.findIndex((page) => page.id === activePage.id) + 1} · {template.name}</p>
-                <button className="text-button min-h-0" type="button" onClick={() => setScreen("template")}>Change layout</button>
+                <button className="text-button min-h-0" type="button" onClick={changePageLayout}>Change layout</button>
               </div>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <h1 className="text-2xl font-medium tracking-[-0.035em]">Edit page</h1>
