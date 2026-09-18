@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-09-17_
+_Last updated: 2026-09-18_
 
 ## How to use this file
 
@@ -513,7 +513,7 @@ Twelve isolated probes executing extracted unchanged handlers and real pure help
 
 The fix below implements the recommended explicit project-scoped picker intent separating Add from Replace with a pinned page target. Originals remain in the library after this bug, but lost mappings/crops need surviving session Undo or prior backup/evidence; no live recovery was attempted.
 
-## Add-page intent fix — 2026-09-17 (verified locally; deployment pending)
+## Add-page intent fix — 2026-09-17 (deployed and verified)
 
 The user authorized implementation and immediate deployment after validation. `layouts-app.tsx` now captures an explicit Add or Replace action when opening the template picker. Add always appends a fresh page, independently of selected-page changes from cloud pulls, save acknowledgements, upload checkpoints or history reconciliation. Replace is pinned to its requested page. Picker heading and highlighting use the same intent; selecting the existing template in Add still creates a new page.
 
@@ -525,9 +525,33 @@ Validation: **257 tests in 21 files**, typecheck, ESLint and production build pa
 
 An isolated Chrome production build at `127.0.0.1:3017`, with all cloud/Drive configuration blank, used a generated photo only. Undo/Redo while the Add picker was open exercised the real React project-adoption path; same-template and different-template choices appended separate pages (three total). Page 1 retained its photo and exact stored zoom `0.8765433` (-12.34567%). Explicit Change layout still displayed its normal confirmation, which was cancelled. Reopening from a fresh tab restored all three pages, the original image and exact zoom; no browser errors/warnings were recorded. No live project, Drive original or database was modified. Physical-device and real-account cross-device sync were not exercised.
 
+## Add-page production release — 2026-09-17
+
+[PR #19](https://github.com/NewGhee98/scuri/pull/19) was merged and closed after two successful GitHub checks. Freshly fetched main is `da5bb2bce5d1d16592db523a597cc5457980b9a0`. Its complete tree, `558d3140c10c46213ccb14143728e029773495ee`, exactly matches both the tested local commit `c17df6045b004051e914d9c8cf40ea96708f30b3` and uploaded branch head `c7f6ba37bbd9282f643b4c4f020fde31bf71cee7`. The validation above therefore applies unchanged to the production source.
+
+Vercel [production deployment Cq8vpVRKTCt34eKDUAYqUxDydPTQ](https://vercel.com/nugee/scuri/Cq8vpVRKTCt34eKDUAYqUxDydPTQ) is Ready from `da5bb2b` on main and assigned to `scuri.vercel.app`. A session-free public check at 18:03:19 UTC returned HTTP 200, fetched nine published JavaScript assets, and found the new missing-page safety message plus all five prior editor feature markers. No production project, original image, database, migration or service configuration was changed. Existing open clients should refresh to load the fix; previously replaced layouts/crops are not reconstructed automatically.
+
+This post-deployment record is local only; the deployed commit contains the implementation and validation record prepared before deployment. Full evidence is in `../../outputs/SCURI_ADD_PAGE_PRODUCTION_2026-09-17.md` and `SCURI_ADD_PAGE_PUBLIC_RELEASE_2026-09-17.json`.
+
+## Session photo previews and composition guides — 2026-09-18 (verified locally, not deployed)
+
+User requested lightweight previews retained across project navigation, full-resolution page Preview, and composition guides. They confirmed the thirds grid and centre cross should stay fixed inside the selected frame and appear while it is selected for editing, with a Guides toggle. This feature has not been published or deployed. Work is on `feat/session-photo-previews-guides`, based on freshly verified public main `da5bb2b`; the previous production release remains unchanged.
+
+`PhotoPreviewCache` retains display-only previews for the current app/workspace session. It reuses existing 320px uncropped analysis thumbnails or prepares previews up to 640px from local/volatile bytes or Drive's preview file. Project covers, page thumbnails, the editor and library share this cache. Concurrent requests for a photo are coalesced and preparation is limited to two jobs. Retention is capped at 64 MiB of compressed preview bytes / 1,000 entries; exceeding either limit evicts the least recently requested previews. Ordinary navigation does not clear the cache. Account/workspace changes and app teardown clear it, revoke URLs and invalidate queued/late results. Reloading starts a new session cache.
+
+The safety invariant is unchanged: **unavailable original bytes never mean a deleted photo**. Display previews never become `PhotoAsset.sourceBlob`, enter the original IndexedDB namespace, mark an original as available, change library membership, or own assignments/crops. Rendering always uses current project metadata. Crops edited against a cached preview are stored on the existing unavailable assignment and retained when its original later hydrates. Deleted/replaced assignments cannot be restored from the cache. A small preview remains available while its higher-quality editor image decodes.
+
+Full-resolution page Preview and JPEG export continue through the existing original-byte renderer at the project's output dimensions. They wait/report unavailable originals rather than silently substituting cached small images. No source original, schema, Drive file, existing project, crop format, frame geometry, template or synchronization rule is changed.
+
+The editor alone draws fine thirds lines and a short centre cross clipped to the selected photo frame, with a dark under-stroke for visibility on light photos. Guides default on for the session, can be toggled, and do not appear in empty frames, rearrange mode, thumbnails, page Preview or exported JPEGs. Pan/zoom, negative zoom, frame movement and alignment snapping retain their existing geometry.
+
+Validation: **287 tests / 23 files**, standalone typecheck, full ESLint (no warnings), production build and whitespace checks passed. The 30 added regressions cover cache reuse across navigation, concurrent requests, bounded work/memory, empty/failed IDB and disconnected Drive, late account-bound results, current assignments/crops, duplicate placements, preview-only crop edits followed by original hydration, deletion/replacement safety, full-resolution Preview, guide geometry/toggle/selection and the handover to higher-quality image rendering. Canvas effect tests execute the actual production draw callback; they are not a full React DOM runner.
+
+Isolated Chrome QA at `127.0.0.1:3018` used only generated photos, with Supabase/Drive configuration blank. A two-photo portrait page showed guides only on the selected frame; the toggle worked and page Preview rendered at 1080 × 1350 without guides. Switching from photo project A to empty project B and back retained previews while originals reloaded. Exact stored zoom `0.8765433` (-12.34567%) and both photos survived project switching and a fresh app reload. No browser errors/warnings were recorded. Live-account cross-device sync and physical iPad gestures were not tested. Evidence summary: `../../outputs/SCURI_SESSION_PREVIEWS_GUIDES_2026-09-18.md`.
+
 ## Guidance for future coding agents / chats
 
-Earlier deployment/version statements are historical; the latest verified release is recorded in the editor production section above. Recheck live state before further changes.
+Earlier deployment/version statements are historical; the latest verified release is recorded in the Add-page production section above. Recheck live state before further changes.
 
 Before making changes:
 

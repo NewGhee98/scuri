@@ -65,10 +65,10 @@ export async function decodeImage(blob: Blob): Promise<DecodedImage> {
   };
 }
 
-export async function createPhotoPreview(blob: Blob): Promise<{ blob: Blob; previewUrl: string; width: number; height: number }> {
+export async function createPhotoPreview(blob: Blob, options: { longEdge?: number; quality?: number } = {}): Promise<{ blob: Blob; previewUrl: string; width: number; height: number }> {
   const decoded = await decodeImage(blob);
   try {
-    const scale = Math.min(1, PREVIEW_LONG_EDGE / Math.max(decoded.width, decoded.height));
+    const scale = Math.min(1, (options.longEdge ?? PREVIEW_LONG_EDGE) / Math.max(decoded.width, decoded.height));
     const width = Math.max(1, Math.round(decoded.width * scale));
     const height = Math.max(1, Math.round(decoded.height * scale));
     const canvas = document.createElement("canvas");
@@ -84,7 +84,7 @@ export async function createPhotoPreview(blob: Blob): Promise<{ blob: Blob; prev
       canvas.toBlob(
         (result) => (result ? resolve(result) : reject(new Error("Your browser could not prepare an image preview."))),
         "image/webp",
-        0.86,
+        options.quality ?? 0.86,
       );
     });
     return { blob: previewBlob, previewUrl: URL.createObjectURL(previewBlob), width: decoded.width, height: decoded.height };

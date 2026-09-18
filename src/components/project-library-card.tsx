@@ -1,20 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { downloadGoogleDrivePhoto } from "@/lib/google-drive";
-import { disposePhotoAsset, preparePhotoAsset } from "@/lib/image";
+import { useMemo } from "react";
 import { isPageComplete } from "@/lib/project";
-import { loadPhotoBlob } from "@/lib/storage";
 import { getProjectBackupCounts } from "@/lib/project-sync";
 import { getTemplate } from "@/lib/templates";
-import type { CanvasFormat, PhotoAsset, ProjectCloudSyncState, ProjectPage, StoredProject } from "@/lib/types";
+import type { CanvasFormat, ProjectCloudSyncState, ProjectPage, StoredProject } from "@/lib/types";
 import { CompositionThumbnail } from "./composition-thumbnail";
-import { TemplateThumbnail } from "./template-thumbnail";
 
 interface ProjectLibraryCardProps {
   format: CanvasFormat;
   project: StoredProject;
-  driveAccessToken?: string | null;
   syncState?: ProjectCloudSyncState;
   onOpen: (projectId: string) => void;
   onDelete: (projectId: string) => void;
@@ -48,7 +43,7 @@ const SYNC_STATUS_CLASS: Record<ProjectCloudSyncState, string> = {
   "photos-pending": "text-amber-700",
 };
 
-export function ProjectLibraryCard({ format, project, driveAccessToken, syncState, onOpen, onDelete }: ProjectLibraryCardProps) {
+export function ProjectLibraryCard({ format, project, syncState, onOpen, onDelete }: ProjectLibraryCardProps) {
   const backup = getProjectBackupCounts(project);
   const completePages = useMemo(
     () => project.pages.filter((page) => isPageComplete(page, page.templateSnapshot ?? getTemplate(page.templateId))),
@@ -56,56 +51,16 @@ export function ProjectLibraryCard({ format, project, driveAccessToken, syncStat
   );
   const coverPage = completePages[0] ?? project.pages[0] ?? null;
   const coverTemplate = coverPage ? coverPage.templateSnapshot ?? getTemplate(coverPage.templateId) : null;
-  const [hydratedPage, setHydratedPage] = useState<ProjectPage | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let loadedPage: ProjectPage | null = null;
-
-    const hydrateCover = async () => {
-      if (!coverPage || !coverTemplate) {
-        setHydratedPage(null);
-        return;
-      }
-      const entries = await Promise.all(Object.values(coverPage.photos).map(async (item) => {
-        let blob = await loadPhotoBlob(item.blobKey).catch(() => null);
-        if (!blob && driveAccessToken && item.drivePreviewId) {
-          blob = await downloadGoogleDrivePhoto(driveAccessToken, item.drivePreviewId).catch(() => null);
-        }
-        if (!blob) return null;
-        try {
-          const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
-          asset.crop = item.crop;
-          return [item.frameId, asset] as const;
-        } catch {
-          // A missing preview should not prevent the project from opening.
-          return null;
-        }
-      }));
-      const photos: Record<string, PhotoAsset> = Object.fromEntries(entries.filter((entry): entry is readonly [string, PhotoAsset] => entry !== null));
-      loadedPage = { ...coverPage, photos };
-      if (cancelled) {
-        Object.values(photos).forEach(disposePhotoAsset);
-        return;
-      }
-      setHydratedPage(loadedPage);
-    };
-
-    void hydrateCover();
-    return () => {
-      cancelled = true;
-      if (loadedPage) Object.values(loadedPage.photos).forEach(disposePhotoAsset);
-    };
-  }, [coverPage, coverTemplate, driveAccessToken]);
+  // This cover is display-only. Preview bytes never masquerade as originals.
+  const previewPage = useMemo<ProjectPage | null>(() => coverPage
+    ? { ...coverPage, photos: {}, unavailablePhotos: coverPage.photos } : null, [coverPage]);
 
   return (
     <article className="project-library-card">
       <button className="project-library-open" type="button" onClick={() => onOpen(project.id)} aria-label={`Open ${project.name}`}>
         <span className="project-library-preview">
-          {hydratedPage && coverTemplate ? (
-            <CompositionThumbnail format={format} page={hydratedPage} template={coverTemplate} />
-          ) : coverTemplate ? (
-            <TemplateThumbnail template={coverTemplate} selected={false} />
+          {previewPage && coverTemplate ? (
+            <CompositionThumbnail format={format} page={previewPage} template={coverTemplate} />
           ) : (
             <span className="project-library-empty" aria-hidden="true"><span /><span /><span /></span>
           )}
