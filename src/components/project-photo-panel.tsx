@@ -14,6 +14,7 @@ import type { PhotoAnalysis } from "@/lib/photo-palette";
 import type { PhotoAsset, ProjectPhoto, ProjectPage, StoredProject, TemplateDefinition } from "@/lib/types";
 import { CompositionThumbnail } from "./composition-thumbnail";
 import { DuplicatePhotoReview } from "./duplicate-photo-review";
+import { usePhotoPreviewSession } from "./photo-preview-context";
 
 type Analysed = { analysis: PhotoAnalysis; thumbnail: Blob; url: string };
 interface Props {
@@ -25,6 +26,8 @@ interface Props {
 }
 
 export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose, onCombineDuplicates }: Props) {
+  const { session: previewSession } = usePhotoPreviewSession();
+  const previewCache = previewSession?.cache;
   const groups = projectPhotoGroups(project);
   const photos = groups.map(group => group.photo);
   const libraryKey = JSON.stringify([project.id, photos]);
@@ -46,6 +49,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
     let cancelled = false;
     const urls: string[] = [];
     const generation = ++generationRef.current;
+    const currentPreviewSession = previewCache?.capture() ?? (() => true);
     setAnalysed({}); setErrors({}); setProposals([]); setSuggesting(false); setMessage("");
     let client: PhotoAnalysisClient;
     if (busy) { setProcessing(false); return; }
@@ -71,6 +75,8 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
             result = await client.analyse(photo, blob, ownerId);
           }
           if (cancelled) break;
+          if (!currentPreviewSession()) break;
+          previewCache?.rememberThumbnail({ ...photo, sourceWidth: result.analysis.width, sourceHeight: result.analysis.height }, result.thumbnail);
           const url = URL.createObjectURL(result.thumbnail); urls.push(url);
           setAnalysed(current => ({ ...current, [photo.blobKey]: { ...result, url } }));
         } catch (error) {
@@ -80,7 +86,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       if (!cancelled && generationRef.current === generation) setProcessing(false);
     })();
     return () => { cancelled = true; client.dispose(); urls.forEach(url => URL.revokeObjectURL(url)); if (clientRef.current === client) clientRef.current = null; };
-  }, [libraryKey, ownerId, accessRevision, retry, getVolatileBlob, getDriveToken, busy]);
+  }, [libraryKey, ownerId, accessRevision, retry, getVolatileBlob, getDriveToken, busy, previewCache]);
 
   const suggest = async () => {
     if (!clientRef.current) return;
@@ -126,9 +132,10 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
     {!photos.length ? <p className="mt-4 text-sm text-neutral-500">Add photos here before choosing any layouts, or keep adding them directly to frames.</p> :
       <div className="photo-library-grid mt-4">{photos.map((photo, index) => {
         const item = analysed[photo.blobKey];
+        const thumbnailUrl = item?.url ?? previewCache?.get(photo.blobKey)?.previewUrl;
         const placements = groups[index].members.reduce((count, member) => count + (placementCounts.get(member.blobKey) ?? 0), 0);
         return <article key={photo.blobKey} className="rounded-xl border border-black/10 bg-white p-2">
-          <div className="grid aspect-square place-items-center rounded-lg bg-neutral-100">{item ? <Image unoptimized src={item.url} width={160} height={160} alt={photo.sourceName ?? `Photo ${index + 1}`} className="h-full w-full object-contain" /> : <span className="p-2 text-center text-xs text-neutral-600">Awaiting analysis</span>}</div>
+          <div className="grid aspect-square place-items-center rounded-lg bg-neutral-100">{thumbnailUrl ? <Image unoptimized src={thumbnailUrl} width={160} height={160} alt={photo.sourceName ?? `Photo ${index + 1}`} className="h-full w-full object-contain" /> : <span className="p-2 text-center text-xs text-neutral-600">Awaiting analysis</span>}</div>
           <p className="mt-2 truncate text-xs font-medium" title={photo.sourceName}>{photo.sourceName ?? `Photo ${index + 1}`}</p>
           <p className="mt-1 text-xs text-neutral-500">{placements ? `Used ${placements}×` : "Unplaced"}</p>
           {errors[photo.blobKey] ? <p className="mt-1 text-xs text-amber-800">{errors[photo.blobKey]}</p> : null}

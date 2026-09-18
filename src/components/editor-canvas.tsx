@@ -3,21 +3,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAX_ZOOM, minimumPhotoZoom, moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
 import { drawCroppedPhoto } from "@/lib/draw-photo";
+import { drawCompositionGuides } from "@/lib/composition-guides";
+import type { DisplayPhoto } from "@/lib/photo-preview-cache";
 import { snapFramePosition, type AlignmentGuide } from "@/lib/editor-alignment";
-import type { CanvasFormat, CropState, PhotoAsset, ResolvedFrame, TemplateDefinition } from "@/lib/types";
+import type { CanvasFormat, CropState, ResolvedFrame, TemplateDefinition } from "@/lib/types";
 
 interface EditorCanvasProps {
   format: CanvasFormat;
   template: TemplateDefinition;
   background: string;
   gutter: number;
-  photos: Record<string, PhotoAsset>;
+  photos: Record<string, DisplayPhoto>;
   unavailableFrameIds?: string[];
   selectedFrameId: string | null;
   rearrangeMode: boolean;
   moveFrameMode: boolean;
   snapEnabled: boolean;
   guides: AlignmentGuide[];
+  compositionGuides: boolean;
   onSelectFrame: (frameId: string) => void;
   onRequestPhoto: (frameId: string) => void;
   onCropChange: (frameId: string, crop: CropState) => void;
@@ -64,6 +67,7 @@ export function EditorCanvas({
   moveFrameMode,
   snapEnabled,
   guides,
+  compositionGuides,
   onSelectFrame,
   onRequestPhoto,
   onCropChange,
@@ -119,17 +123,17 @@ export function EditorCanvas({
 
   useEffect(() => {
     const cache = imageCacheRef.current;
-    const activeUrls = new Set(Object.values(photos).map((photo) => photo.previewUrl));
+    const activeUrls = new Set(Object.values(photos).flatMap(photo => [photo.previewUrl, photo.fallbackPreviewUrl].filter((url): url is string => Boolean(url))));
     for (const key of cache.keys()) {
       if (!activeUrls.has(key)) cache.delete(key);
     }
-    for (const photo of Object.values(photos)) {
-      if (cache.has(photo.previewUrl)) continue;
+    for (const url of activeUrls) {
+      if (cache.has(url)) continue;
       const image = new Image();
       image.decoding = "async";
       image.onload = () => setImageRevision((revision) => revision + 1);
-      image.src = photo.previewUrl;
-      cache.set(photo.previewUrl, image);
+      image.src = url;
+      cache.set(url, image);
     }
   }, [photos]);
 
@@ -159,7 +163,8 @@ export function EditorCanvas({
       context.roundRect(frame.x, frame.y, frame.width, frame.height, frame.cornerRadius);
       context.clip();
       if (photo) {
-        const image = imageCacheRef.current.get(photo.previewUrl);
+        const primary = imageCacheRef.current.get(photo.previewUrl);
+        const image = primary?.complete && primary.naturalWidth ? primary : imageCacheRef.current.get(photo.fallbackPreviewUrl ?? "");
         if (image?.complete && image.naturalWidth) {
           drawCroppedPhoto(context, image, photo.sourceWidth, photo.sourceHeight, frame, photo.crop, background);
         } else {
@@ -176,6 +181,7 @@ export function EditorCanvas({
         context.textBaseline = "middle";
         context.fillText(unavailableFrameIds?.includes(frame.id) ? "Photo unavailable" : "Tap to add photo", frame.x + frame.width / 2, frame.y + frame.height / 2, frame.width - 16);
       }
+      if (compositionGuides && !rearrangeMode && selectedFrameId === frame.id && photo) drawCompositionGuides(context, frame);
       context.restore();
 
       if (rearrangeMode && swapDragRef.current && swapTargetFrameId === frame.id && swapDragRef.current.sourceFrameId !== frame.id) {
@@ -208,7 +214,7 @@ export function EditorCanvas({
       }
       context.restore();
     }
-  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId, unavailableFrameIds, guides, format.width, format.height, rearrangeMode]);
+  }, [background, frames, imageRevision, photos, selectedFrameId, size.height, size.width, swapTargetFrameId, unavailableFrameIds, guides, format.width, format.height, rearrangeMode, compositionGuides]);
 
   const canvasPoint = useCallback((event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect();

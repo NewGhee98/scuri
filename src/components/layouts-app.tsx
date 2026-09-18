@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { User } from "@supabase/supabase-js";
 import { PRODUCT } from "@/config/product";
 import { DEFAULT_CROP, minimumPhotoZoom, resolveFrames, setCropZoom } from "@/lib/crop";
@@ -9,6 +9,8 @@ import { movePageFrame, reorderPageFrame } from "@/lib/page-frames";
 import { consolidateLibraryDuplicates, type DuplicateGroup, type DuplicateScan } from "@/lib/photo-duplicates";
 import { PhotoZoomControl } from "./photo-zoom-control";
 import { PagePreview } from "./page-preview";
+import { PhotoPreviewContext } from "./photo-preview-context";
+import { displayPagePhotos, EMPTY_PHOTO_PREVIEWS, PhotoPreviewCache } from "@/lib/photo-preview-cache";
 import { createExportFilename, createExportZip, renderComposition } from "@/lib/export";
 import { FORMATS, getFormat } from "@/lib/formats";
 import Script from "next/script";
@@ -75,7 +77,7 @@ import {
   reconcileProtectedProject,
   softDeleteCloudProject,
 } from "@/lib/project-sync";
-import { applyHydratedPhotos, hydrateProjectPhotos, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage } from "@/lib/project-photos";
+import { applyHydratedPhotos, hydrateProjectPhotos, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "@/lib/project-photos";
 import { ProjectSyncQueue } from "@/lib/sync-queue";
 import { applyPhotoBackupCheckpoint } from "@/lib/photo-backup";
 import { WorkspaceSession, workspaceKey } from "@/lib/workspace";
@@ -215,6 +217,9 @@ export function LayoutsApp() {
   const [rearrangeMode, setRearrangeMode] = useState(false);
   const [moveFrameMode, setMoveFrameMode] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [compositionGuides, setCompositionGuides] = useState(true);
+  const [photoPreviews] = useState(() => new PhotoPreviewCache());
+  const previewSnapshot = useSyncExternalStore(photoPreviews.subscribe, photoPreviews.getSnapshot, () => EMPTY_PHOTO_PREVIEWS);
   const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
   const [editorWidth, setEditorWidth] = useState(320);
   const [showPagePreview, setShowPagePreview] = useState(false);
@@ -288,7 +293,8 @@ export function LayoutsApp() {
   const libraryPhotos = mergePhotoLibraries(projectPhotoLibrary, assignedPhotos);
   const backedUpOriginalCount = libraryPhotos.filter(photo => photo.driveOriginalId).length;
   const backedUpPreviewCount = libraryPhotos.filter(photo => photo.drivePreviewId).length;
-  const selectedPhoto = activePage?.selectedFrameId ? activePage.photos[activePage.selectedFrameId] : undefined;
+  const displayedPhotos = displayPagePhotos(activePage, previewSnapshot);
+  const selectedPhoto = activePage?.selectedFrameId ? displayedPhotos[activePage.selectedFrameId] : undefined;
   const selectedResolvedFrame = template && format && activePage ? resolveFrames(template, activePage.gutter, format.width, format.height).find(frame => frame.id === activePage.selectedFrameId) : undefined;
   const selectedStoredPhoto = activePage?.selectedFrameId ? serializePage(activePage).photos[activePage.selectedFrameId] : undefined;
   const editorContext = `${projectId}:${activePageId}:${screen}`;
@@ -714,6 +720,7 @@ export function LayoutsApp() {
       try { saveWorkspaceProjects([...projectsRef.current.filter(item => item.id !== active.id), active]); } catch { /* error remains visible */ }
     }
     workspaceRef.current.switchTo(ownerId);
+    photoPreviews.clear();
     initializedWorkspaceRef.current = true;
     syncQueueRef.current?.stop();
     syncQueueRef.current = null;
@@ -736,7 +743,7 @@ export function LayoutsApp() {
     customTemplatesRef.current = savedTemplates; setCustomTemplates(savedTemplates);
     templateUserRef.current = user; setTemplateUser(user);
     setTemplateAuthReady(true); setReady(true);
-  }, [adoptActiveProject, saveWorkspaceProjects]);
+  }, [adoptActiveProject, saveWorkspaceProjects, photoPreviews]);
 
   useEffect(() => {
     const client = getTemplateCloudClient();
@@ -799,10 +806,11 @@ export function LayoutsApp() {
     return () => {
       pagesRef.current.forEach(disposePagePreviews);
       retainedPhotos.forEach(disposePhotoAsset);
+      photoPreviews.clear();
       exportItemsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
       templateSyncTimers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, []);
+  }, [photoPreviews]);
 
   const buildStoredProject = useCallback((): StoredProject | null => {
     if (!projectId || !formatId) return null;
@@ -858,6 +866,13 @@ export function LayoutsApp() {
     });
     return () => { cancelled = true; };
   }, [pages, projectId, driveAccessToken, driveExpiry, getValidDriveToken, getVolatileBlob]);
+
+  useEffect(() => {
+    for (const page of pages) for (const photo of [...Object.values(page.photos), ...Object.values(page.unavailablePhotos ?? {})]) {
+      void photoPreviews.request(photo, getValidDriveToken, key => page.photos[photo.frameId]?.blobKey === key
+        ? page.photos[photo.frameId].sourceBlob : getVolatileBlob(key));
+    }
+  }, [pages, photoPreviews, driveExpiry, getValidDriveToken, getVolatileBlob]);
 
   useEffect(() => {
     if (!ready || !projectId || !formatId) return;
@@ -1276,20 +1291,17 @@ export function LayoutsApp() {
 
   const updateCrop = (frameId: string, crop: CropState) => {
     if (!activePage) return;
-    updatePage(activePage.id, (page) => {
-      const photo = page.photos[frameId];
-      return photo ? { ...page, photos: { ...page.photos, [frameId]: { ...photo, crop } } } : page;
-    });
+    updatePage(activePage.id, page => updatePagePhotoCrop(page, frameId, crop));
     historyGroupRef.current = `crop:${activePage.id}:${frameId}`;
   };
 
   const updatePhotoZoom = (frameId: string, zoom: number, tolerance = 5 * (format?.width ?? 1080) / editorWidth) => {
     if (!activePage || !template) return;
     const frames = resolveFrames(template, activePage.gutter);
-    const frame = frames.find(item => item.id === frameId), photo = activePage.photos[frameId];
+    const frame = frames.find(item => item.id === frameId), photo = displayedPhotos[frameId];
     if (!frame || !photo) return;
     const minimum = Math.min(photo.crop.zoom, minimumPhotoZoom(photo.sourceWidth, photo.sourceHeight, frame));
-    const result = snapPhotoZoom(activePage.photos, frames, frameId, zoom, snapEnabled ? tolerance : -1, minimum);
+    const result = snapPhotoZoom(displayedPhotos, frames, frameId, zoom, snapEnabled ? tolerance : -1, minimum);
     if (!result) return;
     setAlignmentGuides(result.guides);
     updateCrop(frameId, result.crop);
@@ -1855,6 +1867,9 @@ export function LayoutsApp() {
     [],
   );
 
+  const previewSession = useMemo(() => ({ cache: photoPreviews, getDriveToken: getValidDriveToken, getVolatileBlob, accessRevision: driveExpiry }),
+    [photoPreviews, getValidDriveToken, getVolatileBlob, driveExpiry]);
+
   if (!ready) {
     return (
       <main className="grid min-h-dvh place-items-center bg-[#f5f5f2]">
@@ -1867,6 +1882,7 @@ export function LayoutsApp() {
   }
 
   return (
+    <PhotoPreviewContext.Provider value={previewSession}>
     <div className="min-h-dvh bg-[#f5f5f2] text-[#11110f]">
       {isGoogleDriveConfigured() ? (
         <Script
@@ -2196,7 +2212,6 @@ export function LayoutsApp() {
                   key={project.id}
                   format={getFormat(project.formatId)}
                   project={project}
-                  driveAccessToken={driveConnected ? driveAccessToken : null}
                   syncState={getProjectSyncStatus(project, {
                     online: isOnline,
                     signedIn: projectCloudSignedIn,
@@ -2373,11 +2388,12 @@ export function LayoutsApp() {
               template={template}
               background={activePage.background}
               gutter={activePage.gutter}
-              photos={activePage.photos}
+              photos={displayedPhotos}
               unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
               selectedFrameId={activePage.selectedFrameId}
               rearrangeMode={rearrangeMode}
               moveFrameMode={moveFrameMode} snapEnabled={snapEnabled} guides={alignmentGuides}
+              compositionGuides={compositionGuides}
               onZoomChange={updatePhotoZoom} onFrameMove={updateFramePosition}
               onGuidesChange={setAlignmentGuides} onViewWidthChange={setEditorWidth}
               onSelectFrame={(frameId) => updatePage(activePage.id, (page) => ({ ...page, selectedFrameId: frameId }))}
@@ -2411,6 +2427,9 @@ export function LayoutsApp() {
                 <p className="control-label">Selected photo · {selectedStoredPhoto ? "Photo unavailable" : "Empty frame"}</p>}
               <p id="photo-zoom-help" className="mt-2 text-xs text-neutral-500">0% fills the frame. Negative zoom centres the image and reveals the page background. Type a percentage for an exact size.</p>
               <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges</label>
+              <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={compositionGuides} onChange={event => setCompositionGuides(event.target.checked)} /> Guides</label>
+              <p className="text-xs text-neutral-500">Thirds and centre of the selected frame. Hidden in previews and exports.</p>
+              {selectedPhoto && activePage.selectedFrameId && activePage.unavailablePhotos?.[activePage.selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Showing a lightweight preview. Full-resolution photo is still loading.</p> : null}
               <div className="mt-4 grid grid-cols-3 gap-2">
                 <button className="small-button" type="button" disabled={!activePage.selectedFrameId} onClick={() => activePage.selectedFrameId && requestPhoto(activePage.selectedFrameId)}>
                   {selectedStoredPhoto ? "Replace" : "Add photo"}
@@ -2640,5 +2659,6 @@ export function LayoutsApp() {
         </div>
       ) : null}
     </div>
+    </PhotoPreviewContext.Provider>
   );
 }
