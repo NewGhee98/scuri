@@ -13,7 +13,7 @@ export function visiblePhotoBounds(photo: Pick<PhotoAsset, "sourceWidth" | "sour
 
 /** Always use the raw gesture value. Feeding the snapped result back into the
  * gesture would make small wheel/pointer movements stick at a snap point. */
-export function snapPhotoZoom(photos: Record<string, PhotoAsset>, frames: ResolvedFrame[], frameId: string,
+export function snapPhotoZoom(photos: Record<string, Pick<PhotoAsset, "sourceWidth" | "sourceHeight" | "crop">>, frames: ResolvedFrame[], frameId: string,
   rawZoom: number, tolerance: number, minimum = MIN_ZOOM): { crop: CropState; guides: AlignmentGuide[] } | null {
   const photo = photos[frameId], frame = frames.find(item => item.id === frameId);
   if (!photo || !frame || photo.sourceWidth <= 0 || photo.sourceHeight <= 0 || !Number.isFinite(rawZoom)) return null;

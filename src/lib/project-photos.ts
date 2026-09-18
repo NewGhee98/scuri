@@ -2,7 +2,7 @@ import { downloadGoogleDrivePhoto } from "./google-drive";
 import { preparePhotoAsset } from "./image";
 import { loadPhotoBlob, savePhotoBlob } from "./storage";
 import { getProjectPhotos } from "./project-photo-library";
-import type { PhotoAsset, ProjectDeletions, ProjectPage, StoredPhotoAsset, StoredProject, StoredProjectPage } from "./types";
+import type { CropState, PhotoAsset, ProjectDeletions, ProjectPage, StoredPhotoAsset, StoredProject, StoredProjectPage } from "./types";
 
 function withStoredMetadata(asset: PhotoAsset, stored: StoredPhotoAsset): PhotoAsset {
   return { ...asset, ...stored,
@@ -106,6 +106,15 @@ export function removePagePhoto(page: ProjectPage, frameId: string): ProjectPage
   delete photos[frameId];
   delete unavailablePhotos[frameId];
   return { ...page, photos, unavailablePhotos };
+}
+
+/** Crop edits made against a display preview update metadata only. Hydrating
+ * the original later must retain these edits and the original's availability. */
+export function updatePagePhotoCrop(page: ProjectPage, frameId: string, crop: CropState): ProjectPage {
+  const photo = page.photos[frameId];
+  if (photo) return { ...page, photos: { ...page.photos, [frameId]: { ...photo, crop } } };
+  const stored = page.unavailablePhotos?.[frameId];
+  return stored ? { ...page, unavailablePhotos: { ...page.unavailablePhotos, [frameId]: { ...stored, crop } } } : page;
 }
 
 export function recordPhotoDeletions(
