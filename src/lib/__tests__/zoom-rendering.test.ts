@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { drawCroppedPhoto } from "../draw-photo";
-import { renderComposition } from "../export";
+import { renderComposition, renderPagePreview } from "../export";
 import * as image from "../image";
 import { getFormat } from "../formats";
 import { getTemplate } from "../templates";
-import type { PhotoAsset } from "../types";
+import type { PhotoAsset, ProjectPage } from "../types";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe("shared editor, thumbnail and export drawing", () => {
@@ -34,5 +34,23 @@ describe("shared editor, thumbnail and export drawing", () => {
     const [, x, y, width, height] = context.drawImage.mock.calls[0];
     expect(x).toBeCloseTo(216); expect(y).toBeCloseTo(432); expect(width).toBeCloseTo(648); expect(height).toBeCloseTo(216);
     expect(context.fillStyle).toBe("#eeddbb"); expect(context.clip).toHaveBeenCalledOnce();
+  });
+
+  it("page Preview renders full-resolution original bytes, never the display URL or editor guides", async () => {
+    const context = { fillRect: vi.fn(), drawImage: vi.fn(), save: vi.fn(), beginPath: vi.fn(), roundRect: vi.fn(), clip: vi.fn(), restore: vi.fn(), stroke: vi.fn() };
+    const canvas = { width: 0, height: 0, getContext: () => context, toBlob: (callback: (value: Blob) => void) => callback(new Blob(["full-resolution-jpeg"])) };
+    vi.stubGlobal("document", { createElement: () => canvas });
+    const drawable = {} as CanvasImageSource, close = vi.fn();
+    vi.spyOn(image, "decodeImage").mockResolvedValue({ drawable, width: 6400, height: 1440, close });
+    const sourceBlob = new Blob(["original-only"]);
+    const photo: PhotoAsset = { frameId: "photo-1", blobKey: "synthetic", sourceBlob, previewUrl: "blob:low-resolution-display-only",
+      sourceWidth: 6400, sourceHeight: 1440, crop: { positionX: 0, positionY: 0, zoom: 0.8765433 } };
+    const page: ProjectPage = { id: "p", templateId: "instagram-square-full-frame", background: "#fff", gutter: 0, selectedFrameId: photo.frameId,
+      photos: { [photo.frameId]: photo }, createdAt: "2026-09-18", updatedAt: "2026-09-18" };
+    await renderPagePreview(page, getFormat("instagram-square"), getTemplate(page.templateId));
+    expect(image.decodeImage).toHaveBeenCalledExactlyOnceWith(sourceBlob);
+    expect(canvas.width).toBe(1080); expect(canvas.height).toBe(1080);
+    expect(context.drawImage.mock.calls[0][0]).toBe(drawable);
+    expect(context.stroke).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledOnce();
   });
 });
