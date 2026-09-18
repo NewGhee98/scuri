@@ -9,6 +9,7 @@ import { ProjectHistory, projectContentKey } from "../project-history";
 import { nextProjectEditTime } from "../project-time";
 import { getBackScreen, MAX_PROJECT_PAGES, sortProjectsByLastEdited } from "../project";
 import { getTemplatesForFormat } from "../templates";
+import { getFormat } from "../formats";
 import { loadProjects, saveProjects } from "../storage";
 import type { AppScreen, ProjectPage, ProjectPhoto, StoredProject } from "../types";
 
@@ -58,6 +59,7 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
     projectContentKey, nextProjectEditTime, MAX_PROJECT_PAGES, sortProjectsByLastEdited, getBackScreen,
     crypto, now: () => "2026-09-17T12:00:01.000Z", disposePhotoAsset: vi.fn(),
     setHistoryState: vi.fn(), setRearrangeMode: vi.fn(), setNotice: notice, window: { confirm: confirmPrompt },
+    setExportWidth: vi.fn(), setExportReviewIds: vi.fn(), getFormat,
     saveWorkspaceProjects: vi.fn(), clearExportItems: vi.fn(), setDraggingPageId: vi.fn(),
   };
   for (const key of Object.keys(state)) {

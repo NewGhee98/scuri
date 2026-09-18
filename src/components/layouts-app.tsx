@@ -12,6 +12,7 @@ import { PagePreview } from "./page-preview";
 import { PhotoPreviewContext } from "./photo-preview-context";
 import { displayPagePhotos, EMPTY_PHOTO_PREVIEWS, PhotoPreviewCache } from "@/lib/photo-preview-cache";
 import { createExportFilename, createExportZip, renderComposition } from "@/lib/export";
+import type { ExportSize } from "@/lib/export-settings";
 import { FORMATS, getFormat } from "@/lib/formats";
 import Script from "next/script";
 import { createPhotoPreview, disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/image";
@@ -109,7 +110,7 @@ import { TemplateDesigner } from "./template-designer";
 
 type Notice = { kind: "error" | "success" | "info"; text: string } | null;
 type BusyState = "image" | "export" | "duplicate" | "project" | "drive" | "backup" | null;
-type ExportItem = { pageId: string; pageNumber: number; blob: Blob; url: string; filename: string };
+type ExportItem = { pageId: string; pageNumber: number; blob: Blob; url: string; filename: string; size: ExportSize };
 type TemplatePickerIntent = { projectId: string } & ({ kind: "add" } | { kind: "replace"; pageId: string });
 
 const BACKGROUNDS = ["#ffffff", "#f3f1ec", "#d9d6cf", "#1b1b1b", "#c9d2cc", "#e1d2c6"];
@@ -223,6 +224,9 @@ export function LayoutsApp() {
   const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
   const [editorWidth, setEditorWidth] = useState(320);
   const [showPagePreview, setShowPagePreview] = useState(false);
+  const [exportReviewIds, setExportReviewIds] = useState<string[] | null>(null);
+  // Session-only output choice, deliberately excluded from saved project state.
+  const [exportWidth, setExportWidth] = useState(1080);
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
   const [templateDraft, setTemplateDraft] = useState<CustomTemplate | null>(null);
   const [templateFilter, setTemplateFilter] = useState<FormatId | "all">("all");
@@ -283,6 +287,7 @@ export function LayoutsApp() {
   );
   const hasActiveTemplateFilters = templateFilter !== "all" || templatePhotoCountFilter !== "all" || templateEdgeFilter !== "all";
   const activePage = pages.find((page) => page.id === activePageId) ?? null;
+  const previewPages = exportReviewIds ? pages.filter(page => exportReviewIds.includes(page.id)) : pages;
   const pickerPage = templatePickerIntent?.kind === "replace" && templatePickerIntent.projectId === projectId
     ? pages.find(page => page.id === templatePickerIntent.pageId) ?? null : null;
   const resolvePageTemplate = useCallback((page: Pick<ProjectPage, "templateId" | "templateSnapshot">): TemplateDefinition => (
@@ -540,6 +545,8 @@ export function LayoutsApp() {
     const previous = activeProjectRef.current;
     const sameProject = project?.id === previous?.id;
     if (!sameProject) {
+      setExportWidth(project ? getFormat(project.formatId).width : 1080);
+      setExportReviewIds(null);
       if (templatePickerRef.current) setScreen(project ? "project" : "projects");
       const urls = new Map([...retainedPhotosRef.current.values(), ...pagesRef.current.flatMap(page => Object.values(page.photos))].map(photo => [photo.previewUrl, photo]));
       urls.forEach(disposePhotoAsset);
@@ -1711,8 +1718,20 @@ export function LayoutsApp() {
     setProjectUpdatedAt(nextProjectEditTime(activeProjectRef.current));
   };
 
-  const exportPages = async (pageIds?: string[]) => {
-    const isCurrent = workspaceRef.current.capture();
+  const reviewExportPages = (pageIds?: string[]) => {
+    const selectedPages = pages.filter(page => (!pageIds || pageIds.includes(page.id)) && isPageComplete(page, resolvePageTemplate(page)));
+    if (!selectedPages.length) {
+      setNotice({ kind: "error", text: "Complete at least one page before exporting." });
+      return;
+    }
+    setExportReviewIds(selectedPages.map(page => page.id));
+    setShowPagePreview(true);
+  };
+
+  const exportPages = async (outputSize: ExportSize, pageIds: string[]) => {
+    const isWorkspaceCurrent = workspaceRef.current.capture();
+    const exportProjectId = projectId;
+    const isCurrent = () => isWorkspaceCurrent() && activeProjectRef.current?.id === exportProjectId;
     if (!format) return;
     const requestedPages = pageIds ? pages.filter((page) => pageIds.includes(page.id)) : pages;
     const selectedPages = pageIds
@@ -1729,6 +1748,7 @@ export function LayoutsApp() {
       return;
     }
     setBusy("export");
+    setShowPagePreview(false);
     setExportProgress({ current: 0, total: selectedPages.length });
     clearExportItems();
     const created: ExportItem[] = [];
@@ -1744,13 +1764,15 @@ export function LayoutsApp() {
           background: page.background,
           gutter: page.gutter,
           photos: page.photos,
+          outputSize,
         });
         created.push({
           pageId: page.id,
           pageNumber,
           blob,
           url: URL.createObjectURL(blob),
-          filename: createExportFilename(format, pageNumber),
+          filename: createExportFilename(format, pageNumber, outputSize),
+          size: outputSize,
         });
       }
       if (!isCurrent()) throw new Error("Workspace changed.");
@@ -1767,7 +1789,7 @@ export function LayoutsApp() {
       created.forEach((item) => URL.revokeObjectURL(item.url));
       if (isCurrent()) setNotice({ kind: "error", text: error instanceof Error ? error.message : "Export failed. Try closing other apps and exporting again." });
     } finally {
-      if (isCurrent()) { setBusy(null); setExportProgress(null); }
+      if (isWorkspaceCurrent()) { setBusy(null); setExportProgress(null); }
     }
   };
 
@@ -1915,7 +1937,7 @@ export function LayoutsApp() {
           <button type="button" className="small-button" disabled={!historyState.undo || busy !== null} onClick={() => travelProjectHistory("undo")}>Undo</button>
           <button type="button" className="small-button" disabled={!historyState.redo || busy !== null} onClick={() => travelProjectHistory("redo")}>Redo</button>
           <button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button>
-          {pages.length > 0 ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => setShowPagePreview(true)}>Preview</button> : null}
+          {pages.length > 0 ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => { setExportReviewIds(null); setShowPagePreview(true); }}>Preview</button> : null}
           <p className="w-full text-xs leading-5 text-neutral-600">Undo history resets when you open another project, reload or change accounts. Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length} · Assigned photos available here: {assignedPhotos.length - unavailablePhotoCount}/{assignedPhotos.length}</p>
         </section>
       ) : null}
@@ -2300,7 +2322,7 @@ export function LayoutsApp() {
               </p>
             </div>
             <div className="grid w-full gap-2 sm:w-auto sm:min-w-[210px]">
-              <button className="primary-button" type="button" disabled={!completePageCount || busy !== null} onClick={() => void exportPages()}>
+              <button className="primary-button" type="button" disabled={!completePageCount || busy !== null} onClick={() => reviewExportPages()}>
                 {!pages.length ? "Add a page first" : !completePageCount ? "Complete a page to export" : `Export all ${completePageCount}`}
               </button>
               <button className="secondary-button" type="button" disabled={pages.length >= MAX_PROJECT_PAGES || busy !== null} onClick={addPage}>+ Add page</button>
@@ -2335,7 +2357,7 @@ export function LayoutsApp() {
                     onEdit={editPage}
                     onDuplicate={(pageId) => void duplicatePage(pageId)}
                     onDelete={(pageId) => void deletePage(pageId)}
-                    onExport={(pageId) => void exportPages([pageId])}
+                    onExport={(pageId) => reviewExportPages([pageId])}
                   />
                 ))}
               </section>
@@ -2360,7 +2382,7 @@ export function LayoutsApp() {
             <div>
               <p className="eyebrow">{templatePickerIntent?.kind === "replace" ? "Change page layout" : `Add page ${pages.length + 1}`} · {format.aspectRatio}</p>
               <h1 className="mt-2 text-3xl font-medium tracking-[-0.04em] sm:text-4xl">Choose a layout</h1>
-              <p className="mt-2 text-sm text-neutral-600">All project pages export at {format.width} × {format.height}px.</p>
+              <p className="mt-2 text-sm text-neutral-600">Standard output is {format.width} × {format.height}px. Choose a larger size when exporting.</p>
             </div>
             <button className="secondary-button" type="button" onClick={() => setShowInstallHelp(true)}>Installation help</button>
           </section>
@@ -2505,7 +2527,7 @@ export function LayoutsApp() {
               }}>
                 {missingPhotoCount ? "Save draft" : "Save page"}
               </button>
-              <button className="secondary-button w-full" type="button" disabled={Boolean(missingPhotoCount) || busy !== null} onClick={() => void exportPages([activePage.id])}>Export this page</button>
+              <button className="secondary-button w-full" type="button" disabled={Boolean(missingPhotoCount) || busy !== null} onClick={() => reviewExportPages([activePage.id])}>Export this page</button>
               <p className="mt-1 text-center text-[11px] leading-4 text-neutral-500">Signed-in projects save automatically. Original photos back up when Drive is connected.</p>
             </div>
           </aside>
@@ -2523,8 +2545,10 @@ export function LayoutsApp() {
         </div>
       ) : null}
 
-      {showPagePreview && format && projectId && pages.length ? <PagePreview key={projectId} pages={pages} initialPageId={activePageId}
-        format={format} resolveTemplate={resolvePageTemplate} onClose={() => setShowPagePreview(false)} /> : null}
+      {showPagePreview && format && projectId && previewPages.length ? <PagePreview key={projectId} pages={previewPages} initialPageId={activePageId}
+        format={format} resolveTemplate={resolvePageTemplate} onClose={() => setShowPagePreview(false)}
+        outputWidth={exportWidth} onOutputWidthChange={setExportWidth} pageNumbers={previewPages.map(page => pages.findIndex(item => item.id === page.id) + 1)}
+        onExport={exportReviewIds ? size => void exportPages(size, exportReviewIds) : undefined} /> : null}
 
       {screen === "export" && format && exportItems.length ? (
         <main className="screen-shell max-w-[1080px] py-7 sm:py-10">
@@ -2534,7 +2558,7 @@ export function LayoutsApp() {
               <h1 ref={exportHeadingRef} className="mt-2 text-3xl font-medium tracking-[-0.04em] outline-none" tabIndex={-1}>
                 {exportItems.length === 1 ? "Your JPEG is ready." : `${exportItems.length} JPEGs are ready.`}
               </h1>
-              <p className="mt-3 text-sm leading-6 text-neutral-600">Each image is {format.width} × {format.height}px · high-quality JPEG</p>
+              <p className="mt-3 text-sm leading-6 text-neutral-600">Each image is {exportItems[0].size.width} × {exportItems[0].size.height}px · high-quality JPEG</p>
               <div className="mt-6 grid gap-2">
                 <button className="primary-button" type="button" onClick={() => void shareExports()}>
                   {exportItems.length === 1 ? "Save to Photos / Share" : `Save all ${exportItems.length} to Photos / Share`}
