@@ -1,5 +1,5 @@
-import { resolveFrames } from "./crop";
 import { drawCroppedPhoto } from "./draw-photo";
+import { getExportSize, resolveExportFrames, type ExportSize } from "./export-settings";
 import { decodeImage } from "./image";
 import type { CanvasFormat, PhotoAsset, ProjectPage, TemplateDefinition } from "./types";
 
@@ -11,27 +11,29 @@ export interface ExportOptions {
   photos: Record<string, PhotoAsset>;
   quality?: number;
   signal?: AbortSignal;
+  outputSize?: ExportSize;
 }
 
 /** Read-only preview uses the actual JPEG path, and never shows a missing
  * assigned original as an empty frame. Empty draft frames remain background. */
-export function renderPagePreview(page: ProjectPage, format: CanvasFormat, template: TemplateDefinition, signal?: AbortSignal): Promise<Blob> {
+export function renderPagePreview(page: ProjectPage, format: CanvasFormat, template: TemplateDefinition, signal?: AbortSignal, outputSize?: ExportSize): Promise<Blob> {
   if (Object.keys(page.unavailablePhotos ?? {}).length) return Promise.reject(new Error("Assigned photos are unavailable."));
-  return renderComposition({ format, template, background: page.background, gutter: page.gutter, photos: page.photos, signal });
+  return renderComposition({ format, template, background: page.background, gutter: page.gutter, photos: page.photos, signal, outputSize });
 }
 
 export async function renderComposition(options: ExportOptions): Promise<Blob> {
   const { format, template, background, gutter, photos, quality = 0.94, signal } = options;
   signal?.throwIfAborted();
+  const outputSize = options.outputSize ?? getExportSize(format);
+  const frames = resolveExportFrames(format, template, gutter, outputSize);
   const canvas = document.createElement("canvas");
-  canvas.width = format.width;
-  canvas.height = format.height;
+  canvas.width = outputSize.width;
+  canvas.height = outputSize.height;
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("Your browser could not start the export.");
   context.fillStyle = background;
-  context.fillRect(0, 0, format.width, format.height);
+  context.fillRect(0, 0, outputSize.width, outputSize.height);
 
-  const frames = resolveFrames(template, gutter, format.width, format.height);
   for (const frame of frames) {
     signal?.throwIfAborted();
     const photo = photos[frame.id];
@@ -59,10 +61,11 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
   });
 }
 
-export function createExportFilename(format: CanvasFormat, pageNumber?: number): string {
+export function createExportFilename(format: CanvasFormat, pageNumber?: number, outputSize?: ExportSize): string {
   const stamp = new Date().toISOString().slice(0, 10);
   const page = pageNumber ? `-${String(pageNumber).padStart(2, "0")}` : "";
-  return `scuri-${format.shortLabel.toLowerCase()}-${stamp}${page}.jpg`;
+  const dimensions = outputSize && (outputSize.width !== format.width || outputSize.height !== format.height) ? `-${outputSize.width}x${outputSize.height}` : "";
+  return `scuri-${format.shortLabel.toLowerCase()}-${stamp}${page}${dimensions}.jpg`;
 }
 
 export async function createExportZip(
