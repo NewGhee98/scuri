@@ -10,11 +10,11 @@ All image selection, composition and export happens in the browser. Signing in m
 - Instagram square posts at **1080 × 1080 (1:1)**.
 - Instagram Stories at **1080 × 1920 (9:16)**.
 - Eight data-defined templates for each format, including one-, two-, three- and four-photo layouts.
-- A local project library, with up to 20 ordered pages per project.
+- A project library with up to 250 unique photos and 30 ordered pages per project.
 - Autosaved page drafts, page duplication and explicit page readiness.
 - Touch drag reordering with accessible Earlier and Later controls.
 - Single or multi-photo selection from Apple Photos, iOS Files and desktop file pickers.
-- Automatic multi-photo filling from the tapped tile, followed by drag-to-swap tile rearranging.
+- Explicit photo selection and Use confirmation for the tapped tile, followed by drag-to-swap tile rearranging.
 - Fixed clipping frames with independent drag, pinch, mouse-wheel and slider zoom.
 - A 0% fill-frame zoom baseline; negative zoom reveals the whole image and surrounding page background while keeping it centred. Positive zoom retains constrained panning.
 - A project photo library independent of frame placement, with local palette analysis and up to three arrangement suggestions using existing layouts.
@@ -44,9 +44,9 @@ Deleting a signed-in project stops its queued sync, waits for an active save and
 ### Project workflow
 
 1. Open the Projects overview, create a project and choose Portrait, Square or Story. Every page in that project uses the chosen output format.
-2. Choose a layout and fill the page. Select one photo for one tile, or select several to autofill the layout; use rearrange mode to drag photos between tiles. Changes autosave while editing.
+2. Choose a layout and fill the page. Tap a tile, inspect a library photo and confirm Use; importing files adds them to the library without changing a placement. Use rearrange mode to drag photos between tiles. Changes autosave while editing.
 3. Save the page, then add, duplicate, edit, delete or reorder pages from its project page.
-4. Export one ready page or use **Export all** to export every completed page in order; drafts are skipped.
+4. Export one ready page, selected ready pages or every completed page in order; drafts are skipped and unselected alternatives remain saved.
 5. On iPhone or iPad, use **Save all to Photos / Share** and choose the multi-image save action in Apple’s share sheet. If file sharing is unavailable, use **Download ZIP to Files**.
 
 **Plan an arrangement:** use **Add photos to library** on the project page, wait for local analysis, then select **Suggest arrangements**. Review Colour harmony, Best fit and Balanced mix when meaningfully different options are available. Each proposal lists any unplaced photos. **Apply as new project** preserves the current project and every library original. In the editor, a library photo can also be placed with **Use in selected frame**. Removing a frame assignment leaves the original in the library.
@@ -71,7 +71,7 @@ Copy `.env.example` to `.env.local` and add the two Supabase public values if yo
 ### Supabase (templates + projects)
 
 1. Create or connect a Supabase project through the Vercel Marketplace.
-2. The existing schema uses `20260811172718_create_templates.sql` and `20260811172858_restrict_templates_to_authenticated.sql` for templates, then `20260831120000_create_projects.sql` for projects/pages/assets. The new `20260913180000_add_project_photo_library.sql` is **prepared for review only**, not executed. Review [PHOTO_LIBRARY_MIGRATION_REVIEW.md](PHOTO_LIBRARY_MIGRATION_REVIEW.md) before installing it in an authorized environment. Independent, unassigned cloud photos require this additive column; the client keeps them locally and reports a setup error if it is absent.
+2. The existing schema uses `20260811172718_create_templates.sql` and `20260811172858_restrict_templates_to_authenticated.sql` for templates, then `20260831120000_create_projects.sql` for projects/pages/assets. Independent, unassigned cloud photos require `projects.photo_library`. On 14 September the user relayed a live connector confirmation that the column and its array constraint were applied under migration `20260913224149_add_project_photo_library`; this session did not independently query Supabase. The repository still contains the earlier `20260913180000_add_project_photo_library.sql` filename. Do not run it again merely to reconcile names. See [PHOTO_LIBRARY_MIGRATION_REVIEW.md](PHOTO_LIBRARY_MIGRATION_REVIEW.md) for the additive design. This library rebuild requires no new migration.
 3. Add these variables to Vercel Preview and Production:
 
 ```bash
@@ -195,11 +195,11 @@ That single object is expanded for all current formats. The same editor, thumbna
 - A project deleted on a device that is offline or signed out is *not* queued for cloud deletion; deletion there is blocked (with a message) until that device can reach Supabase, rather than silently deleting locally while orphaning the cloud copy.
 - Google Drive's "Authorized JavaScript origins" do not support wildcards, so Drive connect only works on origins you explicitly authorize (see Cloud setup above) - typically production and localhost, not every ephemeral Vercel Preview URL. Supabase project sync is unaffected.
 - If a project is deleted on another device while a signed-out/offline device still holds unsynced edits to it, reconnecting recreates it as a new project (suffixed "(recovered)") rather than restoring the exact original id.
-- Use **Download project backup** to save a portable `.scuri.zip` file before clearing browser data. Missing originals are disclosed, so wait for photos to load for a complete backup. **Restore backup** previews the package and restores it as a new project. Packages are limited to 256 MB.
+- Use **Download project backup** to save a portable `.scuri.zip` file before clearing browser data. Missing originals are disclosed; restore the needed originals to this device before making a complete portable backup. **Restore backup** previews the package and restores it as a new project. Packages are limited to 256 MB.
 - HEIC availability depends on whether the browser can decode the selected file; the explicit supported types are JPEG, PNG and WebP.
 - iOS memory pressure can still affect unusually large source files. Editing uses a downscaled preview, while export decodes originals one frame at a time.
 - Browser share/download wording varies by iOS version. The generated JPEG preview remains available if the share sheet is unavailable.
-- Automated browser E2E coverage is not included yet; the important non-visual logic (including project sync/conflict/merge behaviour) has unit coverage.
+- The local synthetic browser check is `scripts/qa-photo-library.mjs`; physical iPad, OS file providers and signed-in Google pickers still need the release acceptance checks in `docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md`.
 
 ## Short roadmap
 
@@ -207,4 +207,18 @@ That single object is expanded for all current formats. The same editor, thumbna
 2. Design and review a transactional project/pages/assets save and consistent read to address the known cross-device race above.
 3. Extend portable backups with larger streaming packages and persistent project history after the transactional sync work.
 4. Consider landscape formats through the existing format definition system.
-5. Consider an opt-in Google Photos source only after the local workflow is solid.
+5. Complete the Google Picker API/origin configuration and signed-in source-import acceptance checks before advertising direct Google imports as verified.
+
+## Project photos
+
+The project library admits up to **250 unique photos**, independently of **30 saved pages**. Repeat placements share originals and retain independent crops. Older libraries above the limit remain visible. Browse in the full-screen library, filter/search filenames, inspect a complete photo, then explicitly choose **Use this photo** for the frame that opened the picker. Browsing and inspection never edit a crop. Export selected pages to keep alternative layouts in the project.
+
+Device Photos/Files and supported folders use the native chooser, including installed Files providers. JPEG, PNG and WebP remain supported, up to 80 MiB per delivered file. Exact-byte duplicates reuse the existing library identity. Visually similar files or identical filenames are not enough. Older files without verified fingerprints may require **Find duplicates**. Original files in Drive are never deleted by library consolidation.
+
+Direct Google Drive import uses Google Picker with the existing `drive.file` OAuth permission. Set `NEXT_PUBLIC_GOOGLE_PICKER_API_KEY` and `NEXT_PUBLIC_GOOGLE_PICKER_APP_ID` (the numeric Cloud project number), enable the Google Picker and Drive APIs, and authorise the exact app origins. Google Photos import uses the separate Photos Picker API and `photospicker.mediaitems.readonly` scope; optionally set a separate `NEXT_PUBLIC_GOOGLE_PHOTOS_CLIENT_ID`. Configure consent and any required public-app verification. An app deployment alone does not enable these services. See the [Drive Picker guide](https://developers.google.com/workspace/drive/picker/guides/overview) and [Photos setup guide](https://developers.google.com/photos/overview/configure-your-app). No private API keys or refresh tokens belong in public environment variables.
+
+Photos selection opens Google's picker, then downloads the selected full media into Scuri's normal intake queue. It never uses a provider thumbnail as an original or changes source files. Delivered bytes are retained unchanged; a provider may itself convert media or remove metadata. Google Photos download URLs are temporary and are not saved in projects. Expired/denied downloads remain retryable without losing completed imports. See [Google's download behaviour](https://developers.google.com/photos/picker/guides/media-items).
+
+Metadata saving runs independently of serial Drive backup. Each original/preview/thumbnail has a reserved Drive ID accepted through the Supabase revision gate before upload. Local resumable journals contain session URLs but no OAuth tokens. Retries query the existing ID/session, never overwrite an existing original, and checkpoint each completed rendition separately. Local quota recovery evicts only derived caches; intake pauses if an original still cannot be durably stored. Keep the app open while uploading; iPadOS suspension and browser storage eviction remain limitations.
+
+Gallery/editor previews are disposable account-scoped caches, up to 640px; original detail and JPEG export load originals on demand. The library never downloads all originals just to populate its gallery. Preview rendition upgrades retain in-use URLs, with compressed and estimated decoded memory budgets. The separate derived IndexedDB database is additive; no SQL migration or original-store rewrite is needed. Keep Scuri updated on all devices: old clients may discard optional new library fields or reject 30-page portable backups. Portable ZIP backups retain the **256 MiB limit**, with an early size check.
