@@ -9,6 +9,12 @@ export type TemplateLibraryFilters = {
   edgeStyle: TemplateEdgeStyle | "all";
 };
 
+export const DEFAULT_TEMPLATE_FILTERS: TemplateLibraryFilters = { formatId: "all", photoCount: "all", edgeStyle: "all" };
+
+export function getTemplatePhotoCounts(templates: readonly TemplateDefinition[]): number[] {
+  return Array.from(new Set(templates.map(template => template.frames.length))).filter(count => count > 0).sort((a, b) => a - b);
+}
+
 const frame = (id: string, x: number, y: number, width: number, height: number, cornerRadius?: number): NormalizedFrame => ({
   id,
   x,

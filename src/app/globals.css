@@ -123,6 +123,11 @@ input:disabled {
   color: #11110f;
 }
 
+.template-filter-button {
+  min-height: 44px;
+  min-width: 44px;
+}
+
 .nav-sync-dot {
   display: inline-block;
   width: 6px;
