@@ -1,6 +1,6 @@
 # Scuri — Project Context
 
-_Last updated: 2026-09-19_
+_Last updated: 2026-09-20_
 
 ## How to use this file
 
@@ -665,9 +665,33 @@ Local Chrome QA used the production build at `127.0.0.1:3027` with all cloud con
 
 No live project, Supabase record, Drive file or production deployment was modified. The safety invariant remains: missing bytes never mean deletion; existing assignments and independent crops remain authoritative. Historical Islands recovery limitations are unchanged. Evidence: `../../outputs/SCURI_ADD_PAGE_FILTERS_2026-09-19.md`, `scuri-template-filters-tests.txt` and `scuri-template-filters-build.txt`.
 
+## Add-page template filters production — 20 September 2026
+
+The user explicitly requested deployment of the completed filter changes. [PR #24](https://github.com/NewGhee98/scuri/pull/24), "Reuse template filters in the Add page chooser", merged into `main` as `d5fd67f8151f71d09a8426fa41bcd976fed46c26`. Both GitHub checks passed, the branch had no conflicts, and Vercel Preview [GSavyGM65yioQ5vfTW9UL7GN1qew](https://vercel.com/nugee/scuri/GSavyGM65yioQ5vfTW9UL7GN1qew) was Ready with source `f2f1f67` before merge. Published branch head `f2f1f67b4c5bbe54e6362b3c7c396a2c7fd3e65d` and merged main have the identical complete tree `798917d80b787de122bc00679ef3ecfc53fab36b`, matching tested local commit `3718e7c1835fcbd94c8a9ad9c1dd155d7c8b3eec`; all seven changed file hashes match. Publication used exact Git blobs through the signed-in GitHub upload UI because the bundled Git lacks its HTTPS remote helper. No application source changed during release, so the preceding 390-test/typecheck/lint/build and local Chrome acceptance results apply unchanged.
+
+Vercel Production deployment [fnihuTo51kGw3vsUr4CLHzeyzSid](https://vercel.com/nugee/scuri/fnihuTo51kGw3vsUr4CLHzeyzSid) was verified **Ready / Latest / Production**, source `d5fd67f`, with `scuri.vercel.app` assigned. Its 34-second build completed at 00:06:31 BST on 20 September (23:06:31 UTC on 19 September). Immutable URL: https://scuri-crfc58blv-nugee.vercel.app. Public verification at 23:06:44 UTC returned HTTP 200 and checked 11 served JavaScript/CSS assets; all 20 new/prior markers passed, including fixed project-format text, empty-result guidance, shared filter controls/reset, the improved photo viewer, export, exact zoom, frame movement and snapping. The public check used no account session or project data.
+
+No migration, Supabase/Drive project edit, original rewrite, saved-composition change or environment/credential change was performed. The normal Add page flow retains explicit project-bound intent and stale-action rejection; browsing/filtering/cancelling do not mutate the project, and selecting an Add result appends a distinct page. Existing library/viewer improvements are preserved. Physical iPad acceptance remains a user-device check; the recorded viewport checks were desktop browser tests. Refresh the app normally to load this release; no browser-storage clearing is needed. The photo safety invariant and historical Islands recovery limitation remain unchanged.
+
+Evidence: `../../outputs/template-filters-release-branch-verification.json`, `../../outputs/template-filters-production-main-verification.json`, `../../outputs/template-filters-production-public-verification.json`, and `../../outputs/SCURI_ADD_PAGE_FILTERS_PRODUCTION_2026-09-20.md`. This post-release record is local only; deployed documentation contains the implementation and validation record above.
+
+## Subtle selection shading — 20 September 2026 (implemented locally, not deployed)
+
+Change 2 only, on `feat/subtle-frame-selection`. Read-only GitHub verification confirmed latest main `d5fd67f8151f71d09a8426fa41bcd976fed46c26` has complete tree `798917d80b787de122bc00679ef3ecfc53fab36b`, matching the local `3718e7c` starting point. The preceding Add page filters, photo viewing space, project library and release records are preserved. The user explicitly requested no deployment.
+
+The photo editor and template builder share a light 12% blue tint, `rgba(64, 139, 205, 0.12)`, replacing their dashed/solid black selection outlines. The canvas clips the tint inside the selected frame; the template builder applies a pointer-transparent overlay to every selected frame, including multiple selections. It inherits rounded corners and adds no selection border. Existing resize handles, composition guides, snap guides and layer controls remain. Guides render above the tint. Keyboard focus remains distinct: a blue focus ring outside the whole photo canvas, and native focus on the builder's keyboard-operable layer controls. Template Preview omits selection tint, handles and snap guides.
+
+**Selection safety invariant:** selecting a photo/frame is session-only editing UI. It must not change original bytes, crop metadata, frame geometry, stored page selection, edit timestamps, undo history or composition autosave inputs. The editor now tracks its active selection separately from page data; legacy saved selection fields remain readable as the initial fallback. Replace/reset/remove/zoom/frame-layer actions use the current UI selection. Stationary pointer events do not trigger crop edits, frame snapping or pinch updates; stationary template selection does not replace its draft. Clean previews, template/page thumbnails and JPEG export never use selection shading. Their shared rendering/crop geometry and persistence formats are unchanged.
+
+**Validation:** 402 tests across 34 files pass, including new loaded/unavailable-photo selection safety, mouse/touch no-movement events in all editor modes, multi-selection tint, preserved handles and clean preview/thumbnail/export coverage. Standalone typecheck, full ESLint, the normal production build and whitespace checks pass. No new dependencies or migrations.
+
+Local Chrome QA used only a generated synthetic backup on a fresh `127.0.0.1:3028` origin with all cloud configuration blank. Visual review covered light/dark photos and backgrounds, 5/7 panorama stacks, -28% zoom, small/rounded frames, multi-selection and clean previews at 1180×820 and 820×1180 browser viewports. Selecting did not enable Undo; exact zoom targeted the newly selected photo. Keyboard focus/guides remained usable. Every existing 18px resize handle passed hit testing, retained `touch-action: none`, and a real pointer resize followed by Undo restored exact frame geometry. Final-build reload retained the -28% crop; Move frames selection remained an unedited state and keyboard movement remained undoable. No captured warning/error logs. Temporary tabs/server were closed and viewport sizing reset.
+
+Physical iPad Air 11-inch M2 touch targeting, pinch/drag, Pencil and performance remain untested; browser viewport and synthetic touch-event checks do not certify hardware behaviour. The existing handle sizes are unchanged. No live project, Supabase record, Drive file or deployment was modified. Missing local bytes still never imply deletion, and the historical Islands recovery limitation is unchanged. Evidence: `../../outputs/SCURI_SELECTION_SHADING_2026-09-20.md`, `scuri-selection-tests.txt` and `scuri-selection-build.txt`.
+
 ## Guidance for future coding agents / chats
 
-Earlier deployment/version statements are historical; the latest production release is recorded in Photo viewing space production above. Recheck live state before further changes.
+Earlier deployment/version statements are historical; the latest production release is recorded in Add-page template filters production above. Recheck live state before further changes.
 
 Before making changes:
 

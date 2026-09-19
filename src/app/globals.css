@@ -367,9 +367,11 @@ input:disabled {
   touch-action: none;
 }
 
-.designed-frame.selected {
-  outline: 2px solid #111;
-  outline-offset: 2px;
+.frame-selection-shade {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
 }
 
 .designed-frame-label {

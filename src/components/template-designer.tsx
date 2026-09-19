@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getFormat } from "@/lib/formats";
 import { resizeFrame, type ResizeHandle } from "@/lib/frame-resize";
 import { validateTemplate } from "@/lib/templates";
+import { FRAME_SELECTION_TINT } from "@/lib/selection-style";
 import type { CustomTemplate, NormalizedFrame } from "@/lib/types";
 
 type Guide = { axis: "x" | "y"; value: number };
@@ -234,6 +235,8 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
     const point = pointForEvent(event);
     const deltaX = point.x - interaction.start.x;
     const deltaY = point.y - interaction.start.y;
+    // A stationary selection is not a drag, snap or draft edit.
+    if (deltaX === 0 && deltaY === 0 && draftRef.current === interaction.before) return;
     const beforeFrames = interaction.before.frames;
     const primary = beforeFrames.find((frame) => frame.id === interaction.frameId);
     if (!primary) return;
@@ -392,7 +395,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
           onPointerUp={endInteraction}
           onPointerCancel={endInteraction}
         >
-          {guides.map((guide, index) => (
+          {!preview && guides.map((guide, index) => (
             <span
               key={`${guide.axis}-${guide.value}-${index}`}
               className={`snap-guide ${guide.axis}`}
@@ -405,7 +408,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
               <div
                 key={frame.id}
                 data-template-frame-id={frame.id}
-                className={`designed-frame ${selected ? "selected" : ""}`}
+                className={`designed-frame ${!preview && selected ? "selected" : ""}`}
                 style={{
                   left: `${frame.x * 100}%`,
                   top: `${frame.y * 100}%`,
@@ -415,6 +418,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
                   zIndex: index + 1,
                 }}
               >
+                {!preview && selected ? <span className="frame-selection-shade" aria-hidden="true" style={{ background: FRAME_SELECTION_TINT }} /> : null}
                 <span className="designed-frame-label">Photo {index + 1}</span>
                 {!preview && selected && selectedIds.length === 1 ? (["nw", "ne", "sw", "se"] as ResizeHandle[]).map((handle) => (
                   <span

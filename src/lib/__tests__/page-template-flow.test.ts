@@ -52,6 +52,7 @@ function harness({ loaded = false, confirm = true, project = fixture(), custom =
     templatePickerIntent: null as unknown, projectPhotoLibrary: [] as ProjectPhoto[], pendingDeletions: undefined as StoredProject["pendingDeletions"],
     projectId: "", projectName: "", projectCreatedAt: "", projectUpdatedAt: "", formatId: null as StoredProject["formatId"] | null,
     pageTemplateFilters: DEFAULT_TEMPLATE_FILTERS, templateFilters: DEFAULT_TEMPLATE_FILTERS, customTemplates: custom,
+    editorSelectedFrameId: null as string | null,
   };
   const refs = { pagesRef: { current: state.pages }, activeProjectRef: { current: null as StoredProject | null },
     projectsRef: { current: [project] }, retainedPhotosRef: { current: new Map() }, historyRef: { current: new ProjectHistory() },
@@ -79,10 +80,11 @@ function harness({ loaded = false, confirm = true, project = fixture(), custom =
   }
   scope.setScreenState = scope.setScreen;
   Object.defineProperty(scope, "activePage", { get: () => state.pages.find(page => page.id === state.activePageId) ?? null });
+  Object.defineProperty(scope, "template", { get: () => state.pages.find(page => page.id === state.activePageId)?.templateSnapshot ?? null });
   for (const name of ["setTemplatePicker", "setScreen", "retainPagePhotos", "updatePage", "buildStoredProject", "persistActiveProject",
     "adoptActiveProject", "addPage", "duplicatePage", "changePageLayout", "selectTemplate", "editPage", "goBack", "openProjects",
     "requestPhoto", "closePhotoLibrary", "chooseLibraryPhoto", "importLibraryPhotos",
-    "filteredPageTemplates", "filteredCustomTemplates", "filteredBuiltInTemplates"]) {
+    "filteredPageTemplates", "filteredCustomTemplates", "filteredBuiltInTemplates", "selectEditorFrame"]) {
     const js = callbacks.get(name);
     if (js) scope[name] = new Function("scope", `with (scope) { ${js}; return callback; }`)(scope);
   }
@@ -112,6 +114,28 @@ function harness({ loaded = false, confirm = true, project = fixture(), custom =
 }
 
 type Harness = ReturnType<typeof harness>;
+describe("session-only photo selection", () => {
+  it.each([false, true])("does not change composition, edit timestamps, history or autosave inputs (originals loaded: %s)", loaded => {
+    const project = fixture();
+    const page = project.pages[0], original = Object.values(page.photos)[0];
+    page.templateId = pair.id; page.templateSnapshot = pair; page.selectedFrameId = pair.frames[0].id;
+    page.photos = Object.fromEntries(pair.frames.map(frame => [frame.id, { ...original, frameId: frame.id, crop: { ...original.crop } }]));
+    const h = harness({ project, loaded }), before = h.run<StoredProject>("buildStoredProject"), pages = h.state.pages;
+    h.run("selectEditorFrame", pair.frames[1].id);
+    expect(h.state.editorSelectedFrameId).toBe(pair.frames[1].id);
+    h.run("selectEditorFrame", "stale-frame");
+    expect(h.state.editorSelectedFrameId).toBe(pair.frames[1].id);
+    expect(h.state.pages).toBe(pages);
+    expect(h.run("buildStoredProject")).toEqual(before);
+    expect(h.state.projectUpdatedAt).toBe(before.updatedAt);
+    expect(h.scope.saveWorkspaceProjects).not.toHaveBeenCalled();
+    h.settle();
+    expect(h.refs.historyRef.current.canUndo).toBe(false);
+    expect(h.refs.historyRef.current.canRedo).toBe(false);
+    expect(h.state.pages[0].selectedFrameId).toBe(pair.frames[0].id);
+  });
+});
+
 describe("production photo picker handlers", () => {
   const candidate = { blobKey: "another-original", sourceWidth: 1536, sourceHeight: 230, sourceName: "other.jpg" };
   function pickerHarness() {
