@@ -8,12 +8,12 @@ import { reconcileProjectPages, recordPhotoDeletions, serializePage } from "../p
 import { ProjectHistory, projectContentKey } from "../project-history";
 import { nextProjectEditTime } from "../project-time";
 import { getBackScreen, MAX_PROJECT_PAGES, sortProjectsByLastEdited } from "../project";
-import { getTemplatesForFormat } from "../templates";
+import { DEFAULT_TEMPLATE_FILTERS, filterTemplates, getTemplatesForFormat, TEMPLATES } from "../templates";
 import { getFormat } from "../formats";
 import { openPhotoPicker, placeLibraryPhoto } from "../photo-picker";
 import { WorkspaceSession } from "../workspace";
 import { loadProjects, saveProjects } from "../storage";
-import type { AppScreen, ProjectPage, ProjectPhoto, StoredProject } from "../types";
+import type { AppScreen, CustomTemplate, ProjectPage, ProjectPhoto, StoredProject, TemplateDefinition } from "../types";
 
 // Run the real component handlers with controlled state commits and deferred
 // service responses. No copied decision logic, live services or photo bytes.
@@ -24,7 +24,7 @@ const callbacks = new Map<string, string>();
 function collect(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
     let expression = node.initializer;
-    if (ts.isCallExpression(expression) && expression.expression.getText(ast) === "useCallback") expression = expression.arguments[0];
+    if (ts.isCallExpression(expression) && ["useCallback", "useMemo"].includes(expression.expression.getText(ast))) expression = expression.arguments[0];
     if (ts.isArrowFunction(expression)) callbacks.set(node.name.text, ts.transpileModule(`const callback = (${expression.getText(ast)});`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     }).outputText);
@@ -46,11 +46,12 @@ function fixture(): StoredProject {
   };
 }
 
-function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
+function harness({ loaded = false, confirm = true, project = fixture(), custom = [] as CustomTemplate[] } = {}) {
   const state = {
     pages: [] as ProjectPage[], activePageId: null as string | null, screen: "project" as AppScreen,
     templatePickerIntent: null as unknown, projectPhotoLibrary: [] as ProjectPhoto[], pendingDeletions: undefined as StoredProject["pendingDeletions"],
     projectId: "", projectName: "", projectCreatedAt: "", projectUpdatedAt: "", formatId: null as StoredProject["formatId"] | null,
+    pageTemplateFilters: DEFAULT_TEMPLATE_FILTERS, templateFilters: DEFAULT_TEMPLATE_FILTERS, customTemplates: custom,
   };
   const refs = { pagesRef: { current: state.pages }, activeProjectRef: { current: null as StoredProject | null },
     projectsRef: { current: [project] }, retainedPhotosRef: { current: new Map() }, historyRef: { current: new ProjectHistory() },
@@ -59,6 +60,7 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
   const scope: Record<string, unknown> = {
     ...refs, getProjectPhotos, mergePhotoLibraries, reconcileProjectPages, recordPhotoDeletions, serializePage,
     projectContentKey, nextProjectEditTime, MAX_PROJECT_PAGES, sortProjectsByLastEdited, getBackScreen,
+    DEFAULT_TEMPLATE_FILTERS, filterTemplates, getTemplatesForFormat, TEMPLATES,
     crypto, now: () => "2026-09-17T12:00:01.000Z", disposePhotoAsset: vi.fn(),
     setHistoryState: vi.fn(), setRearrangeMode: vi.fn(), setNotice: notice, window: { confirm: confirmPrompt },
     setExportWidth: vi.fn(), setExportReviewIds: vi.fn(), getFormat,
@@ -79,7 +81,8 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
   Object.defineProperty(scope, "activePage", { get: () => state.pages.find(page => page.id === state.activePageId) ?? null });
   for (const name of ["setTemplatePicker", "setScreen", "retainPagePhotos", "updatePage", "buildStoredProject", "persistActiveProject",
     "adoptActiveProject", "addPage", "duplicatePage", "changePageLayout", "selectTemplate", "editPage", "goBack", "openProjects",
-    "requestPhoto", "closePhotoLibrary", "chooseLibraryPhoto", "importLibraryPhotos"]) {
+    "requestPhoto", "closePhotoLibrary", "chooseLibraryPhoto", "importLibraryPhotos",
+    "filteredPageTemplates", "filteredCustomTemplates", "filteredBuiltInTemplates"]) {
     const js = callbacks.get(name);
     if (js) scope[name] = new Function("scope", `with (scope) { ${js}; return callback; }`)(scope);
   }
@@ -87,6 +90,7 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
     expect(typeof scope[name], name).toBe("function");
     return (scope[name] as (...args: unknown[]) => T)(...args);
   }
+  Object.defineProperty(scope, "templates", { get: () => new Function("scope", `with (scope) { ${callbacks.get("templates")}; return callback(); }`)(scope) });
   function settle() {
     refs.pagesRef.current = state.pages;
     refs.activeProjectRef.current = run<StoredProject>("buildStoredProject");
@@ -210,6 +214,83 @@ describe("page template flow during background reconciliation", () => {
       expect(reconcileProjectPages(loadProjects()[0]).map(serializePage)).toEqual(result.pages);
     });
   }
+});
+
+describe("filtered Add page chooser", () => {
+  const rounded = TEMPLATES.find(template => template.id === "instagram-post-rounded-stories")!;
+  const saved: CustomTemplate = { ...rounded, id: "synthetic-custom-rounded", name: "Custom rounded three", source: "custom", status: "saved",
+    syncState: "local", createdAt: timestamp, updatedAt: timestamp };
+  const custom: CustomTemplate[] = [saved, { ...saved, id: "synthetic-draft", status: "draft" },
+    { ...saved, id: "synthetic-story", formatId: "instagram-story" }];
+
+  it("uses the library filter results for eligible built-ins and saved custom templates", () => {
+    const h = harness({ custom }); h.run("addPage");
+    h.state.templateFilters = { formatId: "instagram-post", photoCount: 3, edgeStyle: "rounded" };
+    h.state.pageTemplateFilters = h.state.templateFilters;
+    const library = [...h.run<TemplateDefinition[]>("filteredBuiltInTemplates"), ...h.run<CustomTemplate[]>("filteredCustomTemplates").filter(template => template.status === "saved")];
+    expect(h.run<TemplateDefinition[]>("filteredPageTemplates")).toEqual(library);
+    expect(library.map(template => template.name)).toEqual(["Rounded stories", "Night frames", "Custom rounded three"]);
+    h.state.pageTemplateFilters = { formatId: "instagram-story", photoCount: 3, edgeStyle: "rounded" };
+    expect(h.run<TemplateDefinition[]>("filteredPageTemplates")).toEqual(library); // Project format always wins.
+    h.state.pageTemplateFilters = { ...h.state.pageTemplateFilters, edgeStyle: "mixed" };
+    expect(h.run("filteredPageTemplates")).toEqual([]);
+  });
+
+  for (const loaded of [false, true]) it(`browses, combines and cancels filters without changing a project with ${loaded ? "loaded" : "unavailable"} photos`, () => {
+    const h = harness({ loaded, custom });
+    const before = h.run<StoredProject>("buildStoredProject");
+    h.state.templateFilters = { formatId: "instagram-story", photoCount: 2, edgeStyle: "straight" };
+    h.run("addPage"); h.settle();
+    h.state.pageTemplateFilters = { formatId: "all", photoCount: 3, edgeStyle: "rounded" };
+    expect(h.run<TemplateDefinition[]>("filteredPageTemplates")).toHaveLength(3);
+    h.settle();
+    expect(h.run("buildStoredProject")).toEqual(before);
+    h.run("goBack"); h.settle();
+    expect(h.run("buildStoredProject")).toEqual(before);
+    expect(h.scope.saveWorkspaceProjects).not.toHaveBeenCalled();
+    expect(h.confirmPrompt).not.toHaveBeenCalled();
+    h.run("addPage");
+    expect(h.state.pageTemplateFilters).toEqual(DEFAULT_TEMPLATE_FILTERS);
+    expect(h.state.templateFilters).toEqual({ formatId: "instagram-story", photoCount: 2, edgeStyle: "straight" });
+  });
+
+  for (const choice of [rounded, saved]) it(`adds filtered ${choice.name} after two populated pages without replacement or crop changes`, async () => {
+    const project = fixture();
+    project.pages.push({ ...structuredClone(project.pages[0]), id: "second-populated-page" });
+    project.pages[1].photos[single.frames[0].id].crop = { zoom: .67, positionX: .3, positionY: .4 };
+    const h = harness({ project, custom });
+    const before = h.run<StoredProject>("buildStoredProject");
+    h.run("addPage");
+    h.state.pageTemplateFilters = { formatId: "all", photoCount: 3, edgeStyle: "rounded" };
+    h.run("adoptActiveProject", before, true); h.settle(); // A cloud acknowledgement may restore a selected page.
+    const candidate = h.run<TemplateDefinition[]>("filteredPageTemplates").find(template => template.id === choice.id)!;
+    expect(candidate).toBeDefined();
+    await h.run("selectTemplate", candidate); h.settle();
+    const result = h.run<StoredProject>("buildStoredProject");
+    expect(result.pages).toHaveLength(3);
+    expect(result.pages.slice(0, 2)).toEqual(before.pages);
+    expect(result.pages[2].templateSnapshot).toEqual(choice);
+    expect(result.pages[2].photos).toEqual({});
+    expect(result.activePageId).toBe(result.pages[2].id);
+    expect(result.photoLibrary).toEqual(before.photoLibrary);
+    expect(result.pendingDeletions).toEqual(before.pendingDeletions);
+    expect(h.confirmPrompt).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale filtered selection after a project change and reset", async () => {
+    const h = harness({ custom }); h.run("addPage"); h.settle();
+    h.state.pageTemplateFilters = { formatId: "all", photoCount: 3, edgeStyle: "rounded" };
+    const candidate = h.run<TemplateDefinition[]>("filteredPageTemplates")[0], staleClick = h.captureSelection();
+    h.run("adoptActiveProject", { ...fixture(), id: "other-project" }); h.settle();
+    const other = h.run<StoredProject>("buildStoredProject");
+    await staleClick(candidate);
+    expect(h.run("buildStoredProject")).toEqual(other);
+    h.run("addPage"); h.settle();
+    expect(h.state.pageTemplateFilters).toEqual(DEFAULT_TEMPLATE_FILTERS);
+    await staleClick(candidate);
+    expect(h.run("buildStoredProject")).toEqual(other);
+    expect(h.confirmPrompt).not.toHaveBeenCalled();
+  });
 });
 
 describe("explicit template intent and cancellation", () => {
