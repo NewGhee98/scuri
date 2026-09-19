@@ -132,6 +132,29 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  it("saves only parent metadata for library changes without rewriting page or asset rows", async () => {
+    const cloud = fakeCloud(), local = structuredClone(cloud.initial), before = structuredClone(cloud.rows.project_assets);
+    local.photoLibrary = getProjectPhotos(local).map(photo => ({ ...photo, colourOverride: "bw", pendingUpload: { thumbnailId: "reserved-thumb" } }));
+    local.updatedAt = edited;
+    const result = await pushProjectToCloud(local);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(cloud.mutations).toHaveLength(1); expect(cloud.mutations[0].table).toBe("projects");
+    expect(cloud.rows.project_assets).toEqual(before);
+    if (!("project" in result)) throw new Error("Expected acknowledgement");
+    const later = structuredClone(local); later.pages[0].photos["frame-1"].crop.zoom = 0.77;
+    later.pendingDeletions = { pageIds: [], photos: [{ pageId: "other", frameId: "new-removal", blobKey: "different" }] };
+    const acknowledged = acknowledgeProjectPush(later, local, result);
+    expect(acknowledged.pages[0].photos["frame-1"].crop.zoom).toBe(0.77);
+    expect(acknowledged.pendingDeletions).toEqual(later.pendingDeletions); expect(isProjectDirty(acknowledged)).toBe(true);
+  });
+  it("preserves optional metadata omitted by an older client and signals that devices need updating", () => {
+    const cloud = fakeCloud(), local = structuredClone(cloud.initial);
+    local.photoLibrary = getProjectPhotos(local).map(photo => ({ ...photo, colourOverride: "bw", pendingUpload: { originalId: "reserved" } }));
+    const result = mergeCloudProjectLibrary([local], [cloud.initial], () => "copy");
+    expect(result.metadataRecoveredIds).toEqual([local.id]);
+    expect(result.projects[0].photoLibrary![0]).toMatchObject({ colourOverride: "bw", pendingUpload: { originalId: "reserved" } });
+    expect(isProjectDirty(result.projects[0])).toBe(true);
+  });
   it("retains every assignment, Drive id and crop when renamed before Drive connects", async () => {
     const cloud = fakeCloud();
     const [pulled] = await pullProjectsFromCloud();

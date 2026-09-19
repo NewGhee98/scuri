@@ -1,19 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PhotoAnalysisClient, analysisCacheKey } from "../photo-analysis-client";
 import { analysePixels } from "../photo-palette";
-import { loadPhotoBlob, savePhotoBlob } from "../storage";
+import { readDerived, writeDerived, type DerivedEntry } from "../photo-cache-storage";
 import { getTemplatesForFormat } from "../templates";
 import { suggestArrangements } from "../arrangements";
 
-vi.mock("../storage", () => ({ loadPhotoBlob: vi.fn(), savePhotoBlob: vi.fn() }));
+vi.mock("../photo-cache-storage", () => ({ readDerived: vi.fn(), writeDerived: vi.fn() }));
 const photo = { blobKey: "synthetic-worker-photo", sourceWidth: 3000, sourceHeight: 1000, fileSize: 42 };
 const analysis = analysePixels(new Uint8ClampedArray([20, 70, 160, 255]), 3000, 1000);
 beforeEach(() => {
-  const values = new Map<string, string>(), blobs = new Map<string, Blob>();
+  const values = new Map<string, string>(), derived = new Map<string, DerivedEntry>();
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("No external analysis service"); }));
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) });
-  vi.mocked(loadPhotoBlob).mockImplementation(async key => blobs.get(key) ?? null);
-  vi.mocked(savePhotoBlob).mockImplementation(async (key, blob) => { blobs.set(key, blob); });
+  vi.mocked(readDerived).mockImplementation(async key => derived.get(key) ?? null);
+  vi.mocked(writeDerived).mockImplementation(async (key, value) => { derived.set(key, { ...value, bytes: 1, touched: 1 }); });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -33,7 +33,7 @@ describe("worker analysis and derived cache", () => {
     const blob = new Blob(["synthetic-original"]);
     await scope.onmessage({ data: { id: 1, kind: "analyse", blob, width: 3000, height: 1000 } });
     expect(decode).toHaveBeenCalledWith(blob, expect.objectContaining({ imageOrientation: "from-image", resizeWidth: 320, resizeHeight: 107 }));
-    expect(sizes[0]).toEqual([96, 32]);
+    expect(sizes[0]).toEqual([256, 86]);
     expect(draws.every(args => args.length === 5 && args[1] === 0 && args[2] === 0)).toBe(true); // no source crop rectangle
     expect(post.mock.calls[0][0].result.analysis).toMatchObject({ width: 3000, height: 1000, palette: expect.any(Array) });
     expect(bitmap.close).toHaveBeenCalledOnce();
@@ -54,20 +54,20 @@ describe("worker analysis and derived cache", () => {
     expect(jobs).toHaveLength(1);
     expect(await client.cached(photo, "owner-b")).toBeNull();
     expect(await client.cached({ ...photo, fileSize: 99 }, "owner-a")).toBeNull();
-    localStorage.setItem(analysisCacheKey(photo, "owner-a"), '{"version":1,"palette":[]}');
+    await writeDerived(analysisCacheKey(photo, "owner-a"), { data: { version: 1, palette: [] } });
     expect(await client.cached(photo, "owner-a")).toBeNull();
     client.dispose();
     await expect(client.suggest({ photos: [], templates: [], formatId: "instagram-square" })).rejects.toThrow("cancelled");
   });
   it("bounds a maximum-size project and accounts for every input photo", () => {
-    const photos = Array.from({ length: 200 }, (_, i) => ({ photo: { ...photo, blobKey: `synthetic-${i}` }, analysis }));
+    const photos = Array.from({ length: 250 }, (_, i) => ({ photo: { ...photo, blobKey: `synthetic-${i}` }, analysis }));
     const proposals = suggestArrangements({ photos, templates: getTemplatesForFormat("instagram-square"), formatId: "instagram-square" });
     expect(proposals.length).toBeGreaterThan(0);
     for (const proposal of proposals) {
-      expect(proposal.pages.length).toBeLessThanOrEqual(20);
+      expect(proposal.pages.length).toBeLessThanOrEqual(30);
       const placed = proposal.pages.flatMap(page => Object.values(page.assignments));
-      expect(new Set([...placed, ...proposal.unplaced.map(item => item.blobKey)]).size).toBe(200);
-      expect(placed.length + proposal.unplaced.length).toBe(200);
+      expect(new Set([...placed, ...proposal.unplaced.map(item => item.blobKey)]).size).toBe(250);
+      expect(placed.length + proposal.unplaced.length).toBe(250);
     }
   }, 30_000);
 });

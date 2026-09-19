@@ -8,6 +8,8 @@ import { renderPagePreview } from "../export";
 import { getFormat } from "../formats";
 import { getTemplate } from "../templates";
 import type { PhotoAsset, ProjectPage, StoredPhotoAsset, StoredProject } from "../types";
+import { readDerived, writeDerived } from "../photo-cache-storage";
+vi.mock("../photo-cache-storage", () => ({ readDerived: vi.fn(), writeDerived: vi.fn() }));
 
 vi.mock("../image", async original => ({ ...await original<typeof import("../image")>(), createPhotoPreview: vi.fn() }));
 vi.mock("../google-drive", () => ({ downloadGoogleDrivePhoto: vi.fn() }));
@@ -29,6 +31,8 @@ const caches: PhotoPreviewCache[] = [];
 function cache(bytes?: number, entries?: number) { const value = new PhotoPreviewCache(bytes, entries); caches.push(value); return value; }
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(readDerived).mockResolvedValue(null);
+  vi.mocked(writeDerived).mockResolvedValue();
   vi.mocked(loadPhotoBlob).mockResolvedValue(original);
   let count = 0;
   vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:thumbnail-${++count}`);
@@ -79,6 +83,7 @@ describe("session display previews", () => {
     const previews = cache(), first = deferred<Blob>();
     vi.mocked(loadPhotoBlob).mockReturnValue(first.promise);
     const jobs = ["a", "b", "c", "d"].map(blobKey => previews.request({ ...stored, blobKey }, () => null));
+    await vi.waitFor(() => expect(loadPhotoBlob).toHaveBeenCalledTimes(2));
     expect(loadPhotoBlob).toHaveBeenCalledTimes(2);
     first.resolve(original); await Promise.all(jobs);
     expect(createPhotoPreview).toHaveBeenCalledTimes(4);
@@ -117,7 +122,7 @@ describe("session display previews", () => {
 
   it("uses existing small analysis thumbnails without repeating decoding", async () => {
     const previews = cache(); previews.rememberThumbnail(stored, thumbnail);
-    const ready = await previews.request(stored, () => null);
+    const ready = await previews.request(stored, () => null, undefined, 10);
     expect(ready?.sourceWidth).toBe(6400);
     expect(createPhotoPreview).not.toHaveBeenCalled(); expect(loadPhotoBlob).not.toHaveBeenCalled();
   });
@@ -135,6 +140,7 @@ describe("session display previews", () => {
     const current = previews.capture();
     vi.mocked(createPhotoPreview).mockReturnValue(decode.promise);
     const loading = previews.request(stored, () => null, () => original);
+    await vi.waitFor(() => expect(createPhotoPreview).toHaveBeenCalledOnce());
     previews.rememberThumbnail({ ...stored, blobKey: "already-loaded" }, thumbnail);
     previews.clear();
     decode.resolve({ blob: thumbnail, previewUrl: "blob:late-old-account", width: 6400, height: 1440 });
@@ -150,6 +156,7 @@ describe("session display previews", () => {
     const previews = cache(), read = deferred<Blob | null>(), token = vi.fn(() => "new-account-token");
     vi.mocked(loadPhotoBlob).mockReturnValue(read.promise);
     const jobs = ["a", "b", "c"].map(blobKey => previews.request({ ...stored, blobKey }, token));
+    await vi.waitFor(() => expect(loadPhotoBlob).toHaveBeenCalledTimes(2));
     previews.clear(); read.resolve(null); await Promise.all(jobs);
     expect(loadPhotoBlob).toHaveBeenCalledTimes(2); expect(token).not.toHaveBeenCalled();
     expect(downloadGoogleDrivePhoto).not.toHaveBeenCalled();
@@ -160,7 +167,7 @@ describe("session display previews", () => {
     previews.rememberThumbnail({ ...stored, blobKey: "a" }, thumbnail);
     previews.rememberThumbnail({ ...stored, blobKey: "b" }, thumbnail);
     const discarded = previews.get("b")!.previewUrl;
-    await previews.request({ ...stored, blobKey: "a" }, () => null);
+    await previews.request({ ...stored, blobKey: "a" }, () => null, undefined, 10);
     previews.rememberThumbnail({ ...stored, blobKey: "c" }, thumbnail);
     expect(previews.get("a")).toBeDefined(); expect(previews.get("b")).toBeUndefined();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(discarded);
@@ -168,6 +175,33 @@ describe("session display previews", () => {
 });
 
 describe("preview display never owns assignments, crops or original availability", () => {
+  it("restores persistent previews after reload without reading or downloading originals", async () => {
+    const disk = new Map<string, Blob>();
+    vi.mocked(writeDerived).mockImplementation(async (key, value) => { if (value.blob) disk.set(key, value.blob); });
+    vi.mocked(readDerived).mockImplementation(async key => disk.has(key) ? { blob: disk.get(key), bytes: 10, touched: 1 } : null);
+    const first = cache(); first.setWorkspace("owner-a"); await first.request(stored, () => null); first.clear();
+    vi.mocked(loadPhotoBlob).mockClear(); vi.mocked(createPhotoPreview).mockClear();
+    const next = cache(); next.setWorkspace("owner-a"); expect(await next.request(stored, () => null)).not.toBeNull();
+    expect(loadPhotoBlob).not.toHaveBeenCalled(); expect(createPhotoPreview).not.toHaveBeenCalled();
+    const other = cache(); other.setWorkspace("owner-b"); vi.mocked(loadPhotoBlob).mockResolvedValue(null);
+    expect(await other.request(stored, () => null)).toBeNull();
+  });
+  it("upgrades 320px to 640px and retains the old URL until its consumers release it", async () => {
+    const previews = cache(), release = previews.pin(stored.blobKey);
+    previews.rememberThumbnail(stored, thumbnail, 320); const old = previews.get(stored.blobKey)!.previewUrl;
+    const ready = await previews.request(stored, () => null);
+    expect(ready?.previewUrl).not.toBe(old); expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(old);
+    release(); expect(URL.revokeObjectURL).toHaveBeenCalledWith(old);
+  });
+  it("bounds a fresh 250-photo session and only requests Drive previews", async () => {
+    const previews = cache(); vi.mocked(loadPhotoBlob).mockResolvedValue(null); vi.mocked(downloadGoogleDrivePhoto).mockResolvedValue(thumbnail);
+    await Promise.all(Array.from({ length: 250 }, (_, i) => previews.request({ ...stored, blobKey: `synthetic-${i}`, drivePreviewId: `preview-${i}` }, () => "synthetic-token")));
+    expect(downloadGoogleDrivePhoto).toHaveBeenCalledTimes(250);
+    expect(vi.mocked(downloadGoogleDrivePhoto).mock.calls.every(([, id]) => id.startsWith("preview-"))).toBe(true);
+    expect(previews.getSnapshot().size).toBeLessThan(150);
+    expect(savePhotoBlob).not.toHaveBeenCalled();
+    previews.clear(); expect(previews.getSnapshot().size).toBe(0);
+  });
   it("reopens saved metadata immediately with separate crops for repeat placements", async () => {
     const previews = cache(); await previews.request(stored, () => null);
     const current = page({ left: { ...stored, frameId: "left" }, right: { ...stored, frameId: "right", crop: { ...stored.crop, zoom: 1.25 } } });
