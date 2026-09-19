@@ -1859,7 +1859,7 @@ export function LayoutsApp() {
           <p>{storageError}</p>
           <div className="mt-3 flex flex-wrap gap-3">
             <button type="button" className="small-button" onClick={() => void retryLocalSave()}>Retry local save</button>
-            {projectId ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button> : null}
+            {projectId ? <span className="flex flex-wrap items-center gap-2"><button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button><span className="text-xs">ZIP · up to 256 MB</span></span> : null}
           </div>
         </aside>
       ) : null}
@@ -1867,7 +1867,7 @@ export function LayoutsApp() {
         <section className="mx-auto mt-4 flex max-w-[1120px] flex-wrap items-center gap-3 px-4" aria-label="Project history and backup">
           <button type="button" className="small-button" disabled={!historyState.undo || busy !== null} onClick={() => travelProjectHistory("undo")}>Undo</button>
           <button type="button" className="small-button" disabled={!historyState.redo || busy !== null} onClick={() => travelProjectHistory("redo")}>Redo</button>
-          <button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button>
+          <span className="flex flex-wrap items-center gap-2"><button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button><span className="text-xs text-neutral-600">ZIP · up to 256 MB</span></span>
           {pages.length > 0 ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => { setExportReviewIds(null); setShowPagePreview(true); }}>Preview</button> : null}
           <p className="w-full text-xs leading-5 text-neutral-600">Undo history resets when you open another project, reload or change accounts. Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length} · Original detail loads on demand ({assignedPhotos.length - unavailablePhotoCount} currently loaded).</p>
         </section>

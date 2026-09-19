@@ -12,8 +12,16 @@ export function galleryRows(items: LibraryRow[], columns: number): Array<Array<{
   }
   return rows;
 }
-export function visibleGalleryRange(scrollTop: number, height: number, rowHeight: number, count: number) {
+export function visibleGalleryRange(scrollTop: number, height: number, rowHeight: number, count: number, headerHeight = 0) {
+  const top = Math.max(0, scrollTop - headerHeight), bottom = Math.max(0, scrollTop + height - headerHeight);
   const overscan = Math.ceil(height / rowHeight);
-  return { start: Math.max(0, Math.min(count, Math.floor(scrollTop / rowHeight) - overscan)),
-    end: Math.min(count, Math.ceil((scrollTop + height) / rowHeight) + overscan) };
+  return { start: Math.max(0, Math.min(count, Math.floor(top / rowHeight) - overscan)),
+    end: Math.min(count, Math.ceil(bottom / rowHeight) + overscan) };
+}
+
+/** Scroll anchors refer to photo rows, independent of the scrolling toolbar's height. */
+export function galleryScrollAnchor(scrollTop: number, rowHeight: number, headerHeight: number) {
+  if (scrollTop < headerHeight) return undefined;
+  const top = scrollTop - headerHeight;
+  return { index: Math.floor(top / rowHeight), offset: top % rowHeight };
 }

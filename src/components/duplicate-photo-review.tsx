@@ -45,6 +45,7 @@ export function DuplicatePhotoReview({ project, ownerId, thumbnails, getVolatile
     onCancel={event => { event.preventDefault(); onClose(); }}>
     <h2 id="duplicates-title" className="text-xl font-semibold">Review exact duplicates</h2>
     <p className="mt-2 text-sm text-neutral-600">Combine identical uploads into one library card. Every page placement and crop stays as it is. Drive originals are kept. You can undo this change.</p>
+    <p className="mt-2 text-xs text-neutral-600">Exact matches are checked using original file bytes, including older uploads that have not yet been verified.</p>
     {!scan && !error ? <p role="status" className="mt-4 text-sm">Checking original files: {progress.done} / {progress.total}…</p> : null}
     {error ? <p role="alert" className="mt-4 text-sm text-red-700">{error}</p> : null}
     {scan ? <>
