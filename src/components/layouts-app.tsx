@@ -238,6 +238,9 @@ export function LayoutsApp() {
   const [moveFrameMode, setMoveFrameMode] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [compositionGuides, setCompositionGuides] = useState(true);
+  // Selection is editing UI, not a saved page edit. Keep old saved selections
+  // as the initial fallback without rewriting them when the user changes focus.
+  const [editorSelectedFrameId, setEditorSelectedFrameId] = useState<string | null>(null);
   const [photoPreviews] = useState(() => new PhotoPreviewCache());
   const previewSnapshot = useSyncExternalStore(photoPreviews.subscribe, photoPreviews.getSnapshot, () => EMPTY_PHOTO_PREVIEWS);
   const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
@@ -308,18 +311,21 @@ export function LayoutsApp() {
     page.templateSnapshot ?? getTemplate(page.templateId, customTemplates)
   ), [customTemplates]);
   const template = activePage ? resolvePageTemplate(activePage) : null;
+  const selectedFrameId = editorSelectedFrameId && template?.frames.some(frame => frame.id === editorSelectedFrameId)
+    ? editorSelectedFrameId : activePage?.selectedFrameId ?? null;
   const libraryPhotos = getProjectPhotos({ photoLibrary: projectPhotoLibrary, pages: pages.map(serializePage) });
   const assignedPhotos = pages.flatMap(page => Object.values(serializePage(page).photos));
   const backedUpOriginalCount = libraryPhotos.filter(photo => photo.driveOriginalId).length;
   const backedUpPreviewCount = libraryPhotos.filter(photo => photo.drivePreviewId).length;
   const displayedPhotos = displayPagePhotos(activePage, previewSnapshot);
-  const selectedPhoto = activePage?.selectedFrameId ? displayedPhotos[activePage.selectedFrameId] : undefined;
-  const selectedResolvedFrame = template && format && activePage ? resolveFrames(template, activePage.gutter, format.width, format.height).find(frame => frame.id === activePage.selectedFrameId) : undefined;
-  const selectedStoredPhoto = activePage?.selectedFrameId ? serializePage(activePage).photos[activePage.selectedFrameId] : undefined;
+  const selectedPhoto = selectedFrameId ? displayedPhotos[selectedFrameId] : undefined;
+  const selectedResolvedFrame = template && format && activePage ? resolveFrames(template, activePage.gutter, format.width, format.height).find(frame => frame.id === selectedFrameId) : undefined;
+  const selectedStoredPhoto = activePage && selectedFrameId ? serializePage(activePage).photos[selectedFrameId] : undefined;
   const editorContext = `${projectId}:${activePageId}:${screen}`;
   const [previousEditorContext, setPreviousEditorContext] = useState(editorContext);
   if (previousEditorContext !== editorContext) {
     setPreviousEditorContext(editorContext); setAlignmentGuides([]); setMoveFrameMode(false); setShowPagePreview(false);
+    setEditorSelectedFrameId(null);
   }
   const unavailablePhotoCount = pages.reduce((count, page) => count + Object.keys(page.unavailablePhotos ?? {}).length, 0);
   const missingPhotoCount = activePage && template ? getMissingPhotoCount(serializePage(activePage), template) : 0;
@@ -953,6 +959,11 @@ export function LayoutsApp() {
     setPages((current) => current.map((page) => page.id === pageId ? { ...updater(page), updatedAt: timestamp } : page));
   };
 
+  const selectEditorFrame = (frameId: string) => {
+    if (!activePage || !template?.frames.some(frame => frame.id === frameId)) return;
+    setEditorSelectedFrameId(frameId);
+  };
+
   const persistActiveProject = (): StoredProject[] => {
     const saved = buildStoredProject();
     if (!saved) return projectsRef.current;
@@ -1283,8 +1294,8 @@ export function LayoutsApp() {
   };
 
   const changeFrameLayer = (offset: -1 | 1) => {
-    if (!activePage?.selectedFrameId || !template) return;
-    updatePage(activePage.id, page => reorderPageFrame(page, resolvePageTemplate(page), activePage.selectedFrameId!, offset));
+    if (!activePage || !selectedFrameId || !template) return;
+    updatePage(activePage.id, page => reorderPageFrame(page, resolvePageTemplate(page), selectedFrameId, offset));
     setAlignmentGuides([]);
   };
 
@@ -1295,11 +1306,12 @@ export function LayoutsApp() {
     setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id,
       [stored[sourceFrameId], stored[targetFrameId]].filter(Boolean)));
     updatePage(activePage.id, page => movePagePhoto(page, sourceFrameId, targetFrameId));
+    setEditorSelectedFrameId(targetFrameId);
   };
 
   const removeSelected = () => {
-    if (!activePage?.selectedFrameId) return;
-    const frameId = activePage.selectedFrameId;
+    if (!activePage || !selectedFrameId) return;
+    const frameId = selectedFrameId;
     const removed = serializePage(activePage).photos[frameId];
     if (!removed) return;
     if (!window.confirm("Remove this photo from this frame? It will remain in Project photos.")) return;
@@ -1309,7 +1321,7 @@ export function LayoutsApp() {
   };
 
   const resetSelected = () => {
-    if (activePage?.selectedFrameId && selectedPhoto) updateCrop(activePage.selectedFrameId, { ...DEFAULT_CROP });
+    if (selectedFrameId && selectedPhoto) updateCrop(selectedFrameId, { ...DEFAULT_CROP });
   };
 
   const openTemplates = () => {
@@ -2306,13 +2318,13 @@ export function LayoutsApp() {
               gutter={activePage.gutter}
               photos={displayedPhotos}
               unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
-              selectedFrameId={activePage.selectedFrameId}
+              selectedFrameId={selectedFrameId}
               rearrangeMode={rearrangeMode}
               moveFrameMode={moveFrameMode} snapEnabled={snapEnabled} guides={alignmentGuides}
               compositionGuides={compositionGuides}
               onZoomChange={updatePhotoZoom} onFrameMove={updateFramePosition}
               onGuidesChange={setAlignmentGuides} onViewWidthChange={setEditorWidth}
-              onSelectFrame={(frameId) => updatePage(activePage.id, (page) => ({ ...page, selectedFrameId: frameId }))}
+              onSelectFrame={selectEditorFrame}
               onRequestPhoto={requestPhoto}
               onCropChange={updateCrop}
               onMovePhoto={movePhoto}
@@ -2345,9 +2357,9 @@ export function LayoutsApp() {
               <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges</label>
               <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={compositionGuides} onChange={event => setCompositionGuides(event.target.checked)} /> Guides</label>
               <p className="text-xs text-neutral-500">Thirds and centre of the selected frame. Hidden in previews and exports.</p>
-              {selectedPhoto && activePage.selectedFrameId && activePage.unavailablePhotos?.[activePage.selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Editing a lightweight preview. Page previews and exports load the full-resolution original.</p> : null}
+              {selectedPhoto && selectedFrameId && activePage.unavailablePhotos?.[selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Editing a lightweight preview. Page previews and exports load the full-resolution original.</p> : null}
               <div className="mt-4 grid grid-cols-3 gap-2">
-                <button className="small-button" type="button" disabled={!activePage.selectedFrameId} onClick={() => activePage.selectedFrameId && requestPhoto(activePage.selectedFrameId)}>
+                <button className="small-button" type="button" disabled={!selectedFrameId} onClick={() => selectedFrameId && requestPhoto(selectedFrameId)}>
                   {selectedStoredPhoto ? "Replace" : "Add photo"}
                 </button>
                 <button className="small-button" type="button" disabled={!selectedPhoto} onClick={resetSelected}>Reset</button>
@@ -2368,14 +2380,14 @@ export function LayoutsApp() {
               </button>
               {moveFrameMode ? <div className="mt-3 grid gap-2">
                 <label className="text-xs font-medium" htmlFor="selected-page-frame">Selected frame</label>
-                <select id="selected-page-frame" className="rounded-lg border border-black/15 bg-white p-2 text-sm" value={activePage.selectedFrameId ?? ""}
-                  onChange={event => { setAlignmentGuides([]); updatePage(activePage.id, page => ({ ...page, selectedFrameId: event.target.value })); }}>
+                <select id="selected-page-frame" className="rounded-lg border border-black/15 bg-white p-2 text-sm" value={selectedFrameId ?? ""}
+                  onChange={event => { setAlignmentGuides([]); selectEditorFrame(event.target.value); }}>
                   <option value="" disabled>Choose a frame</option>
                   {template.frames.map((frame, index) => <option key={frame.id} value={frame.id}>Frame {index + 1}{selectedStoredPhoto?.frameId === frame.id ? " · selected" : ""}</option>)}
                 </select>
                 <div className="grid grid-cols-2 gap-2">
-                  <button type="button" className="small-button" disabled={!activePage.selectedFrameId || template.frames[0]?.id === activePage.selectedFrameId} onClick={() => changeFrameLayer(-1)}>Send backward</button>
-                  <button type="button" className="small-button" disabled={!activePage.selectedFrameId || template.frames.at(-1)?.id === activePage.selectedFrameId} onClick={() => changeFrameLayer(1)}>Bring forward</button>
+                  <button type="button" className="small-button" disabled={!selectedFrameId || template.frames[0]?.id === selectedFrameId} onClick={() => changeFrameLayer(-1)}>Send backward</button>
+                  <button type="button" className="small-button" disabled={!selectedFrameId || template.frames.at(-1)?.id === selectedFrameId} onClick={() => changeFrameLayer(1)}>Bring forward</button>
                 </div>
                 <p className="text-xs text-neutral-500">Frames can overlap. Select a covered frame above. Arrow keys move by 1px; Shift moves by 10px. Hold Alt while dragging to bypass snapping.</p>
                 <p className="text-xs text-neutral-500">Moving keeps the current spacing. The gutter slider then adds extra space around frames.</p>

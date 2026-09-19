@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAX_ZOOM, minimumPhotoZoom, moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
 import { drawCroppedPhoto } from "@/lib/draw-photo";
 import { drawCompositionGuides } from "@/lib/composition-guides";
+import { FRAME_SELECTION_TINT } from "@/lib/selection-style";
 import type { DisplayPhoto } from "@/lib/photo-preview-cache";
 import { snapFramePosition, type AlignmentGuide } from "@/lib/editor-alignment";
 import type { CanvasFormat, CropState, ResolvedFrame, TemplateDefinition } from "@/lib/types";
@@ -181,6 +182,10 @@ export function EditorCanvas({
         context.textBaseline = "middle";
         context.fillText(unavailableFrameIds?.includes(frame.id) ? "Photo unavailable" : "Tap to add photo", frame.x + frame.width / 2, frame.y + frame.height / 2, frame.width - 16);
       }
+      if (selectedFrameId === frame.id) {
+        context.fillStyle = FRAME_SELECTION_TINT;
+        context.fillRect(frame.x, frame.y, frame.width, frame.height);
+      }
       if (compositionGuides && !rearrangeMode && selectedFrameId === frame.id && photo) drawCompositionGuides(context, frame);
       context.restore();
 
@@ -190,15 +195,6 @@ export function EditorCanvas({
         context.lineWidth = 5;
         context.beginPath();
         context.roundRect(frame.x + 2.5, frame.y + 2.5, Math.max(0, frame.width - 5), Math.max(0, frame.height - 5), frame.cornerRadius);
-        context.stroke();
-        context.restore();
-      } else if (selectedFrameId === frame.id) {
-        context.save();
-        context.strokeStyle = "#0a0a0a";
-        context.lineWidth = 3;
-        context.setLineDash([8, 5]);
-        context.beginPath();
-        context.roundRect(frame.x + 1.5, frame.y + 1.5, Math.max(0, frame.width - 3), Math.max(0, frame.height - 3), frame.cornerRadius);
         context.stroke();
         context.restore();
       }
@@ -266,9 +262,12 @@ export function EditorCanvas({
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!pointersRef.current.has(event.pointerId)) return;
+    const previousPoint = pointersRef.current.get(event.pointerId);
+    if (!previousPoint) return;
     event.preventDefault();
     const point = canvasPoint(event);
+    // Selection alone must not snap a frame or commit an unchanged crop/pinch.
+    if (point.x === previousPoint.x && point.y === previousPoint.y) return;
     pointersRef.current.set(event.pointerId, point);
     const frameDrag = frameDragRef.current;
     if (moveFrameMode) {
@@ -394,7 +393,7 @@ export function EditorCanvas({
     <div ref={shellRef} className="flex min-h-[340px] w-full items-center justify-center overflow-hidden">
       <canvas
         ref={canvasRef}
-        className={`ios-gesture-surface block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-4 ${moveFrameMode || rearrangeMode ? "cursor-grab" : ""}`}
+        className={`ios-gesture-surface block max-w-full touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-sky-700 focus-visible:ring-offset-4 ${moveFrameMode || rearrangeMode ? "cursor-grab" : ""}`}
         aria-label={moveFrameMode ? "Photo layout canvas in move frame mode. Drag the selected frame or use arrow keys to move it."
           : rearrangeMode
           ? "Photo layout canvas in rearrange mode. Drag a filled frame onto another frame to swap or move its photo."
