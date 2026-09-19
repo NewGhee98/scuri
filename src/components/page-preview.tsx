@@ -1,10 +1,13 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { renderPagePreview } from "@/lib/export";
 import { assessPageExportQuality, exportWidthStep, getExportSize, maximumExportWidth, type ExportSize } from "@/lib/export-settings";
-import { isPageComplete } from "@/lib/project";
+import { isPageAssigned } from "@/lib/project";
+import { applyHydratedPhotos, hydrateProjectPhotos } from "@/lib/project-photos";
+import { disposePhotoAsset } from "@/lib/image";
+import { PhotoPreviewContext } from "./photo-preview-context";
 import type { CanvasFormat, ProjectPage, TemplateDefinition } from "@/lib/types";
 import { ExportQualityReview } from "./export-quality-review";
 
@@ -15,6 +18,7 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
   pageNumbers: number[]; onExport?: (size: ExportSize) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const session = useContext(PhotoPreviewContext);
   const stage = useRef<HTMLDivElement>(null);
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const [index, setIndex] = useState(Math.max(0, pages.findIndex(page => page.id === initialPageId)));
@@ -30,14 +34,14 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
   const template = page ? resolveTemplate(page) : null;
   // An old async result can never appear under a new size/page label.
   const request = useMemo(() => ({ page, template, size, format }), [page, template, size, format]);
-  const [rendered, setRendered] = useState<{ request: typeof request; url?: string; error?: string } | null>(null);
+  const [rendered, setRendered] = useState<{ request: typeof request; url?: string; error?: string; checks?: ReturnType<typeof assessPageExportQuality> } | null>(null);
   const currentRender = rendered?.request === request ? rendered : null;
   const unavailable = Object.keys(page?.unavailablePhotos ?? {}).length;
   const empty = template ? template.frames.filter(frame => !page.photos[frame.id] && !page.unavailablePhotos?.[frame.id]).length : 0;
   const navigate = (offset: number) => setIndex(Math.max(0, Math.min(pages.length - 1, pageIndex + offset)));
   const checks = useMemo(() => size ? pages.map((item, i) => ({ pageId: item.id, pageNumber: pageNumbers[i],
-    photos: assessPageExportQuality(item, format, resolveTemplate(item), size) })) : [], [pages, pageNumbers, format, resolveTemplate, size]);
-  const ready = pages.every(item => isPageComplete(item, resolveTemplate(item)));
+    photos: item === page && currentRender?.checks ? currentRender.checks : assessPageExportQuality(item, format, resolveTemplate(item), size) })) : [], [pages, pageNumbers, format, resolveTemplate, size, page, currentRender]);
+  const ready = pages.every(item => isPageAssigned(item, resolveTemplate(item)));
 
   useEffect(() => {
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -54,16 +58,26 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
     const abort = new AbortController();
     // Coalesce width typing without repeatedly decoding large originals.
     const timer = window.setTimeout(() => {
-      if (request.page && request.template && request.size && !unavailable) {
-        void renderPagePreview(request.page, request.format, request.template, abort.signal, request.size)
-          .then(blob => {
-            if (cancelled) return;
-            url = URL.createObjectURL(blob); setRendered({ request, url });
-          }).catch(() => { if (!cancelled) setRendered({ request, error: "The preview could not be rendered. Try a smaller output size. Your page is unchanged." }); });
+      if (request.page && request.template && request.size) {
+        void (async () => {
+          const hydrated = await hydrateProjectPhotos([request.page], () => !cancelled ? session?.getDriveToken() ?? null : null, session?.getVolatileBlob,
+            { signal: abort.signal });
+          try {
+            if (cancelled) return null;
+            const readyPage = applyHydratedPhotos([request.page], hydrated)[0];
+            if (Object.keys(readyPage.unavailablePhotos ?? {}).length) throw new Error("Original photos are unavailable. Reconnect Drive or restore the originals to preview this page.");
+            return { blob: await renderPagePreview(readyPage, request.format, request.template!, abort.signal, request.size!),
+              checks: assessPageExportQuality(readyPage, request.format, request.template!, request.size!) };
+          } finally { hydrated.forEach(item => disposePhotoAsset(item.photo)); }
+        })()
+          .then(result => {
+            if (cancelled || !result) return;
+            url = URL.createObjectURL(result.blob); setRendered({ request, url, checks: result.checks });
+          }).catch(error => { if (!cancelled) setRendered({ request, error: error instanceof Error ? error.message : "The preview could not be rendered. Your page is unchanged." }); });
       }
     }, 200);
     return () => { cancelled = true; window.clearTimeout(timer); abort.abort(); if (url) URL.revokeObjectURL(url); };
-  }, [request, unavailable]);
+  }, [request, session]);
 
   return <dialog ref={dialog} className="page-preview-dialog" aria-labelledby="page-preview-title"
     onCancel={event => { event.preventDefault(); onClose(); }} onKeyDown={event => {
@@ -105,11 +119,10 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
           if (!detail && start && Math.abs(event.clientX - start.x) > 50 && Math.abs(event.clientX - start.x) > Math.abs(event.clientY - start.y) * 1.5) navigate(event.clientX < start.x ? 1 : -1);
         }}>
         {!size ? <p role="status">Choose a valid output size to preview.</p>
-          : unavailable ? <p role="status">{unavailable} {unavailable === 1 ? "photo is" : "photos are"} still loading. Reconnect Drive or restore the originals to preview this page.</p>
           : currentRender?.error ? <p role="alert">{currentRender.error}</p>
           : currentRender?.url ? <Image unoptimized draggable={false} src={currentRender.url} width={size.width} height={size.height}
             style={detail ? { width: size.width, height: size.height } : undefined} alt={`Export preview of page ${pageNumbers[pageIndex]}`} />
-          : <p role="status">Preparing preview…</p>}
+          : <p role="status">{unavailable ? "Loading originals for the export preview…" : "Preparing preview…"}</p>}
       </div>
       <aside className="page-preview-quality">{size ? <ExportQualityReview pages={checks} onSelectPage={id => setIndex(Math.max(0, pages.findIndex(item => item.id === id)))} />
         : <p className="text-sm text-neutral-600">Choose a valid output size to check photo quality.</p>}</aside>

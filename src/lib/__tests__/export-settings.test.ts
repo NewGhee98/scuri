@@ -265,7 +265,9 @@ describe("export review presentation", () => {
     const html = markup(page, 1080);
     expect(html).toContain("Original still loading");
     expect(html).not.toContain("Enough source pixels");
-    expect(html.match(/<button[^>]*>Create JPEG<\/button>/)?.[0]).toContain("disabled");
+    // A complete metadata assignment can request its original on demand.
+    // The actual export handler still refuses unavailable original bytes.
+    expect(html.match(/<button[^>]*>Create JPEG<\/button>/)?.[0]).not.toContain("disabled");
   });
   it("keeps page labels and navigation in bounds if the reviewed page list shrinks", () => {
     vi.mocked(React.useState).mockReturnValueOnce([5, vi.fn()]);

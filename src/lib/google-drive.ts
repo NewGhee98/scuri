@@ -229,16 +229,16 @@ function safeFilename(value: string): string {
   return value.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").slice(0, 120) || "Untitled project";
 }
 
-async function downloadDriveFile(accessToken: string, fileId: string): Promise<Blob> {
+async function downloadDriveFile(accessToken: string, fileId: string, signal?: AbortSignal): Promise<Blob> {
   const response = await fetch(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}` }, signal,
   });
   if (!response.ok) throw new Error(`Google Drive download failed (${response.status}).`);
   return response.blob();
 }
 
-export async function downloadGoogleDrivePhoto(accessToken: string, fileId: string): Promise<Blob> {
-  return downloadDriveFile(accessToken, fileId);
+export async function downloadGoogleDrivePhoto(accessToken: string, fileId: string, signal?: AbortSignal): Promise<Blob> {
+  return downloadDriveFile(accessToken, fileId, signal);
 }
 
 /**

@@ -27,7 +27,20 @@ export function validateImageFile(file: File): void {
   }
 }
 
+let decodeTail: Promise<void> = Promise.resolve();
+/** Large browser decodes share one lane; release it when the consumer closes
+ * the bitmap, including failure paths. Compressed files can queue safely. */
 export async function decodeImage(blob: Blob): Promise<DecodedImage> {
+  const previous = decodeTail;
+  let release!: () => void;
+  decodeTail = new Promise<void>(resolve => { release = resolve; });
+  await previous;
+  try {
+    const image = await decodeImageNow(blob); let closed = false;
+    return { ...image, close: () => { if (closed) return; closed = true; try { image.close(); } finally { release(); } } };
+  } catch (error) { release(); throw error; }
+}
+async function decodeImageNow(blob: Blob): Promise<DecodedImage> {
   if ("createImageBitmap" in window) {
     try {
       const bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });

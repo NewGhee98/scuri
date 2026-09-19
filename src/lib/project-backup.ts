@@ -26,6 +26,9 @@ export async function createProjectBackup(
   const originals: Original[] = [];
   let size = 0;
   const unique = new Map(getProjectPhotos(snapshot).map(photo => [photo.blobKey, photo]));
+  if ([...unique.values()].reduce((sum, photo) => sum + (photo.fileSize ?? 0), 0) > MAX_BACKUP_BYTES - MAX_MANIFEST_BYTES) {
+    throw new Error("This project's originals exceed the 256 MB portable ZIP limit. Use Drive backup for the full library; your project is unchanged.");
+  }
   for (const photo of unique.values()) {
     const blob = await loadOriginal(photo.blobKey);
     if (!blob) { originals.push({ blobKey: photo.blobKey, file: null, sha256: null, mimeType: photo.mimeType ?? "image/jpeg" }); continue; }
@@ -91,10 +94,11 @@ export function materializeProjectBackup(preview: ProjectBackupPreview, generate
     formatId: preview.project.formatId, activePageId: pageIds.get(preview.project.activePageId ?? "") ?? null,
     createdAt: timestamp, updatedAt: timestamp,
     photoLibrary: getProjectPhotos(preview.project).map(photo => ({ ...photo, blobKey: keys.get(photo.blobKey)!,
-      ...(photo.duplicateOf ? { duplicateOf: keys.get(photo.duplicateOf) ?? null } : {}), driveOriginalId: undefined, drivePreviewId: undefined })),
+      ...(photo.duplicateOf ? { duplicateOf: keys.get(photo.duplicateOf) ?? null } : {}), driveOriginalId: undefined, drivePreviewId: undefined,
+      driveThumbnailId: undefined, pendingUpload: undefined })),
     pages: preview.project.pages.map(page => ({ ...page, id: pageIds.get(page.id)!, createdAt: timestamp, updatedAt: timestamp,
       photos: Object.fromEntries(Object.entries(page.photos).map(([id, photo]) => [id, { ...photo, blobKey: keys.get(photo.blobKey)!,
-        cloudAssetId: undefined, driveOriginalId: undefined, drivePreviewId: undefined }])) })),
+        cloudAssetId: undefined, driveOriginalId: undefined, drivePreviewId: undefined, driveThumbnailId: undefined, pendingUpload: undefined }])) })),
   };
   return { project, originals };
 }

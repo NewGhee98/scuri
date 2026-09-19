@@ -2,6 +2,7 @@ import { downloadGoogleDrivePhoto } from "./google-drive";
 import { preparePhotoAsset } from "./image";
 import { loadPhotoBlob, savePhotoBlob } from "./storage";
 import { getProjectPhotos } from "./project-photo-library";
+import { moveLayoutPhoto } from "./project";
 import type { CropState, PhotoAsset, ProjectDeletions, ProjectPage, StoredPhotoAsset, StoredProject, StoredProjectPage } from "./types";
 
 function withStoredMetadata(asset: PhotoAsset, stored: StoredPhotoAsset): PhotoAsset {
@@ -56,20 +57,28 @@ export function reconcileProjectPages(project: StoredProject, current: ProjectPa
 export interface HydratedPhoto { pageId: string; photo: PhotoAsset }
 
 /** Failures affect display availability only. The caller retains every stored record. */
-export async function hydrateProjectPhotos(pages: ProjectPage[], getDriveToken: () => string | null, getVolatileBlob?: (key: string) => Blob | undefined): Promise<HydratedPhoto[]> {
+export async function hydrateProjectPhotos(pages: ProjectPage[], getDriveToken: () => string | null, getVolatileBlob?: (key: string) => Blob | undefined,
+  options: { signal?: AbortSignal; current?: () => boolean } = {}): Promise<HydratedPhoto[]> {
   const hydrated: HydratedPhoto[] = [];
-  for (const page of pages) {
+  const originals = new Map<string, PhotoAsset>();
+  outer: for (const page of pages) {
     for (const item of Object.values(page.unavailablePhotos ?? {})) {
       try {
+        if (options.signal?.aborted || options.current?.() === false) break outer;
+        const reused = originals.get(item.blobKey);
+        if (reused) { hydrated.push({ pageId: page.id, photo: withStoredMetadata(reused, item) }); continue; }
         let blob = await loadPhotoBlob(item.blobKey).catch(() => null);
+        if (options.signal?.aborted || options.current?.() === false) break outer;
         blob ??= getVolatileBlob?.(item.blobKey) ?? null;
         const token = getDriveToken();
         if (!blob && token && item.driveOriginalId) {
-          blob = await downloadGoogleDrivePhoto(token, item.driveOriginalId).catch(() => null);
-          if (blob) await savePhotoBlob(item.blobKey, blob).catch(() => undefined);
+          blob = await (options.signal ? downloadGoogleDrivePhoto(token, item.driveOriginalId, options.signal) : downloadGoogleDrivePhoto(token, item.driveOriginalId)).catch(() => null);
+          if (blob && !options.signal?.aborted && options.current?.() !== false) await savePhotoBlob(item.blobKey, blob).catch(() => undefined);
         }
+        if (options.signal?.aborted || options.current?.() === false) break outer;
         if (!blob) continue;
         const asset = await preparePhotoAsset(blob, item.frameId, item.blobKey);
+        originals.set(item.blobKey, asset);
         hydrated.push({ pageId: page.id, photo: withStoredMetadata(asset, item) });
       } catch {
         // Missing IDB, failed Drive access or image decode must not erase metadata.
@@ -106,6 +115,20 @@ export function removePagePhoto(page: ProjectPage, frameId: string): ProjectPage
   delete photos[frameId];
   delete unavailablePhotos[frameId];
   return { ...page, photos, unavailablePhotos };
+}
+
+/** Moving a placement needs its metadata, not original pixels. Keep runtime
+ * originals separate, including when swapping a loaded and preview-only photo. */
+export function movePagePhoto(page: ProjectPage, sourceFrameId: string, targetFrameId: string): ProjectPage {
+  const combined: Record<string, StoredPhotoAsset | PhotoAsset> = { ...page.unavailablePhotos, ...page.photos };
+  const moved = moveLayoutPhoto(combined, sourceFrameId, targetFrameId);
+  if (moved === combined) return page;
+  const photos: ProjectPage["photos"] = {}, unavailablePhotos: NonNullable<ProjectPage["unavailablePhotos"]> = {};
+  for (const [id, photo] of Object.entries(moved)) {
+    if ("sourceBlob" in photo) photos[id] = photo;
+    else unavailablePhotos[id] = photo;
+  }
+  return { ...page, selectedFrameId: targetFrameId, photos, unavailablePhotos };
 }
 
 /** Crop edits made against a display preview update metadata only. Hydrating

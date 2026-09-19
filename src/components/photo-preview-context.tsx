@@ -19,14 +19,16 @@ export function usePhotoPreviewSession() {
   return { session, snapshot };
 }
 
-export function usePagePreviews(page: PreviewPage | null): Record<string, DisplayPhoto> {
+export function usePagePreviews(page: PreviewPage | null, enabled = true): Record<string, DisplayPhoto> {
   const { session, snapshot } = usePhotoPreviewSession();
   useEffect(() => {
-    if (!session || !page) return;
+    if (!session || !page || !enabled) return;
+    const releases = [...Object.values(page.photos), ...Object.values(page.unavailablePhotos ?? {})].map(photo => session.cache.pin(photo.blobKey));
     for (const photo of [...Object.values(page.photos), ...Object.values(page.unavailablePhotos ?? {})]) {
       void session.cache.request(photo, session.getDriveToken, key => page.photos[photo.frameId]?.blobKey === key
         ? page.photos[photo.frameId].sourceBlob : session.getVolatileBlob(key));
     }
-  }, [page, session]);
-  return useMemo(() => session ? displayPagePhotos(page, snapshot) : page?.photos ?? {}, [page, session, snapshot]);
+    return () => releases.forEach(release => release());
+  }, [page, session, enabled]);
+  return useMemo(() => !enabled ? {} : session ? displayPagePhotos(page, snapshot) : page?.photos ?? {}, [page, session, snapshot, enabled]);
 }

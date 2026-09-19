@@ -3,7 +3,25 @@
 export const PALETTE_VERSION = 1;
 export type Lab = [number, number, number];
 export interface PaletteColour { lab: Lab; rgb: [number, number, number]; proportion: number }
-export interface PhotoAnalysis { version: 1; width: number; height: number; palette: PaletteColour[]; brightness: number; saturation: number }
+export interface PhotoAnalysis { version: 1; width: number; height: number; palette: PaletteColour[]; brightness: number; saturation: number; colourClass?: "bw" | "colour" | "uncertain" }
+
+/** Conservative classification of uncropped pixels, not mean RGB. Neutral,
+ * nearly uniform or very dark samples are uncertain rather than forced B&W. */
+export function classifyPhotoColour(rgba: Uint8ClampedArray): "bw" | "colour" | "uncertain" {
+  const samples: Array<{ l: number; c: number }> = [];
+  for (let i = 0; i < rgba.length; i += 4) {
+    if (rgba[i + 3] < 230) continue;
+    const [l, a, b] = rgbToOklab(rgba[i], rgba[i + 1], rgba[i + 2]);
+    samples.push({ l, c: Math.hypot(a, b) });
+  }
+  if (samples.length < 128) return "uncertain";
+  const fraction = (test: (sample: { l: number; c: number }) => boolean) => samples.filter(test).length / samples.length;
+  if (fraction(s => s.c >= 0.04 && s.l > 0.1) >= 0.05 || fraction(s => s.c >= 0.08 && s.l > 0.1) >= 0.01) return "colour";
+  const lights = samples.map(s => s.l).sort((a, b) => a - b), chroma = samples.map(s => s.c).sort((a, b) => a - b);
+  const quantile = (items: number[], fraction: number) => items[Math.floor((items.length - 1) * fraction)];
+  if (quantile(lights, 0.95) - quantile(lights, 0.05) < 0.1) return "uncertain";
+  return fraction(s => s.c <= 0.02) >= 0.98 && quantile(chroma, 0.95) <= 0.015 ? "bw" : "uncertain";
+}
 
 export function rgbToOklab(r: number, g: number, b: number): Lab {
   const linear = (value: number) => { const v = value / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
@@ -58,7 +76,7 @@ export function analysePixels(rgba: Uint8ClampedArray, width: number, height: nu
     centres = palette.map(c => c.lab);
   }
   palette.sort((a, b) => b.proportion - a.proportion);
-  return { version: PALETTE_VERSION, width, height, palette,
+  return { version: PALETTE_VERSION, width, height, palette, colourClass: classifyPhotoColour(rgba),
     brightness: palette.reduce((sum, c) => sum + c.lab[0] * c.proportion, 0), saturation: saturation / total };
 }
 
@@ -76,7 +94,7 @@ export function paletteDistance(a: PhotoAnalysis, b: PhotoAnalysis): number {
 export function isPhotoAnalysis(value: unknown): value is PhotoAnalysis {
   const a = value as PhotoAnalysis | null;
   return Boolean(a && a.version === PALETTE_VERSION && Number.isFinite(a.width) && a.width > 0 && Number.isFinite(a.height) && a.height > 0 &&
-    Number.isFinite(a.brightness) && Number.isFinite(a.saturation) && Array.isArray(a.palette) && a.palette.length > 0 && a.palette.length <= 5 &&
+    Number.isFinite(a.brightness) && Number.isFinite(a.saturation) && (a.colourClass === undefined || ["bw", "colour", "uncertain"].includes(a.colourClass)) && Array.isArray(a.palette) && a.palette.length > 0 && a.palette.length <= 5 &&
     a.palette.every(c => Array.isArray(c.lab) && c.lab.length === 3 && c.lab.every(Number.isFinite) && Array.isArray(c.rgb) && c.rgb.length === 3 && c.rgb.every(v => Number.isFinite(v) && v >= 0 && v <= 255) && Number.isFinite(c.proportion) && c.proportion > 0 && c.proportion <= 1) &&
     Math.abs(a.palette.reduce((sum, c) => sum + c.proportion, 0) - 1) < 0.001);
 }

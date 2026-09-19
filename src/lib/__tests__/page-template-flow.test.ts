@@ -10,6 +10,8 @@ import { nextProjectEditTime } from "../project-time";
 import { getBackScreen, MAX_PROJECT_PAGES, sortProjectsByLastEdited } from "../project";
 import { getTemplatesForFormat } from "../templates";
 import { getFormat } from "../formats";
+import { openPhotoPicker, placeLibraryPhoto } from "../photo-picker";
+import { WorkspaceSession } from "../workspace";
 import { loadProjects, saveProjects } from "../storage";
 import type { AppScreen, ProjectPage, ProjectPhoto, StoredProject } from "../types";
 
@@ -60,7 +62,11 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
     crypto, now: () => "2026-09-17T12:00:01.000Z", disposePhotoAsset: vi.fn(),
     setHistoryState: vi.fn(), setRearrangeMode: vi.fn(), setNotice: notice, window: { confirm: confirmPrompt },
     setExportWidth: vi.fn(), setExportReviewIds: vi.fn(), getFormat,
-    saveWorkspaceProjects: vi.fn(), clearExportItems: vi.fn(), setDraggingPageId: vi.fn(),
+    photoPickerRef: { current: null }, setPhotoPickerIntent: vi.fn(), setShowPhotoLibrary: vi.fn(), setChoosePhotoSource: vi.fn(), setSelectExportPages: vi.fn(), setSelectedExportIds: vi.fn(),
+    saveWorkspaceProjects: vi.fn(), setProjects: vi.fn(), clearExportItems: vi.fn(), setDraggingPageId: vi.fn(),
+    openPhotoPicker, placeLibraryPhoto, photoPickerWorkspaceRef: { current: null }, workspaceRef: { current: new WorkspaceSession() },
+    resolvePageTemplate: (page: ProjectPage) => page.templateSnapshot ?? single,
+    importQueueRef: { current: { add: vi.fn() } }, navigator: { storage: {} },
   };
   for (const key of Object.keys(state)) {
     Object.defineProperty(scope, key, { get: () => state[key as keyof typeof state] });
@@ -72,7 +78,8 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
   scope.setScreenState = scope.setScreen;
   Object.defineProperty(scope, "activePage", { get: () => state.pages.find(page => page.id === state.activePageId) ?? null });
   for (const name of ["setTemplatePicker", "setScreen", "retainPagePhotos", "updatePage", "buildStoredProject", "persistActiveProject",
-    "adoptActiveProject", "addPage", "changePageLayout", "selectTemplate", "editPage", "goBack", "openProjects"]) {
+    "adoptActiveProject", "addPage", "duplicatePage", "changePageLayout", "selectTemplate", "editPage", "goBack", "openProjects",
+    "requestPhoto", "closePhotoLibrary", "chooseLibraryPhoto", "importLibraryPhotos"]) {
     const js = callbacks.get(name);
     if (js) scope[name] = new Function("scope", `with (scope) { ${js}; return callback; }`)(scope);
   }
@@ -101,6 +108,61 @@ function harness({ loaded = false, confirm = true, project = fixture() } = {}) {
 }
 
 type Harness = ReturnType<typeof harness>;
+describe("production photo picker handlers", () => {
+  const candidate = { blobKey: "another-original", sourceWidth: 1536, sourceHeight: 230, sourceName: "other.jpg" };
+  function pickerHarness() {
+    const p = fixture(); p.photoLibrary = [...getProjectPhotos(p), candidate];
+    return harness({ project: p });
+  }
+  it("cancels without placing and consumes a Use intent once even when clicked twice", () => {
+    const h = pickerHarness(), before = h.state.pages.map(serializePage);
+    h.run("requestPhoto", single.frames[0].id); h.run("closePhotoLibrary"); h.run("chooseLibraryPhoto", candidate);
+    expect(h.state.pages.map(serializePage)).toEqual(before);
+    expect(h.scope.saveWorkspaceProjects).not.toHaveBeenCalled();
+    h.run("requestPhoto", single.frames[0].id); h.run("chooseLibraryPhoto", candidate); h.run("chooseLibraryPhoto", candidate);
+    expect(h.scope.saveWorkspaceProjects).toHaveBeenCalledOnce();
+    expect(serializePage(h.state.pages[0]).photos[single.frames[0].id].blobKey).toBe(candidate.blobKey);
+  });
+  it("rejects a destination edited while the picker is open", () => {
+    const h = pickerHarness(); h.run("requestPhoto", single.frames[0].id);
+    h.state.pages[0].unavailablePhotos![single.frames[0].id].crop.zoom = .65; h.settle();
+    const before = h.state.pages.map(serializePage); h.run("chooseLibraryPhoto", candidate);
+    expect(h.state.pages.map(serializePage)).toEqual(before); expect(h.scope.saveWorkspaceProjects).not.toHaveBeenCalled();
+    expect(h.notice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+  });
+  it("cannot place in a different account and leaves the current composition intact if durable save fails", () => {
+    const h = pickerHarness(), before = h.state.pages.map(serializePage); h.run("requestPhoto", single.frames[0].id);
+    (h.scope.workspaceRef as { current: WorkspaceSession }).current.switchTo("different-account"); h.run("chooseLibraryPhoto", candidate);
+    expect(h.scope.saveWorkspaceProjects).not.toHaveBeenCalled();
+    h.run("requestPhoto", single.frames[0].id);
+    vi.mocked(h.scope.saveWorkspaceProjects as () => void).mockImplementation(() => { throw new Error("Quota exceeded"); });
+    h.run("chooseLibraryPhoto", candidate); expect(h.state.pages.map(serializePage)).toEqual(before);
+  });
+  it("pins late import selection to its original project and releases it after an account change", () => {
+    const h = pickerHarness(), release = vi.fn(), sources = [{ id: "provider", name: "synthetic.jpg", file: vi.fn(), release }];
+    h.refs.activeProjectRef.current = { ...fixture(), id: "now-open-project" };
+    h.run("importLibraryPhotos", sources, "synthetic-project", null);
+    const add = (h.scope.importQueueRef as { current: { add: ReturnType<typeof vi.fn> } }).current.add;
+    expect(add).toHaveBeenCalledWith("synthetic-project", sources);
+    (h.scope.workspaceRef as { current: WorkspaceSession }).current.switchTo("different-account");
+    h.run("importLibraryPhotos", sources, "synthetic-project", null);
+    expect(add).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+  });
+});
+describe("30-page alternatives without duplicate originals", () => {
+  it.each([20, 21, 29, 30])("duplicates safely at %s pages and refuses a 31st", async count => {
+    const p = fixture(); p.pages = Array.from({ length: count }, (_, i) => ({ ...structuredClone(p.pages[0]), id: `page-${i}` }));
+    const h = harness({ project: p }), before = structuredClone(p.pages);
+    await h.run("duplicatePage", "page-0"); h.settle();
+    expect(h.state.pages).toHaveLength(Math.min(count + 1, 30));
+    if (count < 30) {
+      const copy = serializePage(h.state.pages[1]).photos[single.frames[0].id];
+      expect(copy.blobKey).toBe(before[0].photos[single.frames[0].id].blobKey);
+      expect(copy.crop).toEqual(before[0].photos[single.frames[0].id].crop);
+      copy.crop.zoom = 3; expect(serializePage(h.state.pages[0]).photos[single.frames[0].id].crop.zoom).toBe(0.812345);
+    } else expect(h.state.pages.map(serializePage)).toEqual(before);
+  });
+});
 type Completion = "acknowledgement" | "checkpoint" | "pull";
 async function reconcileAfterAdd(h: Harness, completion: Completion) {
   let resolve!: () => void;

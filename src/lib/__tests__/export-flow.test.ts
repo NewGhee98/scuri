@@ -3,8 +3,8 @@ import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExportFilename } from "../export";
 import { getFormat } from "../formats";
-import { isPageComplete } from "../project";
-import { serializePage } from "../project-photos";
+import { isPageComplete, isPageAssigned } from "../project";
+import { serializePage, applyHydratedPhotos } from "../project-photos";
 import { getTemplate } from "../templates";
 import type { ProjectPage } from "../types";
 
@@ -34,7 +34,8 @@ function harness() {
   }));
   const scope = {
     pages, format: getFormat("instagram-square"), projectId: "synthetic", resolvePageTemplate: () => template,
-    isPageComplete, createExportFilename, activeProjectRef: { current: { id: "synthetic" } },
+    isPageComplete, isPageAssigned, applyHydratedPhotos, createExportFilename, activeProjectRef: { current: { id: "synthetic" } },
+    hydrateProjectPhotos: vi.fn(async () => []), getValidDriveToken: () => null, getVolatileBlob: () => undefined, disposePhotoAsset: vi.fn(),
     workspaceRef: { current: { capture: () => () => true } },
     setNotice: vi.fn(), setExportReviewIds: vi.fn(), setShowPagePreview: vi.fn(), setBusy: vi.fn(),
     setExportProgress: vi.fn(), clearExportItems: vi.fn(), setExportItems: vi.fn(), setScreen: vi.fn(),
@@ -95,6 +96,7 @@ describe("export review and generation flow", () => {
     let finish!: (blob: Blob) => void;
     scope.renderComposition.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     const pending = run("exportPages", { width: 2160, height: 2160 }, ["page-1"]);
+    await vi.waitFor(() => expect(scope.renderComposition).toHaveBeenCalledOnce());
     scope.activeProjectRef.current = { id: "another-project" };
     finish(new Blob(["jpeg"]));
     await pending;

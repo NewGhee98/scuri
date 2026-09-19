@@ -1,6 +1,6 @@
 import type { AppScreen, ProjectPage, StoredProjectPage, TemplateDefinition } from "./types";
 
-export const MAX_PROJECT_PAGES = 20;
+export const MAX_PROJECT_PAGES = 30;
 
 export function getDefaultProjectName(projectNames: string[]): string {
   const names = new Set(projectNames.map((name) => name.trim().toLowerCase()));
@@ -36,6 +36,10 @@ export function getMissingPhotoCount(page: PageWithPhotos, template: TemplateDef
 
 export function isPageComplete(page: PageWithPhotos, template: TemplateDefinition): boolean {
   return getMissingPhotoCount(page, template) === 0;
+}
+/** Assignment completeness is independent of local original availability. */
+export function isPageAssigned(page: PageWithPhotos & { unavailablePhotos?: ProjectPage["unavailablePhotos"] }, template: TemplateDefinition): boolean {
+  return template.frames.every(frame => page.photos[frame.id] || page.unavailablePhotos?.[frame.id]);
 }
 
 export function getPhotoFillTargets(

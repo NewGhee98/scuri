@@ -1,0 +1,82 @@
+import { reserveDriveFileId, uploadReservedDriveFile } from "./drive-resumable";
+import { ensureProjectDriveFolders } from "./google-drive";
+import { createPhotoPreview } from "./image";
+import { getProjectPhotos } from "./project-photo-library";
+import type { PhotoBackupCheckpoint } from "./photo-backup";
+import type { ProjectPhoto, StoredProject } from "./types";
+import { workspaceKey } from "./workspace";
+
+export interface PhotoBackupStatus { blobKey: string; stage: string; sent?: number; total?: number; error?: string }
+interface Dependencies {
+  project: () => StoredProject | undefined; token: () => string | null; current: () => boolean;
+  source: (key: string) => Promise<Blob | null>;
+  /** Must durably save locally AND pass the cloud revision gate. */
+  checkpoint: (value: PhotoBackupCheckpoint) => Promise<ProjectPhoto>;
+  progress: (status: PhotoBackupStatus) => void; ownerId: string; signal?: AbortSignal;
+}
+/** Separate from metadata scheduling; serial byte transfer, independent
+ * rendition checkpoints, no speculative original downloads or file updates. */
+export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> {
+  const initial = deps.project(), token = deps.token();
+  if (!initial || !token || !deps.current()) return true;
+  let folders: Awaited<ReturnType<typeof ensureProjectDriveFolders>>;
+  try { folders = await ensureProjectDriveFolders(token, initial.id, initial.name, initial.driveFolderId); }
+  catch (error) {
+    const first = getProjectPhotos(initial).find(photo => !photo.driveOriginalId || !photo.drivePreviewId || (photo.importedAt && !photo.driveThumbnailId));
+    if (first && deps.current()) deps.progress({ blobKey: first.blobKey, stage: "Backup paused", error: error instanceof Error ? error.message : "Drive folders are unavailable. Reconnect and retry." });
+    return false;
+  }
+  let success = true;
+  for (const original of getProjectPhotos(initial)) {
+    if (!deps.current() || !deps.token()) return false;
+    let photo = getProjectPhotos(deps.project()!).find(item => item.blobKey === original.blobKey);
+    if (!photo || (photo.driveOriginalId && photo.drivePreviewId && (!photo.importedAt || photo.driveThumbnailId))) continue;
+    const source = await deps.source(photo.blobKey);
+    if (!source) { deps.progress({ blobKey: photo.blobKey, stage: "Original unavailable on this device; reselect the exact file to resume" }); continue; }
+    let preview: Blob | undefined, thumbnail: Blob | undefined;
+    try {
+      const placedPage = deps.project()!.pages.find(page => Object.values(page.photos).some(item => item.blobKey === photo!.blobKey));
+      const placement = placedPage && Object.values(placedPage.photos).find(item => item.blobKey === photo!.blobKey);
+      for (const kind of ["original", "preview", "thumbnail"] as const) {
+        const completed = kind === "original" ? "driveOriginalId" : kind === "preview" ? "drivePreviewId" : "driveThumbnailId";
+        const pending = kind === "original" ? "originalId" : kind === "preview" ? "previewId" : "thumbnailId";
+        if (photo[completed] || (kind === "thumbnail" && !photo.importedAt)) continue;
+        if (!deps.current() || !deps.token()) return false;
+        let fileId = photo.pendingUpload?.[pending];
+        if (!fileId) {
+          deps.progress({ blobKey: photo.blobKey, stage: `Saving ${kind} upload identity` });
+          const reserved = await reserveDriveFileId(deps.token()!);
+          photo = await deps.checkpoint({ blobKey: photo.blobKey, driveFolderId: folders.projectFolderId, pendingUpload: { [pending]: reserved } });
+          fileId = photo.pendingUpload?.[pending];
+          if (!fileId) throw new Error("Upload identity is not saved in the cloud. No file was created.");
+        } else {
+          // A restored/local checkpoint is not proof that the cloud accepted it.
+          photo = await deps.checkpoint({ blobKey: photo.blobKey, driveFolderId: folders.projectFolderId, pendingUpload: { [pending]: fileId } });
+          fileId = photo.pendingUpload?.[pending];
+          if (!fileId) throw new Error("Upload identity could not be reconciled.");
+        }
+        if (photo[completed]) continue;
+        if (kind === "preview" && !preview) { const derived = await createPhotoPreview(source); URL.revokeObjectURL(derived.previewUrl); preview = derived.blob; }
+        if (kind === "thumbnail" && !thumbnail) { const derived = await createPhotoPreview(preview ?? source, { longEdge: 640 }); URL.revokeObjectURL(derived.previewUrl); thumbnail = derived.blob; }
+        const blob = kind === "original" ? source : kind === "preview" ? preview! : thumbnail!;
+        const identity: Record<string, string> = { scuriProjectId: initial.id, scuriBlobKey: photo.blobKey, scuriType: kind };
+        if (placedPage && placement) { identity.scuriPageId = placedPage.id; identity.scuriFrameId = placement.frameId; }
+        const id = await uploadReservedDriveFile({ fileId, blob, token: deps.token, current: deps.current, signal: deps.signal,
+          journalKey: workspaceKey(`scuri.upload.${initial.id}.${photo.blobKey}.${kind}`, deps.ownerId),
+          metadata: { name: kind === "original" ? (photo.sourceName ?? `${photo.blobKey}.jpg`).replace(/[\\/:*?"<>|]/g, "-").slice(0, 120) : `${photo.blobKey}.${kind}.webp`,
+            parents: [kind === "original" ? folders.originalsFolderId : folders.previewsFolderId], appProperties: identity },
+          progress: (sent, total) => deps.progress({ blobKey: original.blobKey, stage: `Uploading ${kind}`, sent, total }),
+        });
+        deps.progress({ blobKey: photo.blobKey, stage: `Uploaded ${kind}; metadata pending` });
+        photo = await deps.checkpoint({ blobKey: photo.blobKey, driveFolderId: folders.projectFolderId, [completed]: id });
+      }
+      deps.progress({ blobKey: photo.blobKey, stage: "Backed up" });
+    } catch (error) {
+      success = false;
+      deps.progress({ blobKey: photo.blobKey, stage: "Backup paused", error: error instanceof Error ? error.message : "Retry backup" });
+      // Auth/quota/network issues should back off, not issue hundreds of errors.
+      break;
+    }
+  }
+  return success;
+}

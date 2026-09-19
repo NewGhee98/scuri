@@ -98,6 +98,14 @@ export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "
   /** Explicit, exact-file library grouping only. Assignments/bytes keep their
    * original identities. null explicitly undoes grouping; absence is legacy. */
   duplicateOf?: string | null;
+  /** Fingerprint of untouched delivered source bytes, never a preview. */
+  fingerprint?: string;
+  importedAt?: string;
+  importOrder?: number;
+  colourOverride?: "bw" | "colour" | null;
+  driveThumbnailId?: string;
+  /** Reserved file IDs are not proof that the bytes were uploaded. */
+  pendingUpload?: { originalId?: string; previewId?: string; thumbnailId?: string };
 };
 
 export type AppScreen =
