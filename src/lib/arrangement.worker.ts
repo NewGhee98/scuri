@@ -1,14 +1,17 @@
 import { analysePixels } from "./photo-palette";
 import { suggestArrangements, type ArrangementInput } from "./arrangements";
+import { fingerprintOriginal } from "./photo-fingerprint";
 
 export type ArrangementWorkerRequest = { id: number } & (
   { kind: "analyse"; blob: Blob; width: number; height: number } |
+  { kind: "fingerprint"; blob: Blob } |
   { kind: "suggest"; input: ArrangementInput }
 );
 
 const scope = globalThis as unknown as { onmessage: (event: MessageEvent<ArrangementWorkerRequest>) => void; postMessage: (message: unknown) => void };
 scope.onmessage = async ({ data }) => {
   try {
+    if (data.kind === "fingerprint") { scope.postMessage({ id: data.id, result: await fingerprintOriginal(data.blob) }); return; }
     if (data.kind === "suggest") { scope.postMessage({ id: data.id, result: suggestArrangements(data.input) }); return; }
     if (typeof OffscreenCanvas === "undefined" || typeof createImageBitmap === "undefined") throw new Error("Local photo analysis is not supported in this browser. Your photos remain in the library.");
     // Decode one uncropped image at a time. Known original dimensions allow
@@ -19,7 +22,7 @@ scope.onmessage = async ({ data }) => {
     } : {}) });
     try {
       const width = data.width || bitmap.width, height = data.height || bitmap.height;
-      const scale = Math.min(1, 96 / Math.max(bitmap.width, bitmap.height));
+      const scale = Math.min(1, 256 / Math.max(bitmap.width, bitmap.height));
       const sample = new OffscreenCanvas(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
       const context = sample.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("Local image analysis could not start.");

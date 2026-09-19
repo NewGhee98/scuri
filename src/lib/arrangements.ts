@@ -168,5 +168,5 @@ export function applyArrangementAsCopy(source: StoredProject, proposal: Arrangem
     throw new Error("The photo library changed. Generate fresh suggestions before applying one.");
   }
   return { version: 3, id: generateId(), name: `${source.name} (${ARRANGEMENT_LABELS[proposal.mode]})`.slice(0, 120),
-    formatId: source.formatId, activePageId: pages[0].id, pages, photoLibrary: structuredClone(library), createdAt: timestamp, updatedAt: timestamp };
+    formatId: source.formatId, activePageId: pages[0].id, pages, photoLibrary: structuredClone(library.map(photo => ({ ...photo, pendingUpload: undefined }))), createdAt: timestamp, updatedAt: timestamp };
 }

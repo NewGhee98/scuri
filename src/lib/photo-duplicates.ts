@@ -20,9 +20,9 @@ export async function scanExactDuplicates(project: StoredProject, loadOriginal: 
   const result: DuplicateScan = { projectId: project.id, groups: [], unavailable: [], checked: 0 };
   for (const photo of photos) {
     options.signal?.throwIfAborted();
-    let fingerprint: string | null = null;
+    let fingerprint: string | null = photo.fingerprint ?? null;
     const cacheKey = fingerprintCacheKey(photo, options.ownerId);
-    try { fingerprint = options.cache?.getItem(cacheKey) ?? null; } catch { /* Derived cache is optional. */ }
+    try { fingerprint ??= options.cache?.getItem(cacheKey) ?? null; } catch { /* Derived cache is optional. */ }
     if (!fingerprint || !validFingerprint(fingerprint)) {
       try {
         const blob = await loadOriginal(photo);
@@ -63,5 +63,8 @@ export function consolidateLibraryDuplicates(project: StoredProject, scan: Dupli
   }
   if (!aliases.size) return project;
   return { ...project, updatedAt: nextProjectEditTime(project, timestamp),
-    photoLibrary: getProjectPhotos(project).map(photo => aliases.has(photo.blobKey) ? { ...photo, duplicateOf: aliases.get(photo.blobKey)! } : photo) };
+    photoLibrary: getProjectPhotos(project).map(photo => {
+      const group = selected.find(group => group.keys.includes(photo.blobKey));
+      return { ...photo, ...(group ? { fingerprint: group.fingerprint } : {}), ...(aliases.has(photo.blobKey) ? { duplicateOf: aliases.get(photo.blobKey)! } : {}) };
+    }) };
 }

@@ -10,6 +10,7 @@ export class ProjectSyncQueue {
   private active?: { id: string; done: Promise<void> };
   private enabled = false;
   private stopped = false;
+  private waiters = new Map<string, Array<(success: boolean) => void>>();
 
   constructor(private push: (id: string) => Promise<boolean>, private delay = 1800) {}
 
@@ -25,6 +26,7 @@ export class ProjectSyncQueue {
   setEnabled(enabled: boolean): void {
     const reconnect = enabled && !this.enabled;
     this.enabled = enabled;
+    if (!enabled) for (const id of this.waiters.keys()) this.finish(id, false);
     if (reconnect) for (const job of this.jobs.values()) job.due = Date.now();
     this.schedule();
   }
@@ -32,6 +34,7 @@ export class ProjectSyncQueue {
   async cancel(id: string): Promise<void> {
     this.blocked.add(id);
     this.jobs.delete(id);
+    this.finish(id, false);
     if (this.active?.id === id) await this.active.done;
     this.schedule();
   }
@@ -43,6 +46,20 @@ export class ProjectSyncQueue {
     this.stopped = true;
     this.jobs.clear();
     if (this.timer) clearTimeout(this.timer);
+    for (const id of this.waiters.keys()) this.finish(id, false);
+  }
+
+  /** Wait for the latest queued metadata, without putting byte transfers in
+   * this queue. Superseding edits must finish too before an upload may start. */
+  flush(id: string, version: string): Promise<boolean> {
+    if (!this.enabled || this.stopped || this.blocked.has(id)) return Promise.resolve(false);
+    return new Promise(resolve => {
+      this.waiters.set(id, [...(this.waiters.get(id) ?? []), resolve]);
+      this.enqueue(id, version, true);
+    });
+  }
+  private finish(id: string, success: boolean) {
+    const waiting = this.waiters.get(id); this.waiters.delete(id); waiting?.forEach(resolve => resolve(success));
   }
 
   private schedule(): void {
@@ -59,13 +76,15 @@ export class ProjectSyncQueue {
     const [id, job] = entry;
     // Defer calling push until active is assigned, even for immediate promises.
     const done = Promise.resolve().then(() => this.push(id)).then(success => {
+      if (!success) this.finish(id, false);
       if (this.jobs.get(id) !== job) return; // a newer edit already has its own job
-      if (success) { this.jobs.delete(id); this.completed.set(id, job.version); }
+      if (success) { this.jobs.delete(id); this.completed.set(id, job.version); this.finish(id, true); }
       else {
         job.attempts++;
         job.due = Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempts - 1, 4));
       }
     }, () => {
+      this.finish(id, false);
       if (this.jobs.get(id) === job) { job.attempts++; job.due = Date.now() + 60_000; }
     }).finally(() => { this.active = undefined; this.schedule(); });
     this.active = { id, done };

@@ -18,6 +18,13 @@ export function isStoredPhoto(value: unknown): value is StoredPhotoAsset {
 
 export function isProjectPhoto(value: unknown): boolean {
   return record(value) && (value.duplicateOf === undefined || value.duplicateOf === null || text(value.duplicateOf)) &&
+    (value.fingerprint === undefined || (typeof value.fingerprint === "string" && /^sha256:\d+:[a-f0-9]{64}$/.test(value.fingerprint))) &&
+    (value.importedAt === undefined || date(value.importedAt)) &&
+    (value.importOrder === undefined || (finite(value.importOrder) && value.importOrder >= 0)) &&
+    (value.colourOverride === undefined || value.colourOverride === null || value.colourOverride === "bw" || value.colourOverride === "colour") &&
+    optionalText(value.driveThumbnailId) &&
+    (value.pendingUpload === undefined || (record(value.pendingUpload) &&
+      [value.pendingUpload.originalId, value.pendingUpload.previewId, value.pendingUpload.thumbnailId].every(optionalText))) &&
     isStoredPhoto({ ...value, frameId: "library-photo", crop: { positionX: 0, positionY: 0, zoom: 1 } });
 }
 

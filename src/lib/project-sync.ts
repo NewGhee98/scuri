@@ -335,7 +335,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   if (parentResult.error && ["42703", "PGRST204"].includes(parentResult.error.code) && parentResult.error.message.includes("photo_library")) {
     // A missing-column error commits nothing. Existing assigned-only projects
     // can still save; never acknowledge independent library metadata as synced.
-    if (hasUnassignedPhotos(project) || getProjectPhotos(project).some(photo => photo.duplicateOf !== undefined)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
+    if (hasUnassignedPhotos(project) || getProjectPhotos(project).some(photo => photo.duplicateOf !== undefined || photo.pendingUpload || photo.fingerprint || photo.colourOverride !== undefined)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
     const legacyInput = { ...projectRowInput } as Partial<typeof projectRowInput>;
     delete legacyInput.photo_library;
     assertCurrent();
@@ -374,6 +374,16 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   try {
     assertCurrent();
     const { pages, assets } = storedProjectToRows(project, ownerId, remote);
+    const remoteRows = remote ? storedProjectToRows(remote, ownerId, remote) : null;
+    // Library metadata/checkpoints can save without rewriting unchanged child
+    // rows. Comparison is against the preflight read, never a stale UI flag.
+    // Deletion intent always takes the existing fully checked path.
+    if (remoteRows && !project.pendingDeletions?.photos.length && !project.pendingDeletions?.pageIds.length &&
+      JSON.stringify(pages) === JSON.stringify(remoteRows.pages) && JSON.stringify(assets) === JSON.stringify(remoteRows.assets)) {
+      syncedProject.pages = project.pages.map(page => ({ ...page, photos: Object.fromEntries(
+        assets.filter(asset => asset.page_id === page.id).map(asset => [asset.frame_id, assetRowToStoredPhoto(asset)])) }));
+      return { conflict: false, project: syncedProject, partial: false };
+    }
 
     if (pages.length) {
       const { error } = await client.from("project_pages").upsert(pages, { onConflict: "id" });
@@ -467,6 +477,7 @@ export function resolveProjectConflict(
     cloudSyncedAt: undefined,
     driveFolderId: undefined,
     pendingDeletions: undefined,
+    photoLibrary: getProjectPhotos(local).map(photo => ({ ...photo, pendingUpload: undefined })),
     activePageId: local.activePageId ? pageIds.get(local.activePageId) ?? null : null,
     pages: local.pages.map((page) => ({ ...page, id: pageIds.get(page.id)! })),
     createdAt: now,
@@ -480,7 +491,8 @@ export function resolveProjectConflict(
 export function preserveProtectedLocalEdits(local: StoredProject, remote: StoredProject, newId: string): StoredProject | null {
   const remotePhotos = new Map(getProjectPhotos(remote).map(photo => [photo.blobKey, photo]));
   const meaningful = getProjectPhotos(local).some(photo => !remotePhotos.has(photo.blobKey) ||
-    (photo.duplicateOf !== undefined && photo.duplicateOf !== remotePhotos.get(photo.blobKey)?.duplicateOf)) || local.name !== remote.name || local.pages.some(page => {
+    (photo.duplicateOf !== undefined && photo.duplicateOf !== remotePhotos.get(photo.blobKey)?.duplicateOf) ||
+    (photo.colourOverride !== undefined && photo.colourOverride !== remotePhotos.get(photo.blobKey)?.colourOverride)) || local.name !== remote.name || local.pages.some(page => {
     const other = remote.pages.find(item => item.id === page.id);
     return !other || page.templateId !== other.templateId || page.background !== other.background || page.gutter !== other.gutter ||
       JSON.stringify(page.templateSnapshot) !== JSON.stringify(other.templateSnapshot) ||
@@ -508,9 +520,14 @@ export function reconcileProtectedProject(local: StoredProject, remote: StoredPr
     const known = backups.get(photo.blobKey);
     const driveOriginalId = photo.driveOriginalId ?? known?.driveOriginalId;
     const drivePreviewId = photo.drivePreviewId ?? known?.drivePreviewId;
-    if (driveOriginalId === photo.driveOriginalId && drivePreviewId === photo.drivePreviewId) return photo;
+    const driveThumbnailId = photo.driveThumbnailId ?? known?.driveThumbnailId;
+    const pendingUpload = known?.pendingUpload || photo.pendingUpload ? { ...known?.pendingUpload, ...photo.pendingUpload } : undefined;
+    const fingerprint = photo.fingerprint ?? known?.fingerprint;
+    const importedAt = photo.importedAt ?? known?.importedAt, importOrder = photo.importOrder ?? known?.importOrder;
+    if (driveOriginalId === photo.driveOriginalId && drivePreviewId === photo.drivePreviewId && driveThumbnailId === photo.driveThumbnailId &&
+      fingerprint === photo.fingerprint && importedAt === photo.importedAt && importOrder === photo.importOrder && JSON.stringify(pendingUpload) === JSON.stringify(photo.pendingUpload)) return photo;
     changed = true;
-    return { ...photo, driveOriginalId, drivePreviewId };
+    return { ...photo, driveOriginalId, drivePreviewId, driveThumbnailId, pendingUpload, fingerprint, importedAt, importOrder };
   };
   const photoLibrary = remotePhotos.map(retainUploads);
   const pages = remote.pages.map(page => ({ ...page,
@@ -561,7 +578,7 @@ export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProjec
 }
 
 export function projectHasUnbackedAssets(project: StoredProject): boolean {
-  return getProjectPhotos(project).some(photo => !photo.driveOriginalId || !photo.drivePreviewId);
+  return getProjectPhotos(project).some(photo => !photo.driveOriginalId || !photo.drivePreviewId || (photo.importedAt && !photo.driveThumbnailId));
 }
 
 export function isProjectDirty(project: StoredProject): boolean {
@@ -598,6 +615,7 @@ export interface MergedProjectLibrary {
   projects: StoredProject[];
   /** Local-only ids that were dropped because they were confirmed deleted on another device. */
   removedLocalIds: string[];
+  metadataRecoveredIds: string[];
 }
 
 /**
@@ -613,6 +631,7 @@ export function mergeCloudProjectLibrary(local: StoredProject[], remote: StoredP
   const remoteById = new Map(remote.map((project) => [project.id, project]));
   const merged = new Map<string, StoredProject>();
   const removedLocalIds: string[] = [];
+  const metadataRecoveredIds: string[] = [];
 
   for (const project of local) {
     const cloud = remoteById.get(project.id);
@@ -624,8 +643,9 @@ export function mergeCloudProjectLibrary(local: StoredProject[], remote: StoredP
       const combined = preserveProjectLibrary(chosen, project, cloud);
       // Old clients omit the new column; never let that hide unassigned photos.
       const missingLibrary = getProjectPhotos(project).some(photo => !getProjectPhotos(cloud).some(item => item.blobKey === photo.blobKey &&
-        (photo.duplicateOf === undefined || item.duplicateOf !== undefined)));
+        (["duplicateOf", "colourOverride", "fingerprint", "importOrder", "importedAt", "driveThumbnailId", "pendingUpload"] as const).every(key => photo[key] === undefined || item[key] !== undefined)));
       if (missingLibrary && !isProjectDirty(combined)) combined.updatedAt = new Date(Math.max(Date.now(), Date.parse(combined.cloudSyncedAt ?? combined.updatedAt) + 1)).toISOString();
+      if (missingLibrary && !isProjectDirty(project) && !olderCloud) metadataRecoveredIds.push(project.id);
       merged.set(project.id, combined);
       continue;
     }
@@ -647,5 +667,6 @@ export function mergeCloudProjectLibrary(local: StoredProject[], remote: StoredP
   return {
     projects: [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     removedLocalIds,
+    metadataRecoveredIds,
   };
 }

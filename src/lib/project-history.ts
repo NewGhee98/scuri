@@ -7,7 +7,7 @@ import { getProjectPhotos } from "./project-photo-library";
 export function projectContentKey(project: StoredProject): string {
   return JSON.stringify([project.name, project.formatId, project.pages.map(page => [page.id, page.templateId,
     page.templateSnapshot, page.background, page.gutter, Object.entries(page.photos).map(([id, photo]) => [id, photo.blobKey, photo.crop])]),
-    getProjectPhotos(project).filter(photo => photo.duplicateOf).map(photo => [photo.blobKey, photo.duplicateOf]).sort()]);
+    getProjectPhotos(project).filter(photo => photo.duplicateOf || photo.colourOverride).map(photo => [photo.blobKey, photo.duplicateOf ?? null, photo.colourOverride ?? null]).sort()]);
 }
 
 export function restoreProjectContent(latest: StoredProject, target: StoredProject, knownPhotos: Map<string, StoredPhotoAsset>, timestamp: string): StoredProject {
@@ -30,9 +30,13 @@ export function restoreProjectContent(latest: StoredProject, target: StoredProje
     if (removed.length || !restored) pending = recordPhotoDeletions(pending, page.id, removed, !restored);
   }
   const targetPhotos = new Map(getProjectPhotos(target).map(photo => [photo.blobKey, photo]));
-  const photoLibrary = getProjectPhotos(latest).map(photo => targetPhotos.has(photo.blobKey) &&
-    (photo.duplicateOf || targetPhotos.get(photo.blobKey)?.duplicateOf || photo.duplicateOf === null)
-    ? { ...photo, duplicateOf: targetPhotos.get(photo.blobKey)?.duplicateOf ?? null } : photo);
+  const photoLibrary = getProjectPhotos(latest).map(photo => {
+    const target = targetPhotos.get(photo.blobKey);
+    if (!target) return photo;
+    return { ...photo,
+      ...(photo.duplicateOf !== undefined || target.duplicateOf !== undefined ? { duplicateOf: target.duplicateOf ?? null } : {}),
+      ...(photo.colourOverride !== undefined || target.colourOverride !== undefined ? { colourOverride: target.colourOverride ?? null } : {}) };
+  });
   return { ...latest, name: target.name, formatId: target.formatId, activePageId: target.activePageId, photoLibrary,
     pages, updatedAt: timestamp, pendingDeletions: pending?.photos.length || pending?.pageIds.length ? pending : undefined };
 }
