@@ -13,12 +13,19 @@ interface CompositionThumbnailProps {
 }
 
 export function CompositionThumbnail({ format, page, template }: CompositionThumbnailProps) {
-  const photos = usePagePreviews(page);
+  const [visible, setVisible] = useState(false);
+  const photos = usePagePreviews(page, visible);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cacheRef = useRef(new Map<string, HTMLImageElement>());
   const [revision, setRevision] = useState(0);
   const width = 280;
   const height = (width * format.height) / format.width;
+  useEffect(() => {
+    const canvas = canvasRef.current; if (!canvas) return;
+    if (typeof IntersectionObserver === "undefined") { queueMicrotask(() => setVisible(true)); return; }
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "200px" });
+    observer.observe(canvas); return () => observer.disconnect();
+  }, []);
   const frames = useMemo(
     () => resolveFrames(template, page.gutter, width, height),
     [height, page.gutter, template],
@@ -27,7 +34,7 @@ export function CompositionThumbnail({ format, page, template }: CompositionThum
   useEffect(() => {
     const cache = cacheRef.current;
     const activeUrls = new Set(Object.values(photos).flatMap(photo => [photo.previewUrl, photo.fallbackPreviewUrl].filter((url): url is string => Boolean(url))));
-    for (const key of cache.keys()) if (!activeUrls.has(key)) cache.delete(key);
+    for (const [key, image] of cache) if (!activeUrls.has(key)) { image.onload = null; image.src = ""; cache.delete(key); }
     for (const url of activeUrls) {
       if (cache.has(url)) continue;
       const image = new Image();

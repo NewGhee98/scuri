@@ -15,17 +15,24 @@ import { createExportFilename, createExportZip, renderComposition } from "@/lib/
 import type { ExportSize } from "@/lib/export-settings";
 import { FORMATS, getFormat } from "@/lib/formats";
 import Script from "next/script";
-import { createPhotoPreview, disposePhotoAsset, preparePhotoAsset, validateImageFile } from "@/lib/image";
+import { createPhotoPreview, disposePhotoAsset, validateImageFile } from "@/lib/image";
 import {
   ensureProjectDriveFolders,
   isGoogleDriveConfigured,
   requestGoogleDriveAccessToken,
   revokeGoogleDriveAccess,
   uploadExportsToGoogleDrive,
-  uploadPhotoAssetToDrive,
   type DriveSyncProgress,
 } from "@/lib/google-drive";
-import { LOCAL_PHOTO_SOURCE } from "@/lib/photo-sources";
+import { PhotoImportQueue, type PhotoImportSource, type PhotoImportItem } from "@/lib/photo-import-queue";
+import { PhotoAnalysisClient } from "@/lib/photo-analysis-client";
+import { fingerprintOriginal } from "@/lib/photo-fingerprint";
+import { fingerprintCacheKey } from "@/lib/photo-duplicates";
+import { previewStorageKey } from "@/lib/photo-preview-cache";
+import { clearDerivedCache, listPhotoJobs, removePhotoJob, writePhotoJob, writeDerived } from "@/lib/photo-cache-storage";
+import { openPhotoPicker, placeLibraryPhoto, type PhotoPickerIntent } from "@/lib/photo-picker";
+import { clearLibraryViews } from "@/lib/photo-library-view";
+import { photosImportConfigured } from "@/lib/google-photo-import";
 import {
   cacheCustomTemplates,
   copyAsCustomTemplate,
@@ -49,15 +56,13 @@ import {
   getDefaultProjectName,
   getBackScreen,
   getMissingPhotoCount,
-  getPhotoFillTargets,
   isPageComplete,
-  moveLayoutPhoto,
+  isPageAssigned,
   moveProjectPage,
   moveProjectPageByOffset,
   sortProjectsByLastEdited,
 } from "@/lib/project";
 import {
-  deletePhotoBlob,
   loadPhotoBlob,
   loadProjects,
   savePhotoBlob,
@@ -78,16 +83,18 @@ import {
   reconcileProtectedProject,
   softDeleteCloudProject,
 } from "@/lib/project-sync";
-import { applyHydratedPhotos, hydrateProjectPhotos, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "@/lib/project-photos";
+import { applyHydratedPhotos, hydrateProjectPhotos, movePagePhoto, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "@/lib/project-photos";
 import { ProjectSyncQueue } from "@/lib/sync-queue";
 import { applyPhotoBackupCheckpoint } from "@/lib/photo-backup";
+import { backUpProjectPhotos, type PhotoBackupStatus } from "@/lib/project-photo-backup";
 import { WorkspaceSession, workspaceKey } from "@/lib/workspace";
 import { ProjectHistory, projectContentKey } from "@/lib/project-history";
 import { nextProjectEditTime } from "@/lib/project-time";
 import { createProjectBackup, inspectProjectBackup, materializeProjectBackup, type ProjectBackupPreview } from "@/lib/project-backup";
 import { BackupReview } from "./backup-review";
 import { ProjectPhotoPanel } from "./project-photo-panel";
-import { getProjectPhotos, getVisibleProjectPhotos, libraryPhoto, MAX_PROJECT_PHOTOS, mergePhotoLibraries } from "@/lib/project-photo-library";
+import { ActionDialog } from "./action-dialog";
+import { getProjectPhotos, mergePhotoLibraries, projectPhotoGroups } from "@/lib/project-photo-library";
 import { applyArrangementAsCopy, type ArrangementProposal } from "@/lib/arrangements";
 import { filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
 import type {
@@ -188,9 +195,18 @@ export function LayoutsApp() {
     templatePickerRef.current = intent;
     setTemplatePickerIntent(intent);
   }, []);
+  const [photoPickerIntent, setPhotoPickerIntent] = useState<PhotoPickerIntent | null>(null);
+  const photoPickerRef = useRef<PhotoPickerIntent | null>(null);
+  const photoPickerWorkspaceRef = useRef<(() => boolean) | null>(null);
+  const [showPhotoLibrary, setShowPhotoLibrary] = useState(false);
+  const [choosePhotoSource, setChoosePhotoSource] = useState(false);
+  const [initiallyImport, setInitiallyImport] = useState(false);
+  const [selectExportPages, setSelectExportPages] = useState(false);
+  const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
   const setScreen = useCallback((next: AppScreen) => {
     // Invalidate immediately, including a second click before React rerenders.
     if (next !== "template") setTemplatePicker(null);
+    photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(false); setChoosePhotoSource(false); setSelectExportPages(false);
     setScreenState(next);
   }, [setTemplatePicker]);
   const [projects, setProjects] = useState<StoredProject[]>([]);
@@ -242,8 +258,8 @@ export function LayoutsApp() {
   const [signInPassword, setSignInPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const fileTargetRef = useRef<{ pageId: string; frameId: string } | null>(null);
+  const importQueueRef = useRef<PhotoImportQueue | null>(null);
+  const [importItems, setImportItems] = useState<readonly PhotoImportItem[]>([]);
   const exportHeadingRef = useRef<HTMLHeadingElement>(null);
   const pagesRef = useRef(pages);
   const exportItemsRef = useRef(exportItems);
@@ -264,6 +280,8 @@ export function LayoutsApp() {
   const activeProjectRef = useRef<StoredProject | null>(null);
   const projectPushInFlightRef = useRef(new Set<string>());
   const syncQueueRef = useRef<ProjectSyncQueue | null>(null);
+  const backupQueueRef = useRef<ProjectSyncQueue | null>(null);
+  const [photoBackupStatus, setPhotoBackupStatus] = useState<Record<string, PhotoBackupStatus>>({});
   const pendingPullRef = useRef(false);
   const workspaceRef = useRef(new WorkspaceSession());
   const initializedWorkspaceRef = useRef(false);
@@ -294,8 +312,8 @@ export function LayoutsApp() {
     page.templateSnapshot ?? getTemplate(page.templateId, customTemplates)
   ), [customTemplates]);
   const template = activePage ? resolvePageTemplate(activePage) : null;
+  const libraryPhotos = getProjectPhotos({ photoLibrary: projectPhotoLibrary, pages: pages.map(serializePage) });
   const assignedPhotos = pages.flatMap(page => Object.values(serializePage(page).photos));
-  const libraryPhotos = mergePhotoLibraries(projectPhotoLibrary, assignedPhotos);
   const backedUpOriginalCount = libraryPhotos.filter(photo => photo.driveOriginalId).length;
   const backedUpPreviewCount = libraryPhotos.filter(photo => photo.drivePreviewId).length;
   const displayedPhotos = displayPagePhotos(activePage, previewSnapshot);
@@ -308,10 +326,11 @@ export function LayoutsApp() {
     setPreviousEditorContext(editorContext); setAlignmentGuides([]); setMoveFrameMode(false); setShowPagePreview(false);
   }
   const unavailablePhotoCount = pages.reduce((count, page) => count + Object.keys(page.unavailablePhotos ?? {}).length, 0);
-  const missingPhotoCount = activePage && template ? getMissingPhotoCount(activePage, template) : 0;
-  const completePageCount = pages.reduce((count, page) => count + (isPageComplete(page, resolvePageTemplate(page)) ? 1 : 0), 0);
+  const missingPhotoCount = activePage && template ? getMissingPhotoCount(serializePage(activePage), template) : 0;
+  const missingEditorPreviews = activePage ? Object.values(activePage.unavailablePhotos ?? {}).filter(photo => !previewSnapshot.has(photo.blobKey)).length : 0;
+  const completePageCount = pages.reduce((count, page) => count + (isPageAssigned(page, resolvePageTemplate(page)) ? 1 : 0), 0);
   const incompletePageCount = pages.length - completePageCount;
-  const hasAnyPhotos = pages.some((page) => Object.keys(page.photos).length > 0);
+  const hasAnyPhotos = libraryPhotos.length > 0;
   const templateCloudConfigured = isTemplateCloudConfigured();
   const templateLibrarySynced = Boolean(templateUser) && customTemplates.every((item) => item.syncState === "synced");
   // Projects and templates deliberately share one sign-in (see src/lib/supabase-client.ts).
@@ -431,7 +450,7 @@ export function LayoutsApp() {
       window.localStorage.setItem(driveRestorePreferenceKey, "true");
       setNotice({ kind: "success", text: templateUserRef.current ? "Google Drive connected. Original photos will back up automatically." : "Google Drive connected for loading local photos. Sign in to back up account projects automatically." });
       const current = persistActiveProject().find((item) => item.id === projectId);
-      if (current) syncQueueRef.current?.enqueue(current.id, current.updatedAt, true);
+      if (current) { syncQueueRef.current?.enqueue(current.id, current.updatedAt, true); backupQueueRef.current?.enqueue(current.id, current.updatedAt, true); }
     } catch (error) {
       if (!isCurrent()) return;
       setNotice({ kind: "error", text: error instanceof Error ? error.message : "Google Drive could not be connected." });
@@ -459,6 +478,7 @@ export function LayoutsApp() {
       return;
     }
     syncQueueRef.current?.enqueue(current.id, current.updatedAt, true);
+    backupQueueRef.current?.enqueue(current.id, current.updatedAt, true);
   };
 
   const saveTemplateDraftLocally = useCallback((draft: CustomTemplate) => {
@@ -545,6 +565,7 @@ export function LayoutsApp() {
     const previous = activeProjectRef.current;
     const sameProject = project?.id === previous?.id;
     if (!sameProject) {
+      photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(false); setSelectedExportIds([]);
       setExportWidth(project ? getFormat(project.formatId).width : 1080);
       setExportReviewIds(null);
       if (templatePickerRef.current) setScreen(project ? "project" : "projects");
@@ -590,7 +611,8 @@ export function LayoutsApp() {
       if (projectPushInFlightRef.current.size) { pendingPullRef.current = true; return; }
       const active = activeProjectRef.current;
       const localSnapshot = active ? [...projectsRef.current.filter((item) => item.id !== active.id), active] : projectsRef.current;
-      const { projects: merged } = mergeCloudProjectLibrary(localSnapshot, remote, () => crypto.randomUUID());
+      const { projects: merged, metadataRecoveredIds } = mergeCloudProjectLibrary(localSnapshot, remote, () => crypto.randomUUID());
+      if (metadataRecoveredIds.length) setNotice({ kind: "info", text: "Library details restored from this device. Reload Scuri on other devices before editing; older versions can omit newer library settings." });
       const sorted = sortProjectsByLastEdited(merged);
       projectsRef.current = sorted;
       setProjects(sorted);
@@ -614,52 +636,12 @@ export function LayoutsApp() {
     if (!isCurrent()) return true;
     projectPushInFlightRef.current.add(project.id);
     setSyncingProjectIds(current => ({ ...current, [project.id]: true }));
-    let working = project;
-    let backupFailed = false;
+    const working = project;
     try {
-      const driveToken = getValidDriveToken();
-      if (driveToken && isGoogleDriveConfigured() && projectHasUnbackedAssets(working)) {
-        setDriveProgress({ completed: 0, total: 1, label: "Backing up original photos…" });
-        const folders = await ensureProjectDriveFolders(driveToken, working.id, working.name, working.driveFolderId);
-        if (!isCurrent()) return true;
-        for (const original of getProjectPhotos(project)) {
-            if (!isCurrent()) return true;
-            const photo = getProjectPhotos(working).find(item => item.blobKey === original.blobKey);
-            const placedPage = working.pages.find(item => Object.values(item.photos).some(placed => placed.blobKey === original.blobKey));
-            const placement = placedPage && Object.values(placedPage.photos).find(item => item.blobKey === original.blobKey);
-            if (!photo || (photo.driveOriginalId && photo.drivePreviewId)) continue;
-            const source = await loadPhotoBlob(photo.blobKey).catch(() => null) ?? getVolatileBlob(photo.blobKey);
-            if (!isCurrent()) return true;
-            if (!source) continue; // unavailable bytes are neither a deletion nor a successful backup
-            try {
-              const preview = await createPhotoPreview(source);
-              URL.revokeObjectURL(preview.previewUrl);
-              if (!isCurrent()) return true;
-              await uploadPhotoAssetToDrive(driveToken, folders, working.id, placedPage?.id ?? null, { ...photo, frameId: placement?.frameId }, source, preview.blob, async ids => {
-                if (!isCurrent()) throw new Error("The workspace changed; upload stopped.");
-                const checkpoint = { ...ids, blobKey: photo.blobKey, driveFolderId: folders.projectFolderId };
-                const timestamp = now();
-                working = applyPhotoBackupCheckpoint(working, checkpoint, timestamp);
-                const latest = activeProjectRef.current?.id === working.id ? activeProjectRef.current : projectsRef.current.find(item => item.id === working.id);
-                if (!latest) throw new Error("The project was removed; upload stopped.");
-                const saved = applyPhotoBackupCheckpoint(latest, checkpoint, timestamp);
-                const next = projectsRef.current.map(item => item.id === saved.id ? saved : item);
-                projectsRef.current = next;
-                if (activeProjectRef.current?.id === saved.id) adoptActiveProject(saved, true);
-                setProjects(next);
-                saveWorkspaceProjects(next, ownerId);
-              });
-            } catch {
-              if (!isCurrent()) return true;
-              backupFailed = true;
-            }
-        }
-      }
-      if (!isCurrent()) return true;
       // No need to bump a cloud revision solely because bytes remain unavailable.
       if (!isProjectDirty(working)) {
-        setProjectSyncErrors(current => ({ ...current, [project.id]: backupFailed }));
-        return !backupFailed;
+        setProjectSyncErrors(current => ({ ...current, [project.id]: false }));
+        return true;
       }
       const result = await pushProjectToCloud(working, { ownerId, isCurrent });
       if (!isCurrent()) return true;
@@ -676,8 +658,8 @@ export function LayoutsApp() {
         setProjects(next);
         if (activeProjectRef.current?.id === working.id) adoptActiveProject(copy ?? canonical);
         setNotice({ kind: "info", text: copy ? "Cloud photos were protected. Your local edits were kept in a separate recovered project." : "Cloud photo assignments restored. Unavailable photos will load when Drive is connected." });
-        setProjectSyncErrors(current => ({ ...current, [working.id]: backupFailed }));
-        return !backupFailed;
+        setProjectSyncErrors(current => ({ ...current, [working.id]: false }));
+        return true;
       }
       if (result.conflict) {
         const duplicate = resolveProjectConflict(latest, result.remote, crypto.randomUUID()).duplicate;
@@ -696,8 +678,8 @@ export function LayoutsApp() {
       setProjects(next);
       if (activeProjectRef.current?.id === acknowledged.id) adoptActiveProject(acknowledged, true);
       saveWorkspaceProjects(next, ownerId);
-      setProjectSyncErrors(current => ({ ...current, [working.id]: result.partial || backupFailed }));
-      return !result.partial && !backupFailed;
+      setProjectSyncErrors(current => ({ ...current, [working.id]: result.partial }));
+      return !result.partial;
     } catch (error) {
       if (isCurrent()) {
         setProjectSyncErrors(current => ({ ...current, [project.id]: true }));
@@ -708,14 +690,13 @@ export function LayoutsApp() {
       if (sameWorkspace()) {
         projectPushInFlightRef.current.delete(project.id);
         setSyncingProjectIds(current => { const next = { ...current }; delete next[project.id]; return next; });
-        setDriveProgress(null);
         if (pendingPullRef.current && !projectPushInFlightRef.current.size) {
           pendingPullRef.current = false;
           void syncProjectsFromCloud();
         }
       }
     }
-  }, [getValidDriveToken, getVolatileBlob, adoptActiveProject, saveWorkspaceProjects, syncProjectsFromCloud, retainVolatileForOwner]);
+  }, [adoptActiveProject, saveWorkspaceProjects, syncProjectsFromCloud, retainVolatileForOwner]);
 
   const changeWorkspace = useCallback((user: User | null) => {
     const ownerId = user?.id ?? null;
@@ -727,8 +708,10 @@ export function LayoutsApp() {
       try { saveWorkspaceProjects([...projectsRef.current.filter(item => item.id !== active.id), active]); } catch { /* error remains visible */ }
     }
     workspaceRef.current.switchTo(ownerId);
-    photoPreviews.clear();
+    photoPreviews.setWorkspace(ownerId);
     initializedWorkspaceRef.current = true;
+    backupQueueRef.current?.stop();
+    setPhotoBackupStatus({});
     syncQueueRef.current?.stop();
     syncQueueRef.current = null;
     projectPushInFlightRef.current.clear();
@@ -829,7 +812,7 @@ export function LayoutsApp() {
       formatId,
       activePageId,
       pages: pages.map(serializePage),
-      photoLibrary: mergePhotoLibraries(existing?.photoLibrary, projectPhotoLibrary, pages.flatMap(page => Object.values(serializePage(page).photos))),
+      photoLibrary: getProjectPhotos({ photoLibrary: mergePhotoLibraries(existing?.photoLibrary, projectPhotoLibrary), pages: pages.map(serializePage) }),
       revision: existing?.revision,
       cloudSyncedAt: existing?.cloudSyncedAt,
       driveFolderId: existing?.driveFolderId,
@@ -853,33 +836,16 @@ export function LayoutsApp() {
     }
   }, [buildStoredProject]);
 
+  // Browsing and the editor request small previews. Originals are hydrated only
+  // for an explicit original inspection, page preview or export.
   useEffect(() => {
-    if (!pages.some((page) => Object.keys(page.unavailablePhotos ?? {}).length)) return;
-    let cancelled = false;
-    const isCurrent = workspaceRef.current.capture();
-    void hydrateProjectPhotos(pages, () => isCurrent() ? getValidDriveToken() : null, key => isCurrent() ? getVolatileBlob(key) : undefined).then((hydrated) => {
-      if (cancelled || !isCurrent()) {
-        hydrated.forEach(({ photo }) => disposePhotoAsset(photo));
-        return;
-      }
-      const next = applyHydratedPhotos(pagesRef.current, hydrated);
-      const retained = new Set(next.flatMap((page) => Object.values(page.photos).map((photo) => photo.previewUrl)));
-      hydrated.forEach(({ photo }) => { if (!retained.has(photo.previewUrl)) disposePhotoAsset(photo); });
-      if (next === pagesRef.current) return;
-      pagesRef.current = next;
-      setPages(next);
-      const active = activeProjectRef.current;
-      if (active && hydrated.length && projectHasUnbackedAssets(active)) syncQueueRef.current?.enqueue(active.id, active.updatedAt, true);
-    });
-    return () => { cancelled = true; };
-  }, [pages, projectId, driveAccessToken, driveExpiry, getValidDriveToken, getVolatileBlob]);
-
-  useEffect(() => {
-    for (const page of pages) for (const photo of [...Object.values(page.photos), ...Object.values(page.unavailablePhotos ?? {})]) {
-      void photoPreviews.request(photo, getValidDriveToken, key => page.photos[photo.frameId]?.blobKey === key
-        ? page.photos[photo.frameId].sourceBlob : getVolatileBlob(key));
-    }
-  }, [pages, photoPreviews, driveExpiry, getValidDriveToken, getVolatileBlob]);
+    photoPreviews.setWorkspace(templateUser?.id ?? null);
+    if (!activePage || screen !== "editor") return;
+    const photos = [...Object.values(activePage.photos), ...Object.values(activePage.unavailablePhotos ?? {})];
+    const release = photos.map(photo => photoPreviews.pin(photo.blobKey));
+    for (const photo of photos) void photoPreviews.request(photo, getValidDriveToken, getVolatileBlob, -2);
+    return () => release.forEach(fn => fn());
+  }, [activePage, screen, photoPreviews, driveExpiry, getValidDriveToken, getVolatileBlob, templateUser?.id]);
 
   useEffect(() => {
     if (!ready || !projectId || !formatId) return;
@@ -902,7 +868,7 @@ export function LayoutsApp() {
 
   useEffect(() => {
     if (!ready) return;
-    const queue = new ProjectSyncQueue(async id => {
+    const queue: ProjectSyncQueue = new ProjectSyncQueue(async id => {
       const latest = activeProjectRef.current?.id === id ? activeProjectRef.current : projectsRef.current.find(item => item.id === id);
       return latest ? pushProjectNow(latest) : true;
     });
@@ -911,16 +877,45 @@ export function LayoutsApp() {
   }, [pushProjectNow, ready, templateUser?.id]);
 
   useEffect(() => {
+    if (!ready || !templateUser?.id) return;
+    const ownerId = templateUser.id, sameWorkspace = workspaceRef.current.capture(), abort = new AbortController();
+    const queue: ProjectSyncQueue = new ProjectSyncQueue(async id => {
+      const project = () => activeProjectRef.current?.id === id ? activeProjectRef.current : projectsRef.current.find(item => item.id === id);
+      const current = () => sameWorkspace() && !abort.signal.aborted && !queue.isBlocked(id) && Boolean(project());
+      if (!current() || !getValidDriveToken()) return true;
+      return backUpProjectPhotos({ ownerId, project, current, token: getValidDriveToken, signal: abort.signal,
+        source: async key => await loadPhotoBlob(key).catch(() => null) ?? getVolatileBlob(key) ?? null,
+        progress: status => { if (current()) setPhotoBackupStatus(previous => ({ ...previous, [id + ":" + status.blobKey]: status })); },
+        checkpoint: async checkpoint => {
+          if (!current()) throw new Error("The workspace or project changed.");
+          const latest = project()!;
+          const saved = applyPhotoBackupCheckpoint(latest, checkpoint, now());
+          const next = projectsRef.current.map(item => item.id === id ? saved : item);
+          saveWorkspaceProjects(next, ownerId);
+          projectsRef.current = next; setProjects(next);
+          if (activeProjectRef.current?.id === id) adoptActiveProject(saved, true);
+          const accepted = await syncQueueRef.current?.flush(id, saved.updatedAt);
+          if (!accepted || !current()) throw new Error("Backup checkpoint awaits cloud metadata. Reconnect or retry; completed files are preserved.");
+          const photo = getProjectPhotos(project()!).find(photo => photo.blobKey === checkpoint.blobKey);
+          if (!photo) throw new Error("This photo is no longer in the destination project.");
+          return photo;
+        },
+      });
+    }, 2500);
+    backupQueueRef.current = queue;
+    return () => { abort.abort(); queue.stop(); if (backupQueueRef.current === queue) backupQueueRef.current = null; };
+  }, [ready, templateUser?.id, getValidDriveToken, getVolatileBlob, adoptActiveProject, saveWorkspaceProjects]);
+
+  useEffect(() => {
     const queue = syncQueueRef.current;
     if (!queue) return;
     queue.setEnabled(Boolean(isOnline && templateUser && isProjectCloudConfigured()));
+    backupQueueRef.current?.setEnabled(Boolean(isOnline && templateUser && driveConnected && isProjectCloudConfigured()));
     const active = buildStoredProject();
     const library = active ? [...projects.filter(item => item.id !== active.id), active] : projects;
     for (const project of library) {
-      if (isProjectDirty(project) || (driveConnected && projectHasUnbackedAssets(project))) {
-        const counts = getProjectBackupCounts(project);
-        queue.enqueue(project.id, JSON.stringify([project.updatedAt, counts, driveExpiry]));
-      }
+      if (isProjectDirty(project)) queue.enqueue(project.id, project.updatedAt);
+      if (driveConnected && projectHasUnbackedAssets(project)) backupQueueRef.current?.enqueue(project.id, JSON.stringify([getProjectPhotos(project), driveExpiry]));
     }
   }, [buildStoredProject, projects, isOnline, templateUser, driveExpiry, driveConnected, ready]);
 
@@ -985,50 +980,93 @@ export function LayoutsApp() {
     try { saveWorkspaceProjects(next); } catch { /* Keep the restored in-memory work and storage warning. */ }
   };
 
-  const importLibraryPhotos = async (files: File[]) => {
-    const initial = buildStoredProject();
-    if (!initial || !files.length) return;
-    const sameWorkspace = workspaceRef.current.capture();
-    const ownerId = workspaceRef.current.ownerId;
-    const available = Math.max(0, MAX_PROJECT_PHOTOS - getVisibleProjectPhotos(initial).length);
-    if (files.length > available) { setNotice({ kind: "info", text: `This project has room for ${available} more photos. Select a smaller batch; nothing was imported.` }); return; }
-    setBusy("image");
-    let added = 0;
-    const failures: string[] = [];
-    for (const file of files) {
-      if (!sameWorkspace()) break;
-      let asset: PhotoAsset | undefined;
-      try {
-        validateImageFile(file);
-        asset = await preparePhotoAsset(file, "library");
-        if (!sameWorkspace()) break;
-        try { await savePhotoBlob(asset.blobKey, file); }
-        catch { retainVolatileForOwner(ownerId, asset.blobKey, file); setStorageError("Some library photos are only in memory. Keep this app open for backup, or download a project backup."); }
-        if (!sameWorkspace()) break;
-        const latest = activeProjectRef.current?.id === initial.id ? activeProjectRef.current : projectsRef.current.find(item => item.id === initial.id);
-        if (!latest) break;
-        const updated = { ...latest, photoLibrary: mergePhotoLibraries(getProjectPhotos(latest), [libraryPhoto(asset)]), updatedAt: nextProjectEditTime(latest) };
-        const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== updated.id), updated]);
-        projectsRef.current = next; setProjects(next);
-        if (activeProjectRef.current?.id === initial.id) adoptActiveProject(updated, true);
-        try { saveWorkspaceProjects(next, ownerId); } catch { /* Metadata remains in memory and the persistent warning is visible. */ }
-        added++;
-      } catch (error) { failures.push(`${file.name}: ${error instanceof Error ? error.message : "could not be opened"}`); }
-      finally { if (asset) disposePhotoAsset(asset); }
-    }
-    if (sameWorkspace()) { setBusy(null); setNotice({ kind: failures.length ? "info" : "success", text: `${added} photos added to the project library.${failures.length ? ` ${failures.join("; ")}` : " Choose Suggest arrangements, or use them in a selected frame."}` }); }
-  };
-
-  const chooseLibraryPhoto = (photo: ProjectPhoto) => {
-    if (!activePage?.selectedFrameId) { setNotice({ kind: "info", text: "Select a frame first." }); return; }
-    const frameId = activePage.selectedFrameId;
-    const previous = serializePage(activePage).photos[frameId];
-    if (previous?.blobKey === photo.blobKey) return;
-    if (previous) setPendingDeletions(current => recordPhotoDeletions(current, activePage.id, [previous]));
-    updatePage(activePage.id, page => {
-      const cleared = removePagePhoto(page, frameId);
-      return { ...cleared, unavailablePhotos: { ...cleared.unavailablePhotos, [frameId]: { ...photo, frameId, crop: { ...DEFAULT_CROP } } } };
+  useEffect(() => {
+    if (!ready) return;
+    const current = workspaceRef.current.capture(), ownerId = workspaceRef.current.ownerId;
+    const journalPrefix = workspaceKey("scuri.import", ownerId) + "/";
+    const project = (id: string) => activeProjectRef.current?.id === id ? activeProjectRef.current : projectsRef.current.find(item => item.id === id);
+    const commit = (updated: StoredProject) => {
+      if (!current() || !project(updated.id)) throw new Error("The destination project changed.");
+      const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== updated.id), updated]);
+      saveWorkspaceProjects(next, ownerId);
+      projectsRef.current = next; setProjects(next);
+      if (activeProjectRef.current?.id === updated.id) adoptActiveProject(updated, true);
+      syncQueueRef.current?.enqueue(updated.id, updated.updatedAt, true);
+      backupQueueRef.current?.enqueue(updated.id, updated.updatedAt, true);
+    };
+    let worker: PhotoAnalysisClient | undefined;
+    try { worker = new PhotoAnalysisClient(); } catch { /* SubtleCrypto fallback remains asynchronous. */ }
+    const queue = new PhotoImportQueue({
+      current, project, validate: validateImageFile,
+      fingerprint: file => worker ? worker.fingerprint(file) : fingerprintOriginal(file),
+      knownFingerprint: photo => { try { return localStorage.getItem(fingerprintCacheKey(photo, ownerId)) ?? undefined; } catch { return undefined; } },
+      prepare: async (file, blobKey) => {
+        const preview = await createPhotoPreview(file);
+        const photo: ProjectPhoto = { blobKey, sourceWidth: preview.width, sourceHeight: preview.height, sourceName: file.name, fileSize: file.size, mimeType: file.type };
+        try {
+          await writeDerived(previewStorageKey(photo, ownerId, 2200), { blob: preview.blob });
+          const small = await createPhotoPreview(preview.blob, { longEdge: 640, quality: 0.72 });
+          try { await writeDerived(previewStorageKey(photo, ownerId), { blob: small.blob }); if (current()) photoPreviews.rememberThumbnail(photo, small.blob, 640); }
+          finally { URL.revokeObjectURL(small.previewUrl); }
+          return photo;
+        } finally { URL.revokeObjectURL(preview.previewUrl); }
+      },
+      saveOriginal: async (key, file) => {
+        try { await savePhotoBlob(key, file); }
+        catch { await clearDerivedCache(); await savePhotoBlob(key, file); }
+      }, commit,
+      checkpoint: (projectId, photo) => writePhotoJob(journalPrefix + photo.blobKey, { projectId, photo }),
+      complete: photo => removePhotoJob(journalPrefix + photo.blobKey),
     });
+    importQueueRef.current = queue;
+    const unsubscribe = queue.subscribe(() => setImportItems(queue.getSnapshot()));
+    // Recover an original committed just before an interrupted metadata save.
+    void listPhotoJobs<{ projectId: string; photo: ProjectPhoto }>(journalPrefix).then(async jobs => {
+      for (const job of jobs) {
+        if (!current()) return;
+        const latest = project(job.value.projectId);
+        if (!latest || !await loadPhotoBlob(job.value.photo.blobKey).catch(() => null) || !current()) continue;
+        if (!getProjectPhotos(latest).some(photo => photo.blobKey === job.value.photo.blobKey)) {
+          const fresh = project(job.value.projectId); if (!fresh) continue;
+          commit({ ...fresh, photoLibrary: mergePhotoLibraries(getProjectPhotos(fresh), [job.value.photo]), updatedAt: nextProjectEditTime(fresh) });
+        }
+        await removePhotoJob(job.key).catch(() => {});
+      }
+    }).catch(() => {});
+    return () => { unsubscribe(); queue.stop(); worker?.dispose(); if (importQueueRef.current === queue) importQueueRef.current = null; clearLibraryViews(); };
+  }, [ready, templateUser?.id, adoptActiveProject, saveWorkspaceProjects, photoPreviews]);
+
+  const importLibraryPhotos = (sources: PhotoImportSource[], destinationId: string, ownerId: string | null) => {
+    const initial = activeProjectRef.current?.id === destinationId ? activeProjectRef.current : projectsRef.current.find(project => project.id === destinationId);
+    if (!initial || workspaceRef.current.ownerId !== ownerId || !sources.length) { sources.forEach(source => source.release?.()); return; }
+    void navigator.storage?.persist?.().catch(() => false);
+    importQueueRef.current?.add(destinationId, sources);
+  };
+  const closePhotoLibrary = () => {
+    photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(false); setChoosePhotoSource(false);
+  };
+  const chooseLibraryPhoto = (photo: ProjectPhoto) => {
+    const intent = photoPickerRef.current, current = buildStoredProject();
+    if (!intent || !current || !photoPickerWorkspaceRef.current?.()) return;
+    const page = current.pages.find(page => page.id === intent.pageId);
+    try {
+      const updated = placeLibraryPhoto(current, intent, photo, page ? resolvePageTemplate(page).frames.map(frame => frame.id) : []);
+      photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(false);
+      if (updated === current) return;
+      historyRef.current.observe(current);
+      const next = projectsRef.current.map(item => item.id === updated.id ? updated : item);
+      saveWorkspaceProjects(next); projectsRef.current = next; setProjects(next); adoptActiveProject(updated, true);
+    } catch (error) { closePhotoLibrary(); setNotice({ kind: "error", text: error instanceof Error ? error.message : "The photo could not be placed." }); }
+  };
+  const setPhotoColour = (key: string, colourOverride: ProjectPhoto["colourOverride"]) => {
+    const current = buildStoredProject(); if (!current) return;
+    const group = projectPhotoGroups(current).find(group => group.photo.blobKey === key); if (!group) return;
+    const keys = new Set(group.members.map(photo => photo.blobKey));
+    const updated = { ...current, photoLibrary: getProjectPhotos(current).map(photo => keys.has(photo.blobKey) ? { ...photo, colourOverride } : photo),
+      updatedAt: nextProjectEditTime(current) };
+    historyRef.current.observe(current);
+    const next = projectsRef.current.map(item => item.id === updated.id ? updated : item);
+    saveWorkspaceProjects(next); projectsRef.current = next; setProjects(next); adoptActiveProject(updated, true);
   };
 
   const combineLibraryDuplicates = (scan: DuplicateScan, groups: DuplicateGroup[]) => {
@@ -1152,6 +1190,7 @@ export function LayoutsApp() {
     adoptActiveProject(project);
     setRearrangeMode(false);
     setScreen("project");
+    setShowPhotoLibrary(true);
   };
 
   const selectTemplate = async (nextTemplate: TemplateDefinition) => {
@@ -1215,85 +1254,10 @@ export function LayoutsApp() {
   };
 
   const requestPhoto = (frameId: string) => {
-    if (!activePage) return;
-    fileTargetRef.current = { pageId: activePage.id, frameId };
-    inputRef.current?.click();
-  };
-
-  const receivePhotos = async (files: File[]) => {
-    const isCurrent = workspaceRef.current.capture();
-    const ownerId = workspaceRef.current.ownerId;
-    const target = fileTargetRef.current;
-    if (!files.length || !target) return;
-    const currentPage = pagesRef.current.find((page) => page.id === target.pageId);
-    if (!currentPage) return;
-    const currentTemplate = resolvePageTemplate(currentPage);
-    const storedPhotos = serializePage(currentPage).photos;
-    const targetFrameIds = getPhotoFillTargets(currentTemplate, storedPhotos, target.frameId, files.length);
-    const selectedFiles = files.slice(0, targetFrameIds.length);
-    if (!selectedFiles.length) return;
-    const replacedCount = targetFrameIds.filter(id => storedPhotos[id]).length;
-    if (replacedCount && !window.confirm(`Replace ${replacedCount} existing photo assignments with the selected images? You can undo this during this editing session.`)) return;
-    setBusy("image");
-    setNotice({ kind: "info", text: selectedFiles.length === 1 ? "Preparing photo…" : `Preparing ${selectedFiles.length} photos…` });
-    const preparedAssets: PhotoAsset[] = [];
-    let refreshRecoveryAvailable = true;
-    try {
-      selectedFiles.forEach(validateImageFile);
-      for (let index = 0; index < selectedFiles.length; index += 1) {
-        const file = selectedFiles[index];
-        const frameId = targetFrameIds[index];
-        const asset = await preparePhotoAsset(file, frameId);
-        preparedAssets.push(asset);
-        if (!isCurrent()) throw new Error("Workspace changed.");
-        try {
-          await savePhotoBlob(asset.blobKey, file);
-        } catch {
-          refreshRecoveryAvailable = false;
-          retainVolatileForOwner(ownerId, asset.blobKey, file);
-        }
-      }
-
-      if (!isCurrent() || !pagesRef.current.some(page => page.id === target.pageId)) throw new Error("The destination project changed.");
-
-      const replacedPhotos = targetFrameIds
-        .map((frameId) => currentPage.photos[frameId])
-        .filter((photo): photo is PhotoAsset => Boolean(photo));
-      const additions = Object.fromEntries(preparedAssets.map((asset) => [asset.frameId, asset]));
-      setPendingDeletions((current) => recordPhotoDeletions(current, target.pageId, targetFrameIds.flatMap((frameId) => storedPhotos[frameId] ? [storedPhotos[frameId]] : [])));
-      updatePage(target.pageId, (page) => ({
-        ...page,
-        selectedFrameId: targetFrameIds[0],
-        photos: { ...page.photos, ...additions },
-        unavailablePhotos: Object.fromEntries(Object.entries(page.unavailablePhotos ?? {}).filter(([frameId]) => !additions[frameId])),
-      }));
-      for (const previous of replacedPhotos) {
-        retainedPhotosRef.current.set(previous.blobKey, previous);
-      }
-      preparedAssets.forEach(photo => retainedPhotosRef.current.set(photo.blobKey, photo));
-      setProjectPhotoLibrary(current => mergePhotoLibraries(current, preparedAssets));
-      if (!refreshRecoveryAvailable) setStorageError("Some new photos are only in memory. Keep this app open while they back up, or download a project backup.");
-      if (preparedAssets.length > 1) setRearrangeMode(true);
-
-      const ignoredCount = files.length - preparedAssets.length;
-      const recoveryText = refreshRecoveryAvailable ? "" : " Refresh recovery is unavailable for the new photos in this browser.";
-      const ignoredText = ignoredCount ? ` ${ignoredCount} extra ${ignoredCount === 1 ? "photo was" : "photos were"} not added because the template is full.` : "";
-      setNotice({
-        kind: refreshRecoveryAvailable ? "success" : "info",
-        text: preparedAssets.length === 1
-          ? `Photo added. Drag to reposition or pinch to zoom.${ignoredText}${recoveryText}`
-          : `${preparedAssets.length} photos added. Drag tiles to rearrange them.${ignoredText}${recoveryText}`,
-      });
-    } catch (error) {
-      for (const asset of preparedAssets) {
-        disposePhotoAsset(asset);
-        void deletePhotoBlob(asset.blobKey).catch(() => undefined);
-      }
-      if (isCurrent()) setNotice({ kind: "error", text: error instanceof Error ? error.message : "Those photos could not be added." });
-    } finally {
-      if (isCurrent()) setBusy(null);
-      if (inputRef.current) inputRef.current.value = "";
-    }
+    const project = buildStoredProject(); if (!project || !activePage) return;
+    const intent = openPhotoPicker(project, activePage.id, frameId);
+    photoPickerRef.current = intent; photoPickerWorkspaceRef.current = workspaceRef.current.capture();
+    setPhotoPickerIntent(intent); setChoosePhotoSource(true);
   };
 
   const updateCrop = (frameId: string, crop: CropState) => {
@@ -1330,18 +1294,11 @@ export function LayoutsApp() {
 
   const movePhoto = (sourceFrameId: string, targetFrameId: string) => {
     if (!activePage || sourceFrameId === targetFrameId) return;
-    if (Object.keys(activePage.unavailablePhotos ?? {}).length) {
-      setNotice({ kind: "info", text: "Load this page's unavailable photos before rearranging them." });
-      return;
-    }
-    if (!activePage.photos[sourceFrameId]) return;
+    const stored = serializePage(activePage).photos;
+    if (!stored[sourceFrameId]) return;
     setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id,
-      [activePage.photos[sourceFrameId], activePage.photos[targetFrameId]].filter(Boolean)));
-    updatePage(activePage.id, (page) => ({
-      ...page,
-      selectedFrameId: targetFrameId,
-      photos: moveLayoutPhoto(page.photos, sourceFrameId, targetFrameId),
-    }));
+      [stored[sourceFrameId], stored[targetFrameId]].filter(Boolean)));
+    updatePage(activePage.id, page => movePagePhoto(page, sourceFrameId, targetFrameId));
   };
 
   const removeSelected = () => {
@@ -1349,7 +1306,7 @@ export function LayoutsApp() {
     const frameId = activePage.selectedFrameId;
     const removed = serializePage(activePage).photos[frameId];
     if (!removed) return;
-    if (!window.confirm("Remove this photo from the project? This also applies to its cloud assignment.")) return;
+    if (!window.confirm("Remove this photo from this frame? It will remain in Project photos.")) return;
     setPendingDeletions((current) => recordPhotoDeletions(current, activePage.id, [removed]));
     retainPagePhotos(activePage);
     updatePage(activePage.id, (page) => removePagePhoto(page, frameId));
@@ -1582,7 +1539,9 @@ export function LayoutsApp() {
     setBusy("project");
     try {
       // Block further jobs and await any already-issued writes before tombstoning.
+      const stoppingBackup = backupQueueRef.current?.cancel(id);
       await queue?.cancel(id);
+      await stoppingBackup;
       if (!isCurrent()) return;
       if (ownerId && isProjectCloudConfigured()) {
         if (!isOnline) throw new Error("Reconnect before completing this deletion.");
@@ -1601,7 +1560,7 @@ export function LayoutsApp() {
       // cleanup is separate from intentional removal of project assignments.
       setNotice({ kind: "success", text: "Project removed. Restore a copy from Projects during this session." });
     } catch (error) {
-      queue?.allow(id);
+      queue?.allow(id); backupQueueRef.current?.allow(id);
       if (isCurrent()) setNotice({ kind: "error", text: error instanceof Error ? error.message : "The project could not be removed." });
     } finally { if (isCurrent()) setBusy(null); }
   };
@@ -1643,54 +1602,19 @@ export function LayoutsApp() {
   };
 
   const duplicatePage = async (pageId: string) => {
-    historyGroupRef.current = undefined;
-    const sameWorkspace = workspaceRef.current.capture();
-    const currentId = projectId;
-    const isCurrent = () => sameWorkspace() && activeProjectRef.current?.id === currentId;
-    const source = pagesRef.current.find((page) => page.id === pageId);
+    const source = pagesRef.current.find(page => page.id === pageId);
     if (!source) return;
-    if (Object.keys(source.unavailablePhotos ?? {}).length) {
-      setNotice({ kind: "info", text: "Load this page's unavailable photos before duplicating it." });
-      return;
-    }
-    if (pagesRef.current.length >= MAX_PROJECT_PAGES) {
-      setNotice({ kind: "error", text: `A project can contain up to ${MAX_PROJECT_PAGES} pages.` });
-      return;
-    }
-    setBusy("duplicate");
-    const clonedPhotos: Record<string, PhotoAsset> = {};
-    try {
-      for (const [frameId, photo] of Object.entries(source.photos)) {
-        const clone = await preparePhotoAsset(photo.sourceBlob, frameId);
-        clone.crop = { ...photo.crop };
-        clone.sourceName = photo.sourceName;
-        if (!isCurrent()) { disposePhotoAsset(clone); throw new Error("Project changed."); }
-        await savePhotoBlob(clone.blobKey, clone.sourceBlob);
-        clonedPhotos[frameId] = clone;
-      }
-      if (!isCurrent()) throw new Error("Project changed.");
-      const createdAt = now();
-      const duplicate: ProjectPage = {
-        ...source,
-        id: crypto.randomUUID(),
-        photos: clonedPhotos,
-        createdAt,
-        updatedAt: createdAt,
-      };
-      setPages((current) => {
-        const index = current.findIndex((page) => page.id === pageId);
-        const next = [...current];
-        next.splice(index + 1, 0, duplicate);
-        return next;
-      });
-      setProjectUpdatedAt(nextProjectEditTime(activeProjectRef.current));
-      setNotice({ kind: "success", text: "Page duplicated." });
-    } catch {
-      Object.values(clonedPhotos).forEach(disposePhotoAsset);
-      if (isCurrent()) setNotice({ kind: "error", text: "This page could not be duplicated. Your original is unchanged." });
-    } finally {
-      if (isCurrent()) setBusy(null);
-    }
+    if (pagesRef.current.length >= MAX_PROJECT_PAGES) { setNotice({ kind: "info", text: `A project can contain up to ${MAX_PROJECT_PAGES} pages.` }); return; }
+    const timestamp = nextProjectEditTime(activeProjectRef.current);
+    const stored = serializePage(source);
+    // A new placement shares the immutable original, while keeping its own crop.
+    const duplicate: ProjectPage = { ...source, id: crypto.randomUUID(), photos: {},
+      unavailablePhotos: Object.fromEntries(Object.entries(stored.photos).map(([frameId, photo]) => [frameId, { ...photo, cloudAssetId: undefined, crop: { ...photo.crop } }])),
+      createdAt: timestamp, updatedAt: timestamp };
+    historyGroupRef.current = undefined;
+    setPages(current => { const next = [...current]; next.splice(next.findIndex(page => page.id === pageId) + 1, 0, duplicate); return next; });
+    setProjectUpdatedAt(timestamp);
+    setNotice({ kind: "success", text: "Page duplicated. Photo originals are shared; crops can be edited independently." });
   };
 
   const deletePage = async (pageId: string) => {
@@ -1719,7 +1643,7 @@ export function LayoutsApp() {
   };
 
   const reviewExportPages = (pageIds?: string[]) => {
-    const selectedPages = pages.filter(page => (!pageIds || pageIds.includes(page.id)) && isPageComplete(page, resolvePageTemplate(page)));
+    const selectedPages = pages.filter(page => (!pageIds || pageIds.includes(page.id)) && isPageAssigned(page, resolvePageTemplate(page)));
     if (!selectedPages.length) {
       setNotice({ kind: "error", text: "Complete at least one page before exporting." });
       return;
@@ -1741,7 +1665,7 @@ export function LayoutsApp() {
       setNotice({ kind: "error", text: pages.length ? "Complete at least one page before exporting." : "Add a page before exporting." });
       return;
     }
-    const incomplete = pageIds ? selectedPages.find((page) => !isPageComplete(page, resolvePageTemplate(page))) : undefined;
+    const incomplete = pageIds ? selectedPages.find((page) => !isPageAssigned(page, resolvePageTemplate(page))) : undefined;
     if (incomplete) {
       const pageNumber = pages.findIndex((page) => page.id === incomplete.id) + 1;
       setNotice({ kind: "error", text: `Finish page ${pageNumber} before exporting.` });
@@ -1755,17 +1679,24 @@ export function LayoutsApp() {
     try {
       for (let index = 0; index < selectedPages.length; index += 1) {
         if (!isCurrent()) throw new Error("Workspace changed.");
-        const page = selectedPages[index];
+        const sourcePage = selectedPages[index];
+        const hydrated = await hydrateProjectPhotos([sourcePage], () => isCurrent() ? getValidDriveToken() : null, getVolatileBlob, { current: isCurrent });
+        const page = applyHydratedPhotos([sourcePage], hydrated)[0];
+        if (!isCurrent() || !isPageComplete(page, resolvePageTemplate(page))) {
+          hydrated.forEach(item => disposePhotoAsset(item.photo));
+          throw new Error("Original photos could not be loaded for export. Reconnect Drive or restore them and retry.");
+        }
         const pageNumber = pages.findIndex((item) => item.id === page.id) + 1;
         setExportProgress({ current: index + 1, total: selectedPages.length });
-        const blob = await renderComposition({
+        let blob: Blob;
+        try { blob = await renderComposition({
           format,
           template: resolvePageTemplate(page),
           background: page.background,
           gutter: page.gutter,
           photos: page.photos,
           outputSize,
-        });
+        }); } finally { hydrated.forEach(item => disposePhotoAsset(item.photo)); }
         created.push({
           pageId: page.id,
           pageNumber,
@@ -1906,7 +1837,7 @@ export function LayoutsApp() {
   return (
     <PhotoPreviewContext.Provider value={previewSession}>
     <div className="min-h-dvh bg-[#f5f5f2] text-[#11110f]">
-      {isGoogleDriveConfigured() ? (
+      {isGoogleDriveConfigured() || photosImportConfigured() ? (
         <Script
           src="https://accounts.google.com/gsi/client"
           strategy="afterInteractive"
@@ -1938,22 +1869,15 @@ export function LayoutsApp() {
           <button type="button" className="small-button" disabled={!historyState.redo || busy !== null} onClick={() => travelProjectHistory("redo")}>Redo</button>
           <button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button>
           {pages.length > 0 ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => { setExportReviewIds(null); setShowPagePreview(true); }}>Preview</button> : null}
-          <p className="w-full text-xs leading-5 text-neutral-600">Undo history resets when you open another project, reload or change accounts. Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length} · Assigned photos available here: {assignedPhotos.length - unavailablePhotoCount}/{assignedPhotos.length}</p>
+          <p className="w-full text-xs leading-5 text-neutral-600">Undo history resets when you open another project, reload or change accounts. Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length} · Original detail loads on demand ({assignedPhotos.length - unavailablePhotoCount} currently loaded).</p>
         </section>
       ) : null}
-      {unavailablePhotoCount > 0 && ["project", "editor", "template"].includes(screen) ? (
+      {missingEditorPreviews > 0 && screen === "editor" ? (
         <p role="status" className="mx-auto mt-4 max-w-[1240px] px-4 text-sm text-neutral-600 sm:px-6">
-          {unavailablePhotoCount} {unavailablePhotoCount === 1 ? "photo is" : "photos are"} unavailable on this device. Their saved assignments and crops are preserved. Reconnect Google Drive or reopen the project to retry loading them.
+          {missingEditorPreviews} photo previews are awaiting availability. Their saved assignments and crops are preserved. Reconnect Drive or inspect the original in Project photos.
         </p>
       ) : null}
-      <input
-        ref={inputRef}
-        className="sr-only"
-        type="file"
-        multiple
-        accept={LOCAL_PHOTO_SOURCE.accept}
-        onChange={(event) => void receivePhotos(Array.from(event.target.files ?? []))}
-      />
+
       <input ref={backupInputRef} className="hidden" type="file" accept=".zip,.scuri" aria-label="Choose a Scuri project backup"
         onChange={event => void reviewProjectBackup(event.target.files?.[0])} />
       {backupPreview ? <BackupReview preview={backupPreview} busy={busy === "backup"} onCancel={() => setBackupPreview(null)} onRestore={() => void restoreProjectBackup()} /> : null}
@@ -2325,7 +2249,10 @@ export function LayoutsApp() {
               <button className="primary-button" type="button" disabled={!completePageCount || busy !== null} onClick={() => reviewExportPages()}>
                 {!pages.length ? "Add a page first" : !completePageCount ? "Complete a page to export" : `Export all ${completePageCount}`}
               </button>
-              <button className="secondary-button" type="button" disabled={pages.length >= MAX_PROJECT_PAGES || busy !== null} onClick={addPage}>+ Add page</button>
+              <button className="secondary-button" type="button" disabled={!completePageCount || busy !== null} onClick={() => {
+                setSelectedExportIds(pages.filter(page => isPageAssigned(page, resolvePageTemplate(page))).map(page => page.id)); setSelectExportPages(true);
+              }}>Export selected pages…</button>
+              <button className="secondary-button" type="button" disabled={pages.length >= MAX_PROJECT_PAGES || busy !== null} onClick={addPage}>+ Add page ({pages.length}/{MAX_PROJECT_PAGES})</button>
               {projectCloudConfigured && templateUser ? (
                 <button className="text-button justify-center" type="button" disabled={Boolean(syncingProjectIds[projectId]) || busy !== null} onClick={() => void syncCurrentProjectNow()}>
                   {syncingProjectIds[projectId] ? "Syncing…" : "Sync now"}
@@ -2432,10 +2359,10 @@ export function LayoutsApp() {
               </div>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <h1 className="text-2xl font-medium tracking-[-0.035em]">Edit page</h1>
-                <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-600">{Object.keys(activePage.photos).length}/{template.frames.length}</span>
+                <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-600">{template.frames.length - missingPhotoCount}/{template.frames.length}</span>
               </div>
               <p className="mt-2 text-sm leading-5 text-neutral-600">
-                {moveFrameMode ? "Drag a frame with its photo. Edges snap gently; keep dragging to move past. Changes apply to this page." : rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. You can select several photos at once."}
+                {moveFrameMode ? "Drag a frame with its photo. Edges snap gently; keep dragging to move past. Changes apply to this page." : rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. Add or replace photos from your project library."}
               </p>
             </div>
 
@@ -2451,7 +2378,7 @@ export function LayoutsApp() {
               <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges</label>
               <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={compositionGuides} onChange={event => setCompositionGuides(event.target.checked)} /> Guides</label>
               <p className="text-xs text-neutral-500">Thirds and centre of the selected frame. Hidden in previews and exports.</p>
-              {selectedPhoto && activePage.selectedFrameId && activePage.unavailablePhotos?.[activePage.selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Showing a lightweight preview. Full-resolution photo is still loading.</p> : null}
+              {selectedPhoto && activePage.selectedFrameId && activePage.unavailablePhotos?.[activePage.selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Editing a lightweight preview. Page previews and exports load the full-resolution original.</p> : null}
               <div className="mt-4 grid grid-cols-3 gap-2">
                 <button className="small-button" type="button" disabled={!activePage.selectedFrameId} onClick={() => activePage.selectedFrameId && requestPhoto(activePage.selectedFrameId)}>
                   {selectedStoredPhoto ? "Replace" : "Add photo"}
@@ -2463,7 +2390,7 @@ export function LayoutsApp() {
                 className={`secondary-button mt-2 w-full ${rearrangeMode ? "rearrange-active" : ""}`}
                 type="button"
                 aria-pressed={rearrangeMode}
-                disabled={!Object.keys(activePage.photos).length || Object.keys(activePage.unavailablePhotos ?? {}).length > 0 || template.frames.length < 2}
+                disabled={missingPhotoCount === template.frames.length || template.frames.length < 2}
                 onClick={() => { setRearrangeMode((current) => !current); setMoveFrameMode(false); setAlignmentGuides([]); }}
               >
                 {rearrangeMode ? "Done rearranging" : "Rearrange photos"}
@@ -2487,7 +2414,7 @@ export function LayoutsApp() {
                 <p className="text-xs text-neutral-500">Moving keeps the current spacing. The gutter slider then adds extra space around frames.</p>
               </div> : null}
               <p className="mt-2 text-[11px] leading-4 text-neutral-500">
-                Selecting multiple photos fills this tile first, then the other empty tiles.
+                Import multiple photos to the library, then choose which photo to use in each frame.
               </p>
             </div>
 
@@ -2527,7 +2454,7 @@ export function LayoutsApp() {
               }}>
                 {missingPhotoCount ? "Save draft" : "Save page"}
               </button>
-              <button className="secondary-button w-full" type="button" disabled={Boolean(missingPhotoCount) || busy !== null} onClick={() => reviewExportPages([activePage.id])}>Export this page</button>
+              <button className="secondary-button w-full" type="button" disabled={!isPageAssigned(activePage, template!) || busy !== null} onClick={() => reviewExportPages([activePage.id])}>Export this page</button>
               <p className="mt-1 text-center text-[11px] leading-4 text-neutral-500">Signed-in projects save automatically. Original photos back up when Drive is connected.</p>
             </div>
           </aside>
@@ -2540,10 +2467,31 @@ export function LayoutsApp() {
             activePageId, pages: pages.map(serializePage), photoLibrary: projectPhotoLibrary, createdAt: projectCreatedAt, updatedAt: projectUpdatedAt }}
             templates={templates} ownerId={templateUser?.id} accessRevision={driveExpiry} busy={busy !== null}
             getVolatileBlob={getVolatileBlob} getDriveToken={getValidDriveToken}
-            onImport={files => void importLibraryPhotos(files)} onApply={applySuggestedArrangement} onCombineDuplicates={combineLibraryDuplicates}
-            onChoose={screen === "editor" && activePage?.selectedFrameId ? chooseLibraryPhoto : undefined} />
+            onImport={sources => importLibraryPhotos(sources, projectId, templateUser?.id ?? null)} onApply={applySuggestedArrangement} onCombineDuplicates={combineLibraryDuplicates}
+            open={showPhotoLibrary} onOpen={() => { photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(true); }}
+            onClose={closePhotoLibrary} targetLabel={photoPickerIntent ? `Page ${pages.findIndex(page => page.id === photoPickerIntent.pageId) + 1} · frame ${photoPickerIntent.frameId}` : undefined}
+            onOverride={setPhotoColour} imports={importItems} onRetryImport={id => importQueueRef.current?.retry(id)} initiallyImport={initiallyImport}
+            backupStatus={Object.entries(photoBackupStatus).filter(([key]) => key.startsWith(projectId + ":")).map(([, status]) => status)}
+            onRetryBackup={() => { if (driveConnected) { backupQueueRef.current?.enqueue(projectId, now(), true); } else void connectGoogleDrive(); }}
+            onChoose={photoPickerIntent ? chooseLibraryPhoto : undefined} />
         </div>
       ) : null}
+
+      {choosePhotoSource ? <ActionDialog title="Choose photo source" onClose={closePhotoLibrary}><section className="photo-source-choice">
+        <h2>Add or replace photo</h2><p>Choose an existing project photo, or import new candidates.</p>
+        <button type="button" className="primary-button" onClick={() => { setInitiallyImport(false); setChoosePhotoSource(false); setShowPhotoLibrary(true); }}>Scuri photos</button>
+        <button type="button" className="secondary-button" onClick={() => { setInitiallyImport(true); setChoosePhotoSource(false); setShowPhotoLibrary(true); }}>Upload from device or Google</button>
+        <button type="button" className="text-button" onClick={closePhotoLibrary}>Cancel</button>
+      </section></ActionDialog> : null}
+
+      {selectExportPages ? <ActionDialog title="Choose pages to export" onClose={() => setSelectExportPages(false)}><section className="photo-source-choice">
+        <h2>Choose pages to export</h2><p>Alternative pages stay saved in your project.</p>
+        <div className="export-page-options">{pages.map((page, index) => <label key={page.id}><input type="checkbox" disabled={!isPageAssigned(page, resolvePageTemplate(page))}
+          checked={selectedExportIds.includes(page.id)} onChange={event => setSelectedExportIds(ids => event.target.checked ? [...ids, page.id] : ids.filter(id => id !== page.id))} />
+          Page {index + 1}{!isPageAssigned(page, resolvePageTemplate(page)) ? " · unfinished" : ""}</label>)}</div>
+        <button type="button" className="primary-button" disabled={!selectedExportIds.length} onClick={() => { setSelectExportPages(false); reviewExportPages(selectedExportIds); }}>Review selected pages</button>
+        <button type="button" className="text-button" onClick={() => setSelectExportPages(false)}>Cancel</button>
+      </section></ActionDialog> : null}
 
       {showPagePreview && format && projectId && previewPages.length ? <PagePreview key={projectId} pages={previewPages} initialPageId={activePageId}
         format={format} resolveTemplate={resolvePageTemplate} onClose={() => setShowPagePreview(false)}

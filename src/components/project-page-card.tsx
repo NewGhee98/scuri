@@ -94,7 +94,7 @@ export function ProjectPageCard({
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{template.name}</p>
             <p className={`mt-1 text-xs ${missing ? "text-amber-700" : "text-emerald-700"}`}>
-              {missing ? [empty ? `${empty} empty frames` : "", unavailable ? `${unavailable} photos awaiting download` : ""].filter(Boolean).join(" · ") : "Ready to export"}
+              {empty ? `${empty} empty frames` : "Ready for export review"}
             </p>
           </div>
           <button className="small-button compact" type="button" onClick={() => onEdit(page.id)}>Edit</button>
@@ -102,7 +102,7 @@ export function ProjectPageCard({
         <div className="mt-3 grid grid-cols-3 gap-1.5">
           <button className="card-action" type="button" disabled={pageNumber === 1} onClick={() => onMove(page.id, -1)} aria-label={`Move page ${pageNumber} earlier`}>← Earlier</button>
           <button className="card-action" type="button" disabled={pageNumber === pageCount} onClick={() => onMove(page.id, 1)} aria-label={`Move page ${pageNumber} later`}>Later →</button>
-          <button className="card-action" type="button" disabled={Boolean(missing)} onClick={() => onExport(page.id)}>Export</button>
+          <button className="card-action" type="button" disabled={Boolean(empty)} onClick={() => onExport(page.id)}>Export</button>
           <button className="card-action" type="button" onClick={() => onDuplicate(page.id)}>Duplicate</button>
           <button className="card-action danger col-span-2" type="button" onClick={() => onDelete(page.id)}>Delete page</button>
         </div>
