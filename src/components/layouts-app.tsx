@@ -96,7 +96,7 @@ import { ProjectPhotoPanel } from "./project-photo-panel";
 import { ActionDialog } from "./action-dialog";
 import { getProjectPhotos, mergePhotoLibraries, projectPhotoGroups } from "@/lib/project-photo-library";
 import { applyArrangementAsCopy, type ArrangementProposal } from "@/lib/arrangements";
-import { filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES } from "@/lib/templates";
+import { DEFAULT_TEMPLATE_FILTERS, filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES, type TemplateLibraryFilters } from "@/lib/templates";
 import type {
   AppScreen,
   CropState,
@@ -114,6 +114,7 @@ import { ProjectLibraryCard } from "./project-library-card";
 import { ProjectPageCard } from "./project-page-card";
 import { TemplateThumbnail } from "./template-thumbnail";
 import { TemplateDesigner } from "./template-designer";
+import { TemplateFilterControls } from "./template-filter-controls";
 
 type Notice = { kind: "error" | "success" | "info"; text: string } | null;
 type BusyState = "image" | "export" | "duplicate" | "project" | "drive" | "backup" | null;
@@ -187,6 +188,7 @@ function Header({
 
 export function LayoutsApp() {
   const [screen, setScreenState] = useState<AppScreen>("projects");
+  const [pageTemplateFilters, setPageTemplateFilters] = useState<TemplateLibraryFilters>(DEFAULT_TEMPLATE_FILTERS);
   // Navigation selection can change during sync. It must never decide whether
   // choosing a template appends a page or deliberately replaces one.
   const [templatePickerIntent, setTemplatePickerIntent] = useState<TemplatePickerIntent | null>(null);
@@ -194,6 +196,7 @@ export function LayoutsApp() {
   const setTemplatePicker = useCallback((intent: TemplatePickerIntent | null) => {
     templatePickerRef.current = intent;
     setTemplatePickerIntent(intent);
+    if (intent) setPageTemplateFilters(DEFAULT_TEMPLATE_FILTERS);
   }, []);
   const [photoPickerIntent, setPhotoPickerIntent] = useState<PhotoPickerIntent | null>(null);
   const photoPickerRef = useRef<PhotoPickerIntent | null>(null);
@@ -245,9 +248,7 @@ export function LayoutsApp() {
   const [exportWidth, setExportWidth] = useState(1080);
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
   const [templateDraft, setTemplateDraft] = useState<CustomTemplate | null>(null);
-  const [templateFilter, setTemplateFilter] = useState<FormatId | "all">("all");
-  const [templatePhotoCountFilter, setTemplatePhotoCountFilter] = useState<number | "all">("all");
-  const [templateEdgeFilter, setTemplateEdgeFilter] = useState<"all" | "rounded" | "straight" | "mixed">("all");
+  const [templateFilters, setTemplateFilters] = useState<TemplateLibraryFilters>(DEFAULT_TEMPLATE_FILTERS);
   const [templateUser, setTemplateUser] = useState<User | null>(null);
   const [templateAuthReady, setTemplateAuthReady] = useState(() => !isTemplateCloudConfigured());
   const [templateCloudBusy, setTemplateCloudBusy] = useState(false);
@@ -292,18 +293,13 @@ export function LayoutsApp() {
   const [driveExpiry, setDriveExpiry] = useState(0);
 
   const format = formatId ? getFormat(formatId) : null;
-  const templates = formatId ? getTemplatesForFormat(formatId, customTemplates) : [];
-  const templateFilters = useMemo(
-    () => ({ formatId: templateFilter, photoCount: templatePhotoCountFilter, edgeStyle: templateEdgeFilter } as const),
-    [templateEdgeFilter, templateFilter, templatePhotoCountFilter],
+  const templates = useMemo(() => formatId ? getTemplatesForFormat(formatId, customTemplates) : [], [formatId, customTemplates]);
+  const filteredPageTemplates = useMemo(
+    () => filterTemplates(templates, { ...pageTemplateFilters, formatId: formatId ?? "all" }),
+    [templates, pageTemplateFilters, formatId],
   );
   const filteredCustomTemplates = useMemo(() => filterTemplates(customTemplates, templateFilters), [customTemplates, templateFilters]);
   const filteredBuiltInTemplates = useMemo(() => filterTemplates(TEMPLATES, templateFilters), [templateFilters]);
-  const templatePhotoCounts = useMemo(
-    () => Array.from(new Set([...TEMPLATES, ...customTemplates].map((item) => item.frames.length))).filter((count) => count > 0).sort((a, b) => a - b),
-    [customTemplates],
-  );
-  const hasActiveTemplateFilters = templateFilter !== "all" || templatePhotoCountFilter !== "all" || templateEdgeFilter !== "all";
   const activePage = pages.find((page) => page.id === activePageId) ?? null;
   const previewPages = exportReviewIds ? pages.filter(page => exportReviewIds.includes(page.id)) : pages;
   const pickerPage = templatePickerIntent?.kind === "replace" && templatePickerIntent.projectId === projectId
@@ -1584,7 +1580,6 @@ export function LayoutsApp() {
     }
     if (!projectId) return;
     setTemplatePicker({ kind: "add", projectId });
-    setActivePageId(null);
     setRearrangeMode(false);
     setScreen("template");
   };
@@ -1929,46 +1924,7 @@ export function LayoutsApp() {
             ) : <span className="template-status pending">Setup pending</span>}
           </section>
 
-          <div className="mt-7 flex flex-wrap gap-2" aria-label="Filter templates by format">
-            <button className={`nav-button ${templateFilter === "all" ? "active" : ""}`} type="button" onClick={() => setTemplateFilter("all")}>All</button>
-            {FORMATS.map((item) => (
-              <button key={item.id} className={`nav-button ${templateFilter === item.id ? "active" : ""}`} type="button" onClick={() => setTemplateFilter(item.id)}>{item.shortLabel}</button>
-            ))}
-          </div>
-
-          <section className="mt-5 rounded-[18px] border border-black/10 bg-white/45 p-4 sm:p-5" aria-labelledby="template-filters-heading">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 id="template-filters-heading" className="text-sm font-semibold">Filter templates</h2>
-              {hasActiveTemplateFilters ? (
-                <button
-                  className="text-button"
-                  type="button"
-                  onClick={() => {
-                    setTemplateFilter("all");
-                    setTemplatePhotoCountFilter("all");
-                    setTemplateEdgeFilter("all");
-                  }}
-                >
-                  Clear filters
-                </button>
-              ) : null}
-            </div>
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-xs font-medium text-neutral-600">Photos</span>
-              <button className={`nav-button ${templatePhotoCountFilter === "all" ? "active" : ""}`} type="button" onClick={() => setTemplatePhotoCountFilter("all")}>All</button>
-              {templatePhotoCounts.map((count) => (
-                <button key={count} className={`nav-button ${templatePhotoCountFilter === count ? "active" : ""}`} type="button" onClick={() => setTemplatePhotoCountFilter(count)}>{count}</button>
-              ))}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-xs font-medium text-neutral-600">Corners</span>
-              {(["all", "rounded", "straight", "mixed"] as const).map((edgeStyle) => (
-                <button key={edgeStyle} className={`nav-button ${templateEdgeFilter === edgeStyle ? "active" : ""}`} type="button" onClick={() => setTemplateEdgeFilter(edgeStyle)}>
-                  {edgeStyle === "all" ? "All" : edgeStyle[0].toUpperCase() + edgeStyle.slice(1)}
-                </button>
-              ))}
-            </div>
-          </section>
+          <TemplateFilterControls templates={[...TEMPLATES, ...customTemplates]} filters={templateFilters} onChange={setTemplateFilters} />
 
           <section className="mt-8" aria-labelledby="my-templates-heading">
             <div className="flex items-end justify-between gap-4">
@@ -2311,10 +2267,21 @@ export function LayoutsApp() {
               <h1 className="mt-2 text-3xl font-medium tracking-[-0.04em] sm:text-4xl">Choose a layout</h1>
               <p className="mt-2 text-sm text-neutral-600">Standard output is {format.width} × {format.height}px. Choose a larger size when exporting.</p>
             </div>
-            <button className="secondary-button" type="button" onClick={() => setShowInstallHelp(true)}>Installation help</button>
+            <div className="flex flex-wrap gap-2">
+              <button className="secondary-button" type="button" onClick={goBack}>Cancel</button>
+              <button className="secondary-button" type="button" onClick={() => setShowInstallHelp(true)}>Installation help</button>
+            </div>
           </section>
+          <TemplateFilterControls templates={templates} filters={pageTemplateFilters} onChange={setPageTemplateFilters} fixedFormat={format.id} />
+          <p className="mt-4 text-sm text-neutral-600" role="status">{filteredPageTemplates.length} of {templates.length} templates</p>
+          {!filteredPageTemplates.length ? (
+            <div className="mt-5 rounded-[18px] border border-dashed border-black/15 bg-white/40 p-8 text-center">
+              <p className="text-sm font-semibold">No templates match these filters.</p>
+              <p className="mt-2 text-sm text-neutral-600">Try another photo count or corner style, or clear the filters above.</p>
+            </div>
+          ) : null}
           <section className="mt-7 grid grid-cols-2 gap-3 pb-10 sm:grid-cols-3 sm:gap-5 lg:grid-cols-4" aria-label={`${format.name} templates`}>
-            {templates.map((item) => (
+            {filteredPageTemplates.map((item) => (
               <button key={item.id} className="template-card" type="button" onClick={() => void selectTemplate(item)}>
                 <span className="template-preview" style={{ aspectRatio: `${item.canvasWidth}/${item.canvasHeight}` }}>
                   <TemplateThumbnail template={item} selected={item.id === pickerPage?.templateId} />
