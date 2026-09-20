@@ -10,6 +10,23 @@ export interface CanvasFormat {
   description: string;
 }
 
+/** Designer-only minimum clearances, in the template's reference pixels. */
+export interface FrameMargins {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  linked: boolean;
+}
+
+/** Repeated on members so existing frames JSON persists arrangements atomically. */
+export interface FrameArrangement {
+  id: string;
+  axis: "horizontal" | "vertical";
+  order: number;
+  gap: number;
+}
+
 export interface NormalizedFrame {
   id: string;
   x: number;
@@ -18,6 +35,10 @@ export interface NormalizedFrame {
   height: number;
   cornerRadius?: number;
   aspectRatioLocked?: boolean;
+  /** Exact visible width:height chosen in the designer, never a render instruction. */
+  aspectRatio?: { width: number; height: number };
+  layoutMargins?: FrameMargins;
+  arrangement?: FrameArrangement;
 }
 
 export interface TemplateDefinition {

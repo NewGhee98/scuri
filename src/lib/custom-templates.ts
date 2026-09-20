@@ -118,8 +118,10 @@ export function createBlankCustomTemplate(formatId: FormatId, name = "Untitled t
 
 function materializeTemplateFrames(template: TemplateDefinition): NormalizedFrame[] {
   const resolved = resolveFrames(template, template.defaultGutter);
+  const groupIds = new Map<string, string>();
   return resolved.map((frame, index) => {
     const original = template.frames[index];
+    if (original.arrangement && !groupIds.has(original.arrangement.id)) groupIds.set(original.arrangement.id, crypto.randomUUID());
     return {
       id: crypto.randomUUID(),
       x: frame.x / template.canvasWidth,
@@ -130,6 +132,10 @@ function materializeTemplateFrames(template: TemplateDefinition): NormalizedFram
         ? frame.cornerRadius / Math.min(frame.width, frame.height)
         : 0,
       aspectRatioLocked: original.aspectRatioLocked,
+      // Optional editing hints travel in the existing frame JSON, with fresh group identities.
+      ...(original.aspectRatio && template.defaultGutter === 0 ? { aspectRatio: { ...original.aspectRatio } } : {}),
+      ...(original.layoutMargins ? { layoutMargins: { ...original.layoutMargins } } : {}),
+      ...(original.arrangement && template.defaultGutter === 0 ? { arrangement: { ...original.arrangement, id: groupIds.get(original.arrangement.id)! } } : {}),
     };
   });
 }
