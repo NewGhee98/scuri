@@ -55,9 +55,12 @@ export interface CustomTemplate extends TemplateDefinition {
 }
 
 export interface CropState {
+  /** Legacy overflow-relative coordinates. Never reinterpret old saved values. */
   positionX: number;
   positionY: number;
   zoom: number;
+  /** Opt-in centre offset in frame widths/heights, independent of photo zoom. */
+  freePosition?: { x: number; y: number };
 }
 
 export interface PhotoAsset {

@@ -134,6 +134,8 @@ export function movePagePhoto(page: ProjectPage, sourceFrameId: string, targetFr
 /** Crop edits made against a display preview update metadata only. Hydrating
  * the original later must retain these edits and the original's availability. */
 export function updatePagePhotoCrop(page: ProjectPage, frameId: string, crop: CropState): ProjectPage {
+  const previous = page.photos[frameId] ?? page.unavailablePhotos?.[frameId];
+  if (!previous || JSON.stringify(previous.crop) === JSON.stringify(crop)) return page;
   const photo = page.photos[frameId];
   if (photo) return { ...page, photos: { ...page.photos, [frameId]: { ...photo, crop } } };
   const stored = page.unavailablePhotos?.[frameId];

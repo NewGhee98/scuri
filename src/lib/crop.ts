@@ -82,14 +82,25 @@ export function coverPlacement(
   const positionY = zoom < 1 ? 0 : clamp(crop.positionY, -1, 1);
 
   return {
-    x: target.x + (target.width - width) / 2 + (positionX * overflowX) / 2,
-    y: target.y + (target.height - height) / 2 + (positionY * overflowY) / 2,
+    x: target.x + (target.width - width) / 2 + (crop.freePosition ? crop.freePosition.x * target.width : (positionX * overflowX) / 2),
+    y: target.y + (target.height - height) / 2 + (crop.freePosition ? crop.freePosition.y * target.height : (positionY * overflowY) / 2),
     width,
     height,
     scale,
     overflowX,
     overflowY,
   };
+}
+
+/** Convert only on explicit editing, preserving the currently rendered centre.
+ * The frame-relative offset scales with export size and survives zoom/hydration. */
+export function withFreePosition(sourceWidth: number, sourceHeight: number, target: ResolvedFrame, crop: CropState): CropState {
+  if (crop.freePosition) return crop;
+  const placement = coverPlacement(sourceWidth, sourceHeight, target, crop);
+  return { ...crop, freePosition: {
+    x: (placement.x - target.x - (target.width - placement.width) / 2) / target.width,
+    y: (placement.y - target.y - (target.height - placement.height) / 2) / target.height,
+  } };
 }
 
 export function moveCrop(
@@ -100,19 +111,18 @@ export function moveCrop(
   deltaX: number,
   deltaY: number,
 ): CropState {
-  if (crop.zoom < 1) return { positionX: 0, positionY: 0, zoom: clamp(crop.zoom, MIN_ZOOM, MAX_ZOOM) };
-  const placement = coverPlacement(sourceWidth, sourceHeight, target, crop);
-  return {
-    zoom: clamp(crop.zoom, MIN_ZOOM, MAX_ZOOM),
-    positionX: placement.overflowX > 0 ? clamp(crop.positionX + (2 * deltaX) / placement.overflowX, -1, 1) : 0,
-    positionY: placement.overflowY > 0 ? clamp(crop.positionY + (2 * deltaY) / placement.overflowY, -1, 1) : 0,
-  };
+  if ((!deltaX && !deltaY) || !Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return crop;
+  const free = withFreePosition(sourceWidth, sourceHeight, target, crop);
+  const x = free.freePosition!.x + deltaX / target.width, y = free.freePosition!.y + deltaY / target.height;
+  return Number.isFinite(x) && Number.isFinite(y) ? { ...free, freePosition: { x, y } } : crop;
 }
 
 export function setCropZoom(crop: CropState, zoom: number): CropState {
-  return {
-    positionX: zoom < 1 ? 0 : clamp(crop.positionX, -1, 1),
-    positionY: zoom < 1 ? 0 : clamp(crop.positionY, -1, 1),
-    zoom: clamp(zoom, MIN_ZOOM, MAX_ZOOM),
-  };
+  return Number.isFinite(zoom) ? { ...crop, zoom: clamp(zoom, MIN_ZOOM, MAX_ZOOM) } : crop;
+}
+
+/** Centre is deliberately distinct from Reset: it retains the exact zoom. */
+export function centreCrop(crop: CropState): CropState {
+  if (crop.freePosition?.x === 0 && crop.freePosition.y === 0) return crop;
+  return { ...crop, positionX: 0, positionY: 0, freePosition: { x: 0, y: 0 } };
 }

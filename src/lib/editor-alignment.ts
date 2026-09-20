@@ -1,4 +1,4 @@
-import { coverPlacement, MAX_ZOOM, MIN_ZOOM, setCropZoom } from "./crop";
+import { coverPlacement, MAX_ZOOM, MIN_ZOOM, setCropZoom, withFreePosition } from "./crop";
 import type { CropState, PhotoAsset, ResolvedFrame } from "./types";
 
 export type AlignmentGuide = { axis: "x" | "y"; value: number };
@@ -11,29 +11,44 @@ export function visiblePhotoBounds(photo: Pick<PhotoAsset, "sourceWidth" | "sour
     top: Math.max(frame.y, image.y), bottom: Math.min(frame.y + frame.height, image.y + image.height) };
 }
 
+/** Snap the raw, accumulated gesture offset, never the prior snapped output. */
+export function snapPhotoPosition(crop: CropState, frame: ResolvedFrame, tolerance: number): { crop: CropState; guides: AlignmentGuide[] } {
+  if (!crop.freePosition || tolerance < 0) return { crop, guides: [] };
+  const { x, y } = crop.freePosition, guides: AlignmentGuide[] = [];
+  const snapX = Math.abs(x * frame.width) <= tolerance, snapY = Math.abs(y * frame.height) <= tolerance;
+  if (snapX) guides.push({ axis: "x", value: frame.x + frame.width / 2 });
+  if (snapY) guides.push({ axis: "y", value: frame.y + frame.height / 2 });
+  return { crop: { ...crop, freePosition: { x: snapX ? 0 : x, y: snapY ? 0 : y } }, guides };
+}
+
 /** Always use the raw gesture value. Feeding the snapped result back into the
  * gesture would make small wheel/pointer movements stick at a snap point. */
 export function snapPhotoZoom(photos: Record<string, Pick<PhotoAsset, "sourceWidth" | "sourceHeight" | "crop">>, frames: ResolvedFrame[], frameId: string,
   rawZoom: number, tolerance: number, minimum = MIN_ZOOM): { crop: CropState; guides: AlignmentGuide[] } | null {
   const photo = photos[frameId], frame = frames.find(item => item.id === frameId);
   if (!photo || !frame || photo.sourceWidth <= 0 || photo.sourceHeight <= 0 || !Number.isFinite(rawZoom)) return null;
-  const crop = setCropZoom(photo.crop, clamp(rawZoom, minimum, MAX_ZOOM));
-  if (crop.zoom > 1) return { crop, guides: [] }; // A covered frame has no moving visible image edge.
+  const crop = setCropZoom(withFreePosition(photo.sourceWidth, photo.sourceHeight, frame, photo.crop), clamp(rawZoom, minimum, MAX_ZOOM));
   const baseline = coverPlacement(photo.sourceWidth, photo.sourceHeight, frame, { ...crop, zoom: 1, positionX: 0, positionY: 0 });
+  const visible = visiblePhotoBounds({ ...photo, crop }, frame);
+  if (visible.left >= visible.right || visible.top >= visible.bottom) return { crop, guides: [] };
   const candidates: Array<{ zoom: number; distance: number; guide: AlignmentGuide }> = [];
   for (const other of frames) {
     const target = photos[other.id];
     if (other.id === frameId || !target || target.sourceWidth <= 0 || target.sourceHeight <= 0) continue;
     const bounds = visiblePhotoBounds(target, other);
+    if (bounds.left >= bounds.right || bounds.top >= bounds.bottom) continue;
     for (const axis of ["x", "y"] as const) {
       const extent = axis === "x" ? baseline.width : baseline.height;
       const frameExtent = axis === "x" ? frame.width : frame.height;
-      const center = (axis === "x" ? frame.x : frame.y) + frameExtent / 2;
+      const start = axis === "x" ? frame.x : frame.y;
+      const center = start + frameExtent * (0.5 + crop.freePosition![axis]);
       const edges = axis === "x" ? [bounds.left, bounds.right] : [bounds.top, bounds.bottom];
       for (const side of [-1, 1]) for (const edge of edges) {
         const zoom = (edge - center) * 2 / (side * extent);
-        const distance = Math.abs(center + side * extent * crop.zoom / 2 - edge);
-        if (zoom >= minimum && zoom <= 1 && extent * zoom <= frameExtent + 1e-8 && distance <= tolerance) {
+        const rawEdge = center + side * extent * crop.zoom / 2;
+        const distance = Math.abs(rawEdge - edge);
+        if (zoom >= minimum && zoom <= MAX_ZOOM && edge >= start && edge <= start + frameExtent &&
+            rawEdge >= start - tolerance - 1e-8 && rawEdge <= start + frameExtent + tolerance + 1e-8 && distance <= tolerance) {
           candidates.push({ zoom, distance, guide: { axis, value: edge } });
         }
       }
@@ -42,7 +57,7 @@ export function snapPhotoZoom(photos: Record<string, Pick<PhotoAsset, "sourceWid
   candidates.sort((a, b) => a.distance - b.distance || Math.abs(a.zoom - crop.zoom) - Math.abs(b.zoom - crop.zoom));
   const nearest = candidates[0];
   if (!nearest) return { crop, guides: [] };
-  return { crop: setCropZoom(photo.crop, nearest.zoom),
+  return { crop: setCropZoom(crop, nearest.zoom),
     guides: candidates.filter(item => Math.abs(item.zoom - nearest.zoom) < 1e-9).map(item => item.guide) };
 }
 

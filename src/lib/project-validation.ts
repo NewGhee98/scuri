@@ -12,6 +12,7 @@ export function isStoredPhoto(value: unknown): value is StoredPhotoAsset {
   if (!record(value) || !identifier(value.frameId) || !text(value.blobKey) || !record(value.crop)) return false;
   return finite(value.sourceWidth) && value.sourceWidth >= 0 && finite(value.sourceHeight) && value.sourceHeight >= 0 &&
     [value.crop.positionX, value.crop.positionY].every(finite) && finite(value.crop.zoom) && value.crop.zoom > 0 &&
+    (value.crop.freePosition === undefined || (record(value.crop.freePosition) && finite(value.crop.freePosition.x) && finite(value.crop.freePosition.y))) &&
     [value.cloudAssetId, value.driveOriginalId, value.drivePreviewId, value.sourceName, value.mimeType].every(optionalText) &&
     (value.fileSize === undefined || (finite(value.fileSize) && value.fileSize >= 0));
 }
