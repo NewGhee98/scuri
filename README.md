@@ -94,7 +94,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 4. In Supabase Auth URL Configuration, set the production Scuri address as the Site URL and add the Vercel preview wildcard as an allowed redirect URL.
 5. Email sign-in is enough for a private test account. Configure custom SMTP before opening registration to general users.
 
-The existing tables enable row-level security. Authenticated users can only read and mutate rows whose `owner_id` matches their Supabase user ID. The proposed photo library column shares the existing projects policies and revision gate; it introduces no policy changes. Templates and projects are separate tables/features that happen to share one sign-in.
+The existing tables enable row-level security. Authenticated users can only read and mutate rows whose `owner_id` matches their Supabase user ID. The photo library column uses the existing projects policies and revision gate; it introduces no policy changes. Templates and projects are separate tables/features that share one sign-in.
 
 ### Google Drive (full-resolution photo backup)
 
@@ -141,7 +141,7 @@ The app requires a secure HTTPS origin for production PWA and Web Share behaviou
 
 1. Import the GitHub repository into Vercel.
 2. Keep the detected **Next.js** framework preset and default build settings.
-3. Deploy. Projects work without environment variables; cross-device templates require the Supabase variables above.
+3. Deploy. Local editing works without environment variables; cross-device project and template metadata require Supabase, and original-photo backup/retrieval requires Google Drive configuration.
 4. Every subsequent push to the production branch will create a new deployment.
 
 The application uses no Vercel-specific runtime features and can be hosted on any platform that supports a standard Next.js production build.
@@ -162,9 +162,9 @@ Repeat this on each device, then connect the same account (and, for full-resolut
 - `src/lib/formats.ts` defines output formats independently of the interface.
 - `src/lib/templates.ts` contains the built-in data-driven template library.
 - `src/lib/custom-templates.ts` owns local template caching, Supabase authentication and cloud synchronisation.
-- `src/lib/crop.ts` owns pure scaling, cover-fit, zoom and movement-constraint maths.
+- `src/lib/crop.ts` owns shared cover-fit, photo zoom, legacy-crop compatibility and free-position maths.
 - `src/lib/image.ts` validates, decodes and downscales photographs for responsive editing.
-- `src/lib/photo-sources.ts` defines the current local picker and the extension point for a later Google Photos source.
+- `src/lib/photo-sources.ts` defines photo source handling; `src/lib/google-photo-import.ts` implements the optional direct Google picker integrations, subject to external configuration.
 - `src/lib/storage.ts` stores the project library metadata and local image blobs (the local/offline cache).
 - `src/lib/supabase-client.ts` is the single shared Supabase client/auth session used by both `custom-templates.ts` and `project-sync.ts`.
 - `src/lib/project-sync.ts` owns Supabase project/page/asset persistence: pulling and pushing a project, the revision-based optimistic-concurrency push, the safe conflict policy, the cloud/local merge policy and derived sync status.
@@ -172,7 +172,7 @@ Repeat this on each device, then connect the same account (and, for full-resolut
 - `src/lib/project.ts` owns page readiness, page limits, multi-photo fill order and reorder logic.
 - `src/lib/export.ts` redraws the composition from original image blobs at the exact output dimensions.
 - `src/components/editor-canvas.tsx` handles high-DPI rendering and touch, pointer, wheel and keyboard input.
-- `src/components/template-designer.tsx` provides the constrained freeform layout editor.
+- `src/components/template-designer.tsx` and `src/lib/template-layout.ts` provide the bounds-aware freeform/arranged template editor, exact sizing and optional editing metadata.
 - `src/components/composition-thumbnail.tsx` renders live page thumbnails without uploading or flattening the project.
 - `src/components/project-page-card.tsx` provides page actions and touch reordering.
 - `src/components/project-library-card.tsx` provides project previews, metadata and library actions.
