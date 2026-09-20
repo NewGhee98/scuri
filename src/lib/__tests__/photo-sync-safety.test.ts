@@ -6,7 +6,10 @@ import { loadPhotoBlob, loadProjects, savePhotoBlob, saveProjects } from "../sto
 import { acknowledgeProjectPush, isProjectDirty, mergeCloudProjectLibrary, pullProjectsFromCloud, pushProjectToCloud, reconcileProtectedProject, resolveProjectConflict, rowsToStoredProject } from "../project-sync";
 import { applyPhotoBackupCheckpoint } from "../photo-backup";
 import { getProjectPhotos } from "../project-photo-library";
-import { applyHydratedPhotos, hydrateProjectPhotos, isPhotoReferencedByAnotherProject, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage } from "../project-photos";
+import { applyHydratedPhotos, hydrateProjectPhotos, isPhotoReferencedByAnotherProject, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "../project-photos";
+import { centreCrop, coverPlacement, moveCrop } from "../crop";
+import { displayPagePhotos } from "../photo-preview-cache";
+import { ProjectHistory } from "../project-history";
 import { moveLayoutPhoto } from "../project";
 import type { StoredPhotoAsset, StoredProject } from "../types";
 
@@ -132,6 +135,52 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  it("round-trips independent free positions through previews, hydration, local/cloud saves and Undo", async () => {
+    const cloud = fakeCloud();
+    // Fabricated rows only: two independent placements share the same original.
+    cloud.rows.project_assets[1].blob_key = cloud.rows.project_assets[0].blob_key;
+    cloud.rows.project_assets[1].drive_file_id = cloud.rows.project_assets[0].drive_file_id;
+    cloud.rows.project_assets[1].drive_preview_id = cloud.rows.project_assets[0].drive_preview_id;
+    const [pulled] = await pullProjectsFromCloud(), [page] = reconcileProjectPages(pulled);
+    const frame = { id: "frame-1", x: 20, y: 30, width: 400, height: 300, cornerRadius: 0 };
+    const previews = new Map([["test-blob-1", { previewUrl: "blob:synthetic-preview", sourceWidth: 1200, sourceHeight: 800 }]]);
+    const display = displayPagePhotos(page, previews);
+    expect(Object.keys(display)).toHaveLength(2);
+    const crop = moveCrop(1200, 800, frame, { ...display["frame-1"].crop, zoom: .6 }, 50, -63);
+    const editedPage = updatePagePhotoCrop(page, "frame-1", crop);
+    expect(editedPage.photos).toEqual({}); // A preview is never promoted to an original.
+    expect(displayPagePhotos(editedPage, previews)["frame-1"].crop).toEqual(crop);
+    expect(serializePage(editedPage).photos["frame-2"].crop).toEqual(pulled.pages[0].photos["frame-2"].crop);
+    const saved = { ...pulled, updatedAt: edited, pages: [serializePage(editedPage)] };
+    saveProjects([saved]); const [restored] = loadProjects();
+    expect(restored.pages[0].photos).toEqual(saved.pages[0].photos);
+    const pushed = await pushProjectToCloud(restored);
+    expect(pushed).toMatchObject({ conflict: false, partial: false });
+    const [remote] = await pullProjectsFromCloud();
+    expect(remote.pages[0].photos["frame-1"].crop).toEqual(crop);
+    expect(remote.pages[0].photos["frame-2"].crop).toEqual(pulled.pages[0].photos["frame-2"].crop);
+    expect(cloud.rows.project_assets).toHaveLength(2);
+    expect(cloud.mutations.some(m => m.operation === "delete")).toBe(false);
+
+    // An old in-flight hydration result must take the current per-frame crop.
+    vi.mocked(loadPhotoBlob).mockResolvedValue(new Blob(["untouched-synthetic-original"]));
+    const late = await hydrateProjectPhotos([page], () => null);
+    const [hydrated] = applyHydratedPhotos([editedPage], late);
+    expect(serializePage(hydrated).photos["frame-1"].crop).toEqual(crop);
+    expect(hydrated.photos["frame-2"].crop).toEqual(pulled.pages[0].photos["frame-2"].crop);
+    expect(coverPlacement(1200, 800, frame, hydrated.photos["frame-1"].crop)).toEqual(coverPlacement(1200, 800, frame, displayPagePhotos(editedPage, previews)["frame-1"].crop));
+    expect(downloadGoogleDrivePhoto).not.toHaveBeenCalled();
+
+    const history = new ProjectHistory(); history.reset(pulled); history.observe(saved, "crop:f", 1);
+    const centred = { ...saved, pages: [serializePage(updatePagePhotoCrop(editedPage, "frame-1", centreCrop(crop)))] };
+    history.observe(centred, "centre-photo:f", 2);
+    const undone = history.travel("undo", centred, committed)!;
+    expect(undone.pages[0].photos["frame-1"].crop).toEqual(crop);
+    const original = history.travel("undo", undone, committed)!;
+    expect(original.pages[0].photos).toEqual(pulled.pages[0].photos);
+    expect(original.pendingDeletions).toBeUndefined();
+    expect(history.travel("redo", original, committed)!.pages[0].photos["frame-1"].crop).toEqual(crop);
+  });
   it("saves only parent metadata for library changes without rewriting page or asset rows", async () => {
     const cloud = fakeCloud(), local = structuredClone(cloud.initial), before = structuredClone(cloud.rows.project_assets);
     local.photoLibrary = getProjectPhotos(local).map(photo => ({ ...photo, colourOverride: "bw", pendingUpload: { thumbnailId: "reserved-thumb" } }));

@@ -6,8 +6,8 @@ export function drawCroppedPhoto(context: CanvasRenderingContext2D, image: Canva
   width: number, height: number, frame: ResolvedFrame, crop: CropState, background: string): void {
   const placement = coverPlacement(width, height, frame, crop);
   // Underlapping frames must not show through newly exposed space. Leave
-  // legacy >= 1 rendering (including transparent originals) unchanged.
-  if (crop.zoom < 1) {
+  // untouched legacy >= 1 rendering (including transparent originals) unchanged.
+  if (crop.freePosition || crop.zoom < 1) {
     context.fillStyle = background;
     context.fillRect(frame.x, frame.y, frame.width, frame.height);
   }

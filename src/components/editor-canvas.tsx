@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MAX_ZOOM, minimumPhotoZoom, moveCrop, resolveFrames, setCropZoom } from "@/lib/crop";
+import { MAX_ZOOM, minimumPhotoZoom, moveCrop, resolveFrames } from "@/lib/crop";
 import { drawCroppedPhoto } from "@/lib/draw-photo";
 import { drawCompositionGuides } from "@/lib/composition-guides";
 import { FRAME_SELECTION_TINT } from "@/lib/selection-style";
 import { pointInCanvas } from "@/lib/canvas-viewport";
 import { CanvasViewport } from "./canvas-viewport";
 import type { DisplayPhoto } from "@/lib/photo-preview-cache";
-import { snapFramePosition, type AlignmentGuide } from "@/lib/editor-alignment";
+import { snapFramePosition, snapPhotoPosition, type AlignmentGuide } from "@/lib/editor-alignment";
 import type { CanvasFormat, CropState, ResolvedFrame, TemplateDefinition } from "@/lib/types";
 
 interface EditorCanvasProps {
@@ -83,7 +83,7 @@ export function EditorCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
   const pointersRef = useRef(new Map<number, Point>());
-  const dragRef = useRef<{ frameId: string; last: Point; distance: number } | null>(null);
+  const dragRef = useRef<{ pointerId: number; frameId: string; blobKey?: string; last: Point; distance: number; rawCrop?: CropState } | null>(null);
   const pinchRef = useRef<{ frameId: string; startDistance: number; startZoom: number } | null>(null);
   const swapDragRef = useRef<{ pointerId: number; sourceFrameId: string; targetFrameId: string } | null>(null);
   const frameDragRef = useRef<{ pointerId: number; start: Point; frame: ResolvedFrame } | null>(null);
@@ -216,13 +216,13 @@ export function EditorCanvas({
     event.preventDefault();
     event.currentTarget.focus({ preventScroll: true });
     onGuidesChange([]); wheelRef.current = null;
-    event.currentTarget.setPointerCapture(event.pointerId);
     const point = canvasPoint(event);
-    pointersRef.current.set(event.pointerId, point);
-    if (swapDragRef.current) return;
+    if (swapDragRef.current || frameDragRef.current || pointersRef.current.size >= 2) return;
     const selected = moveFrameMode ? frames.filter(frame => frame.id === selectedFrameId) : [];
     const target = hitTest(selected, point) ?? hitTest(frames, point);
-    if (!target) return;
+    if (!target && !dragRef.current) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointersRef.current.set(event.pointerId, point);
     // A second finger may land on a different (or empty) frame. Keep the
     // first finger's photo selected and make this one continuous gesture.
     if (!moveFrameMode && !rearrangeMode && pointersRef.current.size === 2 && dragRef.current && photos[dragRef.current.frameId]) {
@@ -231,7 +231,7 @@ export function EditorCanvas({
       dragRef.current = null;
       return;
     }
-    if (pointersRef.current.size > 1) return;
+    if (pointersRef.current.size > 1 || !target) return;
     onSelectFrame(target.id);
     if (moveFrameMode) {
       if (!frameDragRef.current) frameDragRef.current = { pointerId: event.pointerId, start: point, frame: target };
@@ -245,11 +245,12 @@ export function EditorCanvas({
       return;
     }
     if (!photos[target.id]) {
-      dragRef.current = { frameId: target.id, last: point, distance: 0 };
+      dragRef.current = { pointerId: event.pointerId, frameId: target.id, last: point, distance: 0 };
       return;
     }
     if (pointersRef.current.size === 1) {
-      dragRef.current = { frameId: target.id, last: point, distance: 0 };
+      dragRef.current = { pointerId: event.pointerId, frameId: target.id, blobKey: photos[target.id].blobKey,
+        last: point, distance: 0, rawCrop: photos[target.id].crop };
     }
   };
 
@@ -289,18 +290,20 @@ export function EditorCanvas({
       return;
     }
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     const photo = photos[drag.frameId];
     const target = frames.find((frame) => frame.id === drag.frameId);
     const deltaX = point.x - drag.last.x;
     const deltaY = point.y - drag.last.y;
     drag.distance += Math.hypot(deltaX, deltaY);
     drag.last = point;
-    if (photo && target) {
-      onCropChange(
-        drag.frameId,
-        moveCrop(photo.sourceWidth, photo.sourceHeight, target, photo.crop, deltaX, deltaY),
-      );
+    if (photo && target && photo.blobKey === drag.blobKey) {
+      // Accumulate unsnapped input, independently of React's last render. This
+      // both avoids lost fast pointer deltas and lets a slow drag pass centre.
+      drag.rawCrop = moveCrop(photo.sourceWidth, photo.sourceHeight, target, drag.rawCrop ?? photo.crop, deltaX, deltaY);
+      const result = snapPhotoPosition(drag.rawCrop, target, snapEnabled && !event.altKey ? 5 / viewScaleRef.current : -1);
+      onGuidesChange(result.guides);
+      onCropChange(drag.frameId, result.crop);
     }
   };
 
@@ -314,8 +317,14 @@ export function EditorCanvas({
     }
     const drag = dragRef.current;
     if (commitSwap && !moveFrameMode && drag && drag.distance * viewScaleRef.current < 6 && !photos[drag.frameId] && !unavailableFrameIds?.includes(drag.frameId)) onRequestPhoto(drag.frameId);
+    const pinch = pinchRef.current;
     pointersRef.current.delete(event.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pinch && pointersRef.current.size === 1) {
+      const [pointerId, point] = [...pointersRef.current][0], photo = photos[pinch.frameId];
+      dragRef.current = photo ? { pointerId, frameId: pinch.frameId, blobKey: photo.blobKey,
+        last: point, distance: 0, rawCrop: photo.crop } : null;
+    }
     if (swapDrag?.pointerId === event.pointerId) {
       swapDragRef.current = null;
       setSwapTargetFrameId(null);
@@ -365,12 +374,13 @@ export function EditorCanvas({
     }
     if (event.key === "+" || event.key === "=") {
       event.preventDefault();
-      onCropChange(selectedFrameId, setCropZoom(photo.crop, photo.crop.zoom + 0.1));
+      onZoomChange(selectedFrameId, photo.crop.zoom + 0.1, -1);
     } else if (event.key === "-") {
       event.preventDefault();
-      onCropChange(selectedFrameId, setCropZoom(photo.crop, photo.crop.zoom - 0.1));
+      onZoomChange(selectedFrameId, photo.crop.zoom - 0.1, -1);
     } else if (target && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
       event.preventDefault();
+      onGuidesChange([]); // Keyboard nudges are exact and never trapped by a snap.
       const delta = event.shiftKey ? 12 : 4;
       const deltaX = event.key === "ArrowLeft" ? -delta : event.key === "ArrowRight" ? delta : 0;
       const deltaY = event.key === "ArrowUp" ? -delta : event.key === "ArrowDown" ? delta : 0;

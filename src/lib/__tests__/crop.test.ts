@@ -14,13 +14,12 @@ describe("cover crop calculations", () => {
     expect(placement.y).toBeCloseTo(0);
   });
 
-  it("constrains dragged positions so the frame stays covered", () => {
+  it("allows dragging beyond image overflow on both axes", () => {
     const crop = moveCrop(1600, 900, target, { positionX: 0, positionY: 0, zoom: 1 }, 10000, -10000);
-    expect(crop.positionX).toBe(1);
-    expect(crop.positionY).toBe(0);
+    expect(crop.freePosition).toEqual({ x: 25, y: -20 });
     const placement = coverPlacement(1600, 900, target, crop);
-    expect(placement.x + placement.width).toBeGreaterThanOrEqual(target.width);
-    expect(placement.y).toBeLessThanOrEqual(target.y);
+    expect(placement.x).toBeCloseTo(-244.44444444444446 + 10000);
+    expect(placement.y).toBe(-10000);
   });
 
   it("clamps zoom to the supported range", () => {
@@ -49,8 +48,11 @@ describe("zoom below the fill-frame baseline", () => {
     expect(placement.x).toBe(20 - 1000 + 0.75 * 1000);
     expect(placement.y).toBe(30 - 200 - 0.4 * 200);
     const shrunk = setCropZoom(old, 0.5);
-    expect(shrunk).toEqual({ positionX: 0, positionY: 0, zoom: 0.5 });
-    expect(moveCrop(3000, 1000, square, shrunk, 100, 100)).toEqual(shrunk);
+    // Rendering legacy records still centres negative zoom, without rewriting
+    // their saved values. Explicit moves opt into the new representation.
+    expect(shrunk).toEqual({ ...old, zoom: 0.5 });
+    expect(coverPlacement(3000, 1000, square, shrunk)).toEqual(coverPlacement(3000, 1000, square, { ...shrunk, positionX: 0, positionY: 0 }));
+    expect(moveCrop(3000, 1000, square, shrunk, 100, 100).freePosition).toEqual({ x: .25, y: .25 });
   });
   it("extends beyond contain-size for extreme panoramas and portraits", () => {
     for (const [width, height] of [[32000, 4], [4, 32000], [500, 500]]) {

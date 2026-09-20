@@ -64,7 +64,7 @@ describe("visible-edge zoom snapping", () => {
     const frames = [frame("a"), frame("b", 0, 300)];
     const photos = { a: photo("a", 800, 400, 0.8), b: photo("b") };
     expect(snapPhotoZoom(photos, frames, "b", 0.819, 5)!.crop.zoom).toBe(0.8);
-    expect(snapPhotoZoom(photos, frames, "b", 0.83, 5)!).toEqual({ crop: setCropZoom(DEFAULT_CROP, 0.83), guides: [] });
+    expect(snapPhotoZoom(photos, frames, "b", 0.83, 5)!).toEqual({ crop: { ...setCropZoom(DEFAULT_CROP, 0.83), freePosition: { x: 0, y: 0 } }, guides: [] });
     expect(snapPhotoZoom(photos, frames, "b", 0.819, -1)!.crop.zoom).toBe(0.819);
     expect(snapPhotoZoom(photos, frames, "b", 1.4, 5)!.crop.zoom).toBe(1.4);
   });

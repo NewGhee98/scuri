@@ -7,9 +7,53 @@ import { getTemplate } from "../templates";
 import type { PhotoAsset, ProjectPage } from "../types";
 import { fitCanvas, panCanvas, zoomCanvas } from "../canvas-viewport";
 import { serializePage } from "../project-photos";
+import { coverPlacement, DEFAULT_CROP, moveCrop, resolveFrames } from "../crop";
+import { resolveExportFrames } from "../export-settings";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe("shared editor, thumbnail and export drawing", () => {
+  it.each([.3, 1, 2])("clips freely moved photos and fills overlapping exposed space at zoom %s at every output size", async zoom => {
+    const context = { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn(), save: vi.fn(), beginPath: vi.fn(), roundRect: vi.fn(), clip: vi.fn(), restore: vi.fn() };
+    const canvas = { width: 0, height: 0, getContext: () => context, toBlob: (done: (blob: Blob) => void) => done(new Blob(["jpeg"])) };
+    vi.stubGlobal("document", { createElement: () => canvas });
+    const drawable = {} as CanvasImageSource;
+    vi.spyOn(image, "decodeImage").mockResolvedValue({ drawable, width: 800, height: 800, close: vi.fn() });
+    const format = getFormat("instagram-square"), base = getTemplate("instagram-square-full-frame");
+    const template = { ...base, frames: [{ id: "below", x: 0, y: 0, width: 1, height: 1 }, { id: "above", x: .2, y: .2, width: .6, height: .6 }] };
+    const reference = resolveFrames(template, 0), crop = moveCrop(800, 800, reference[1], { ...DEFAULT_CROP, zoom }, 210, -180);
+    const original = new Blob(["untouched-synthetic-original"]), photos: Record<string, PhotoAsset> = Object.fromEntries(reference.map(f => [f.id, {
+      frameId: f.id, blobKey: "shared-original", sourceBlob: original, previewUrl: "blob:preview", sourceWidth: 800, sourceHeight: 800,
+      crop: f.id === "above" ? crop : { ...DEFAULT_CROP } }]));
+    const page: ProjectPage = { id: "synthetic", templateId: template.id, templateSnapshot: template, gutter: 0, background: "#eeddaa", selectedFrameId: "above", photos, createdAt: "unchanged", updatedAt: "unchanged" };
+    const saved = serializePage(page), expected = coverPlacement(800, 800, reference[1], crop);
+    for (const multiple of [1, 2, 3]) {
+      const outputSize = { width: 1080 * multiple, height: 1080 * multiple }, frames = resolveExportFrames(format, template, 0, outputSize);
+      context.fillRect.mockClear(); context.drawImage.mockClear(); context.roundRect.mockClear(); context.clip.mockClear();
+      await renderPagePreview(page, format, template, undefined, outputSize);
+      expect(context.drawImage.mock.calls[1][0]).toBe(drawable);
+      [expected.x, expected.y, expected.width, expected.height].forEach((v, i) => expect(context.drawImage.mock.calls[1][i + 1]).toBeCloseTo(v * multiple, 8));
+      expect(context.roundRect.mock.calls[1]).toEqual([frames[1].x, frames[1].y, frames[1].width, frames[1].height, 0]);
+      // The upper frame's background is painted after the lower photo, inside
+      // its clip, before its own image. Underlapping photos cannot show through.
+      expect(context.fillRect).toHaveBeenCalledTimes(2);
+      expect(context.fillRect.mock.calls[1]).toEqual([frames[1].x, frames[1].y, frames[1].width, frames[1].height]);
+      expect(context.fillStyle).toBe(page.background);
+      expect(context.clip.mock.invocationCallOrder[1]).toBeLessThan(context.fillRect.mock.invocationCallOrder[1]);
+      expect(context.drawImage.mock.invocationCallOrder[0]).toBeLessThan(context.fillRect.mock.invocationCallOrder[1]);
+      expect(context.fillRect.mock.invocationCallOrder[1]).toBeLessThan(context.drawImage.mock.invocationCallOrder[1]);
+      const previewDraws = context.drawImage.mock.calls;
+      context.drawImage.mockClear(); await renderComposition({ format, template, ...page, outputSize });
+      expect(context.drawImage.mock.calls).toEqual(previewDraws);
+      expect(serializePage(page)).toEqual(saved);
+    }
+    for (const width of [280, 540, 1080]) {
+      const frame = resolveFrames(template, 0, width, width)[1]; context.drawImage.mockClear();
+      drawCroppedPhoto(context as unknown as CanvasRenderingContext2D, drawable, 800, 800, frame, crop, page.background);
+      const call = context.drawImage.mock.calls[0];
+      [expected.x, expected.y, expected.width, expected.height].forEach((v, i) => expect(call[i + 1] * 1080 / width).toBeCloseTo(v));
+    }
+    expect(vi.mocked(image.decodeImage).mock.calls.every(([blob]) => blob === original)).toBe(true);
+  });
   it("paints exposed frame space with the page background and preserves legacy drawing", () => {
     const context = { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn() };
     const drawable = {} as CanvasImageSource;

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { drawCompositionGuides } from "../composition-guides";
 import { FRAME_SELECTION_TINT } from "../selection-style";
 import { moveCrop } from "../crop";
-import { snapFramePosition } from "../editor-alignment";
+import { snapFramePosition, snapPhotoPosition } from "../editor-alignment";
 import type { ResolvedFrame } from "../types";
 
 function context() {
@@ -67,11 +67,11 @@ describe("selection is not a pointer edit", () => {
     const scope = { pointersRef: { current: pointers }, canvasPoint: (event: { clientX: number; clientY: number }) => ({ x: event.clientX, y: event.clientY }),
       frameDragRef: { current: mode === "frame" ? { pointerId: 1, start, frame } : null }, moveFrameMode: mode === "frame",
       swapDragRef: { current: null }, pinchRef: { current: mode === "pinch" ? { frameId: "f", startDistance: 100, startZoom: 1 } : null },
-      dragRef: { current: mode === "photo" ? { frameId: "f", last: start, distance: 0 } : null }, frames: [frame],
+      dragRef: { current: mode === "photo" ? { pointerId: 1, frameId: "f", last: start, distance: 0 } : null }, frames: [frame],
       photos: { f: { sourceWidth: 6400, sourceHeight: 1440, crop: { zoom: 1, positionX: .5, positionY: .5 } } },
       size: { width: 1080, height: 1350 }, format: { width: 1080, height: 1350 }, snapEnabled: true, viewScaleRef: { current: 1 },
       pointerDistance: ([a, b]: { x: number; y: number }[]) => Math.hypot(a.x - b.x, a.y - b.y),
-      snapFramePosition, moveCrop, onCropChange: vi.fn(), onFrameMove: vi.fn(), onZoomChange: vi.fn(), onGuidesChange: vi.fn() };
+      snapFramePosition, snapPhotoPosition, moveCrop, onCropChange: vi.fn(), onFrameMove: vi.fn(), onZoomChange: vi.fn(), onGuidesChange: vi.fn() };
     const move = new Function("scope", `with (scope) { ${pointerMove} return move; }`)(scope);
     const event = { pointerId: 1, pointerType, clientX: start.x, clientY: start.y, preventDefault: vi.fn() };
     move(event);
@@ -91,7 +91,7 @@ describe("editor-only guide controls", () => {
       const frames = [{ id: "filled", x: 0, y: 0, width: 300, height: 120, cornerRadius: 0 },
         { id: "empty", x: 0, y: 130, width: 300, height: 120, cornerRadius: 0 }];
       const photo = { previewUrl: "blob:synthetic", fallbackPreviewUrl: "blob:cached-small", sourceWidth: 6400, sourceHeight: 1440,
-        crop: { zoom: 0.8765433, positionX: 0, positionY: 0 } };
+        crop: { zoom: 0.8765433, positionX: 0, positionY: 0, freePosition: { x: .13, y: -.1 } } };
       const overlay = vi.fn(), drawPhoto = vi.fn(), ctx = context();
       const primary = { complete: primaryReady, naturalWidth: 2200 }, fallback = { complete: true, naturalWidth: 640 };
       const scope = { canvasRef: { current: { style: {}, getContext: () => ctx } }, size: { width: 300, height: 375 },

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { User } from "@supabase/supabase-js";
 import { PRODUCT } from "@/config/product";
-import { DEFAULT_CROP, minimumPhotoZoom, resolveFrames, setCropZoom } from "@/lib/crop";
+import { centreCrop, DEFAULT_CROP, minimumPhotoZoom, resolveFrames } from "@/lib/crop";
 import { snapPhotoZoom, type AlignmentGuide } from "@/lib/editor-alignment";
 import { movePageFrame, reorderPageFrame } from "@/lib/page-frames";
 import { consolidateLibraryDuplicates, type DuplicateGroup, type DuplicateScan } from "@/lib/photo-duplicates";
@@ -1267,10 +1267,10 @@ export function LayoutsApp() {
     setPhotoPickerIntent(intent); setChoosePhotoSource(true);
   };
 
-  const updateCrop = (frameId: string, crop: CropState) => {
-    if (!activePage) return;
+  const updateCrop = (frameId: string, crop: CropState, action = "crop") => {
+    if (!activePage || updatePagePhotoCrop(activePage, frameId, crop) === activePage) return;
     updatePage(activePage.id, page => updatePagePhotoCrop(page, frameId, crop));
-    historyGroupRef.current = `crop:${activePage.id}:${frameId}`;
+    historyGroupRef.current = `${action}:${activePage.id}:${frameId}`;
   };
 
   const updatePhotoZoom = (frameId: string, zoom: number, tolerance = 5 * (format?.width ?? 1080) / editorWidth) => {
@@ -1321,7 +1321,14 @@ export function LayoutsApp() {
   };
 
   const resetSelected = () => {
-    if (selectedFrameId && selectedPhoto) updateCrop(selectedFrameId, { ...DEFAULT_CROP });
+    if (selectedFrameId && selectedPhoto) updateCrop(selectedFrameId, { ...DEFAULT_CROP }, "reset-photo");
+  };
+
+  const centreSelected = () => {
+    if (selectedFrameId && selectedPhoto) {
+      setAlignmentGuides([]);
+      updateCrop(selectedFrameId, centreCrop(selectedPhoto.crop), "centre-photo");
+    }
   };
 
   const openTemplates = () => {
@@ -2350,19 +2357,20 @@ export function LayoutsApp() {
                 zoom={selectedPhoto.crop.zoom} minimum={Math.min(selectedPhoto.crop.zoom, minimumPhotoZoom(selectedPhoto.sourceWidth, selectedPhoto.sourceHeight, selectedResolvedFrame))}
                 onChange={(zoom, snap) => {
                   if (snap) updatePhotoZoom(selectedPhoto.frameId, zoom);
-                  else { setAlignmentGuides([]); updateCrop(selectedPhoto.frameId, setCropZoom(selectedPhoto.crop, zoom)); }
+                  else updatePhotoZoom(selectedPhoto.frameId, zoom, -1);
                 }} onGestureEnd={() => setAlignmentGuides([])} /> :
                 <p className="control-label">Selected photo · {selectedStoredPhoto ? "Photo unavailable" : "Empty frame"}</p>}
-              <p id="photo-zoom-help" className="mt-2 text-xs text-neutral-500">0% fills the frame. Negative zoom centres the image and reveals the page background. Type a percentage for an exact size.</p>
-              <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges</label>
+              <p id="photo-zoom-help" className="mt-2 text-xs text-neutral-500">0% is the fill-frame size. Drag at any zoom to position your photo; exposed space shows the page background. Type a percentage for an exact size.</p>
+              <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges and centre</label>
               <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={compositionGuides} onChange={event => setCompositionGuides(event.target.checked)} /> Guides</label>
               <p className="text-xs text-neutral-500">Thirds and centre of the selected frame. Hidden in previews and exports.</p>
               {selectedPhoto && selectedFrameId && activePage.unavailablePhotos?.[selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Editing a lightweight preview. Page previews and exports load the full-resolution original.</p> : null}
-              <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="mt-4 grid grid-cols-2 gap-2">
                 <button className="small-button" type="button" disabled={!selectedFrameId} onClick={() => selectedFrameId && requestPhoto(selectedFrameId)}>
                   {selectedStoredPhoto ? "Replace" : "Add photo"}
                 </button>
-                <button className="small-button" type="button" disabled={!selectedPhoto} onClick={resetSelected}>Reset</button>
+                <button className="small-button" type="button" disabled={!selectedPhoto} onClick={centreSelected}>Centre photo</button>
+                <button className="small-button" type="button" disabled={!selectedPhoto} onClick={resetSelected} title="Centre the photo and return zoom to 0%">Reset</button>
                 <button className="small-button danger" type="button" disabled={!selectedStoredPhoto} onClick={removeSelected}>Remove</button>
               </div>
               <button
