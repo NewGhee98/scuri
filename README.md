@@ -16,7 +16,7 @@ All image selection, composition and export happens in the browser. Signing in m
 - Single or multi-photo selection from Apple Photos, iOS Files and desktop file pickers.
 - Explicit photo selection and Use confirmation for the tapped tile, followed by drag-to-swap tile rearranging.
 - Fixed clipping frames with independent drag, pinch, mouse-wheel and slider zoom.
-- A 0% fill-frame zoom baseline; negative zoom reveals the whole image and surrounding page background while keeping it centred. Positive zoom retains constrained panning.
+- A 0% fill-frame zoom baseline, exact percentage input and negative zoom. Photos can move on both axes at every zoom; Centre photo preserves zoom and Reset restores the centred 0% baseline.
 - A project photo library independent of frame placement, with local palette analysis and up to three arrangement suggestions using existing layouts.
 - Replace, reset and remove controls for each photograph.
 - Adjustable background colour, borders and gutters.
@@ -25,7 +25,7 @@ All image selection, composition and export happens in the browser. Signing in m
 - Local recovery of every project after navigation or refresh.
 - Installable PWA shell with standalone display, offline caching and iOS metadata.
 - A reusable Templates library with built-in and personal layouts.
-- A constrained freeform template designer with overlapping frames, resize handles, snapping, alignment, distribution, layers, corner presets, backgrounds, undo and redo.
+- A template designer with overlapping frames, touch multi-selection, shared resizing, exact pixel sizing, ratio presets/locks, fixed-gap rows/stacks, separate minimum margins, snapping, layers and Undo/Redo.
 - Passwordless email sign-in; cloud-synchronised templates and project state (layouts, crops, page order, photo metadata) protected by per-user row-level security.
 - Optional Google Drive backup of full-resolution project photos, with lazy download on other devices.
 
@@ -51,7 +51,19 @@ Deleting a signed-in project stops its queued sync, waits for an active save and
 
 **Plan an arrangement:** use **Add photos to library** on the project page, wait for local analysis, then select **Suggest arrangements**. Review Colour harmony, Best fit and Balanced mix when meaningfully different options are available. Each proposal lists any unplaced photos. **Apply as new project** preserves the current project and every library original. In the editor, a library photo can also be placed with **Use in selected frame**. Removing a frame assignment leaves the original in the library.
 
-**Zoom out:** select a photo and move its zoom slider below 0%. The frame, border and gutter remain fixed; the original shrinks in proportion and is centred over the page background. The slider extends beyond the size needed to show the entire image. Existing saved fill/zoom crops retain their appearance. See [ZOOM_ARRANGEMENTS_RELEASE.md](ZOOM_ARRANGEMENTS_RELEASE.md) for behaviour, compatibility and verification limits.
+**Position a photo:** select a photo and adjust its zoom slider or type an exact percentage. 0% is the fill-frame baseline; negative zoom shrinks the image in proportion. Drag at any zoom to position it, including when it exactly fits or is smaller than the frame. The frame clips the photo and exposed areas use the page background. Centre photo preserves zoom; Reset centres and restores 0%. Legacy crops render unchanged until an explicit edit. Zoom changes preserve deliberately chosen offsets; repeated placements retain independent crops.
+
+**Inspect the design:** editor and template-designer Navigate mode pans/zooms the viewport independently of photo crop zoom, export resolution, saved geometry and Undo. Switch back to Edit to manipulate photos or frames. Selected frames use a subtle editing-only tint; optional fixed thirds/centre guides and Snap controls assist composition. Export preview uses originals, follows the chosen output settings and offers 100% detail. Advisory quality warnings do not block export. Larger exports scale the entire saved design proportionally.
+
+**Build precise templates:** Select multiple, choose a matching Reference frame, apply exact ratio presets (including 40:9 and 768:115), then use Same width/height and Horizontal row/Vertical stack. Keep gaps consistent maintains the chosen gap while resizing; margins are separate minimum clearances. Centre group does not stretch frames to fill whitespace. Ratio locks and bounds are respected, and each committed action/gesture can be undone. Existing pages keep their own template snapshots when a reusable template changes. The built-in portrait picker includes exact five-strip Standard Pano and seven-strip Ultra Pano layouts plus their deliberately cropped borderless alternatives.
+
+## Current release and documentation — 20 September 2026
+
+Production is [scuri.vercel.app](https://scuri.vercel.app), most recently verified at main `8398085` through [PR #28](https://github.com/NewGhee98/scuri/pull/28). Vercel marked that release Ready / Current. It includes export quality/preview/proportional scaling, the rebuilt photo library, spacious photo viewing, Add-page filters, selection tint, independent canvas navigation, free photo positioning and coordinated template tools. The Project photos scrolling correction in this branch is separately tested and awaiting production release; it is not part of that verified production commit.
+
+The technical handoff and dated release evidence are in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md); active work is in [CURRENT_TASK.md](CURRENT_TASK.md). [VERIFICATION.md](VERIFICATION.md) distinguishes the latest checks from historical packages, and the [Project photos checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md) records outstanding device/service acceptance. Historical release notes below are preserved as history, not instructions to rerun migrations or recover live data.
+
+Drive documentation: [Product Overview](https://docs.google.com/document/d/1R1yIt6UgGGTSJAnbp1wzg6ZZTLNyseoxrXUeJtdug3s/edit), [Status & Roadmap](https://docs.google.com/document/d/1NnVgZOhONDBdp9_tZMU2mngKThWCbRVT6K-xNOqbi2g/edit), [Upcoming Features](https://docs.google.com/document/d/1MoA7dIhztuWHU3lsp4ljRJa9EU6OgCBAumSu6KLH_HA/edit), and [Change Timeline](https://docs.google.com/document/d/1EzYIQcQbDIdQ-Rzzr38FwE7vnDpavuda2tsc5_JuuBw/edit). Their older claims that projects are device-local, photo positioning is future work or portable backups are only proposed are superseded by the current implementation.
 
 ## Local development
 
@@ -114,7 +126,7 @@ npm test
 npm run build
 ```
 
-The 136 offline tests include crop/rendering and below-baseline save/restore, palette grouping, panorama/template matching, distinct proposals, complete placement accounting, unavailable photos, safe application as a copy, optional-column compatibility, library/backup persistence, and the existing fresh-device and explicit-deletion safety regressions. See [VERIFICATION.md](VERIFICATION.md) for the checks and their limits.
+The current offline suite has **512 tests across 39 files**, including gallery scroll ownership/restoration, coordinated template geometry and Undo, viewport navigation, legacy/free crops, proportional exports, library/backup persistence, fresh-device safety and explicit deletion. Typecheck, ESLint and the production build also pass. See [VERIFICATION.md](VERIFICATION.md) for dated checks and limits; automated tests do not certify physical iPad or live cloud behaviour.
 
 ## Production
 
@@ -203,7 +215,7 @@ That single object is expanded for all current formats. The same editor, thumbna
 
 ## Short roadmap
 
-1. Run the full cross-device acceptance test in `CLAUDE_START_HERE.md` on physical iPad and laptop hardware (this needs a real Supabase session and Google account - not something that can be verified from an automated build).
+1. Run the cross-device acceptance test in `PROJECT_CONTEXT.md` and `docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md` on physical iPad and laptop hardware (this needs a real Supabase session and Google account - not something that can be verified from an automated build).
 2. Design and review a transactional project/pages/assets save and consistent read to address the known cross-device race above.
 3. Extend portable backups with larger streaming packages and persistent project history after the transactional sync work.
 4. Consider landscape formats through the existing format definition system.

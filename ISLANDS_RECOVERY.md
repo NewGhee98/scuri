@@ -1,5 +1,7 @@
 # Islands: manual recovery later
 
+Status reviewed 20 September 2026: the prevention fixes and later library/editor features are deployed through PR #28, but no historical Islands recovery or fresh live project/Drive-original inspection is established by this documentation update. This manual procedure remains separate, requires explicit authorization and preserves originals and evidence. The current Project photos scrolling fix and document reconciliation do not change that boundary. See `PROJECT_CONTEXT.md` for release status.
+
 This is a procedure for a later session with authorized live connectors. No live recovery, database inspection, Drive listing or deployment was performed for this code fix. Treat the handoff's project identifiers, counts, file listings and claims that originals survive as historical evidence to verify, not confirmed current state.
 
 1. **Preserve evidence before opening the project in an app that can autosave.** Keep existing devices offline or close the unpatched app. Export the original device's `layouts.projects.v1` localStorage record, any legacy `layouts.current-project.v2`/`layouts.current-project.v1` records, and relevant blobs in IndexedDB `layouts-local-photos` / `photos` before reconnecting it. Do not clear caches or reinstall the app first.

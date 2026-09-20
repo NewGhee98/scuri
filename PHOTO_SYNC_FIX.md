@@ -1,6 +1,6 @@
 # Project-photo sync safety fix
 
-The later approved client release extends this first fix. See `CLIENT_RELEASE.md` for current behaviour, 110-test verification, portable backups and session undo. The earlier 85-test account below describes the first patch only.
+Historical first-patch record, reconciled 20 September 2026. Its safety invariant remains current, but the 85-test account and local-only statements below describe the original preparation stage. Production now includes subsequent client safety, photo library, export and editing releases through PR #28. See `PROJECT_CONTEXT.md`, `README.md` and `VERIFICATION.md` for current behaviour and checks; `CLIENT_RELEASE.md` is also historical. The pending scrolling fix changes no sync or deletion behaviour.
 
 Prepared locally from the supplied archive. No live service access, credentials, recovery, schema change, seed operation or deployment.
 

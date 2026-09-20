@@ -1,6 +1,6 @@
 # Scuri client safety, backups and undo
 
-Historical release notes for the preceding 110-test package. The current local source also includes the focused zoom and arrangements release documented in [ZOOM_ARRANGEMENTS_RELEASE.md](ZOOM_ARRANGEMENTS_RELEASE.md), including one additional migration prepared for review only. Statements below describe the earlier package.
+Historical release notes for the 13 September 110-test package. Reconciled 20 September: current production includes these protections and subsequent library/editor/template work through PR #28. See [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md), [README.md](README.md) and [VERIFICATION.md](VERIFICATION.md) for current behaviour, release status and 512-test verification of the pending scrolling fix. The photo-library migration was subsequently reported applied by the user; do not rerun it based on this old package. Statements below describe the original preparation stage.
 
 Prepared locally on 13 September 2026 after approval of the audit's recommended first stage. No live services, real credentials, browser sessions or deployment were used. This package includes the earlier photo-sync fix. The three existing SQL migrations and dependency manifest/lockfile are unchanged.
 

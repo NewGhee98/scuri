@@ -1,6 +1,6 @@
 # Review-only migration: independent project photos
 
-Status: prepared locally, **not run**. No live schema, data, RLS, connector or credentials were accessed. Current deployed contents and versions are unknown.
+Status reconciled 20 September 2026: this is the historical design/review record, not a request to apply SQL. On 14 September the user relayed a live-connector confirmation that `projects.photo_library` is required JSONB with default `[]` and an array-only constraint; existing owner-only RLS, grants and revision trigger were unchanged and no assets/rows were rewritten. This session has not independently inspected Supabase. The reported applied migration name is `20260913224149_add_project_photo_library`; the repository filename still starts `20260913180000`. Do not run it again merely to reconcile filenames. Subsequent library/editor/template/scroll work requires no new migration. See `PROJECT_CONTEXT.md` for current releases.
 
 ## Why it is needed
 
@@ -17,7 +17,7 @@ There are no changes to existing table constraints, foreign keys, revision trigg
 - Without it, a missing-column error permits a retry omitting the field only when all library originals are assigned. A save containing any unassigned original stops before child writes, displays the cloud-library setup error and keeps the local project for backup. Removing/replacing a frame can make an original unassigned and therefore trigger this protection.
 - Old clients omit the new column on writes, so they leave its stored value alone. They cannot show unassigned library entries and cannot correctly render new negative-baseline crops. Upgrade active clients before relying on the new workflow across devices. This is compatibility support, not a promise that mixed app versions provide equivalent behaviour.
 
-## Later rollout, under separate authorization
+## Original rollout checklist (historical; inspect current state before any action)
 
 1. Preserve the current database schema/data snapshot and any unsynced browser drafts. Inspect the deployed application and schema before relying on historical notes. Use an isolated test database and synthetic photos first.
 2. Review the supplied SQL against the actual projects table, policies, revision trigger and any existing photo_library column. IF NOT EXISTS is not a substitute for checking an already-present column's type, default and constraints. PostgreSQL may take a table lock while applying DDL; choose the normal maintenance procedure for that environment.

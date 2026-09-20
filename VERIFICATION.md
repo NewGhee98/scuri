@@ -1,6 +1,16 @@
-# Local verification — 2026-09-15
+# Scuri verification
 
-## Four built-in panorama choices (latest local change, not deployed)
+## Current verification — 20 September 2026
+
+The current production baseline is PR #28 / main `8398085`, verified Ready / Current on Vercel. The Project photos scrolling fix is a separate change awaiting production release. It removes scrollTop feedback during native scrolling, including delayed React updates and height-only viewport changes, while retaining one-time restoration, explicit resets and anchored layout changes.
+
+**512 tests across 39 files pass**, as do standalone typecheck, full ESLint, the normal webpack production build and whitespace checks. Six focused regressions exercise the actual gallery component and effects. Three reproduce the original scroll writes/rollback before the fix. All preceding template, crop, export, sync-safety and library tests remain included. No dependency or schema changes.
+
+Local Chrome checks use a blank-cloud build and a generated backup containing 120 synthetic photos and two populated pages. Native scrolling advances through virtual rows while previews load; filtering resets to the beginning; the viewer returns to the same photo region with keyboard focus; both 1180×820 and 820×1180 CSS viewports are checked. This is desktop verification, not a physical-iPad momentum test or live cloud round trip. Browsing does not enable composition Undo or load all originals.
+
+Evidence: `../../outputs/scuri-scroll-{before-tests,tests,typecheck,lint,build}.txt` and `SCURI_SCROLL_AND_DOCUMENTATION_2026-09-20.md`. Current release/architecture and the documentation inventory are in `PROJECT_CONTEXT.md` and `README.md`. Older counts and local-only statements below describe historical packages and must not be presented as current release status.
+
+## Four built-in panorama choices (historical local verification, 15 September)
 
 Base: fetched GitHub main `6df71f9b0f51392694ff628c79cb15c370d96a32`. The final panorama set contains exact-ratio five/seven-photo layouts and a borderless version of each; smaller panorama counts from the initial local proposal were retired. No production crop, editor, thumbnail, export, storage, custom-template or sync code changes.
 
