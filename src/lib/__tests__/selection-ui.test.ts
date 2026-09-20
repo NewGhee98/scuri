@@ -76,7 +76,7 @@ describe("template selection shading", () => {
   });
 });
 
-it("page thumbnail drawing ignores selection and leaves negative-zoom background unshaded", () => {
+it.each([.4, 1, 2])("page thumbnail drawing keeps free positioning and exposed background unshaded at zoom %s", zoom => {
   const source = readFileSync(new URL("../../components/composition-thumbnail.tsx", import.meta.url), "utf8");
   const ast = ts.createSourceFile("composition-thumbnail.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let draw = "";
@@ -89,7 +89,7 @@ it("page thumbnail drawing ignores selection and leaves negative-zoom background
   visit(ast); expect(draw).not.toBe("");
   const results = [];
   for (const selectedFrameId of ["f", null]) {
-    const crop = Object.freeze({ zoom: .4, positionX: 0, positionY: 0 });
+    const crop = Object.freeze({ zoom, positionX: 0, positionY: 0, freePosition: Object.freeze({ x: .12, y: -.16 }) });
     const photo = { previewUrl: "blob:synthetic", sourceWidth: 6400, sourceHeight: 1440, crop };
     const ctx = { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn(), save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(),
       roundRect: vi.fn(), clip: vi.fn(), setTransform: vi.fn(), stroke: vi.fn() };

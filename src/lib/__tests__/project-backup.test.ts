@@ -22,6 +22,18 @@ beforeEach(() => { vi.stubGlobal("fetch", vi.fn(() => { throw new Error("No real
 afterEach(() => vi.unstubAllGlobals());
 
 describe("portable project packages", () => {
+  it("retains free positioning and independent repeated crops without touching original bytes", async () => {
+    const source = project(), photo = Object.values(source.pages[0].photos)[0];
+    photo.crop = { ...photo.crop, zoom: .67, freePosition: { x: .12, y: -.34 } };
+    source.pages.push({ ...source.pages[0], id: "synthetic-repeat", photos: { [photo.frameId]: { ...photo, crop: { ...photo.crop, freePosition: { x: -.23, y: .45 } } } } });
+    const before = structuredClone(source), read = vi.fn(async () => bytes());
+    const review = await inspectProjectBackup((await createProjectBackup(source, read)).blob);
+    const restored = materializeProjectBackup(review);
+    expect(read).toHaveBeenCalledOnce(); expect(restored.originals.size).toBe(1);
+    for (let i = 0; i < 2; i++) expect(Object.values(restored.project.pages[i].photos)[0].crop).toEqual(Object.values(source.pages[i].photos)[0].crop);
+    expect(await [...restored.originals.values()][0].text()).toBe(await bytes().text());
+    expect(source).toEqual(before);
+  });
   it("round-trips originals, layout snapshots and crops, restoring entirely fresh identities", async () => {
     const source = project(); const original = structuredClone(source);
     const backup = await createProjectBackup(source, async () => bytes());

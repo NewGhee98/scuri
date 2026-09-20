@@ -110,9 +110,9 @@ describe("built-in panorama geometry", () => {
       expect(placed.width / placed.height).toBeCloseTo(item.width / item.height, 12);
       expect(placed.x + placed.width / 2).toBeCloseTo(frame.x + frame.width / 2, 9);
       expect(1 - frame.width / placed.width).toBeCloseTo(expectedWidthLoss, 12);
-      // Normal panning can choose either edge without exposing background.
+      // Previously saved edge crops still cover the borderless frame.
       for (const direction of [-1, 1]) {
-        const crop = moveCrop(item.width, item.height, frame, DEFAULT_CROP, direction * 10000, 0);
+        const crop = { ...DEFAULT_CROP, positionX: direction };
         const panned = coverPlacement(item.width, item.height, frame, crop);
         expect(panned.x).toBeLessThanOrEqual(frame.x + 1e-9);
         expect(panned.x + panned.width).toBeGreaterThanOrEqual(frame.x + frame.width - 1e-9);
@@ -166,7 +166,7 @@ describe.each(cases)("$name compatibility", group => {
     });
     const page = filledPage(template, group.width, group.height, zoom);
     const frame = resolveFrames(template, page.gutter)[0];
-    // Exercise normal panning after zoom-in, and centering below baseline.
+    // Explicit panning now moves both axes at every zoom, including below baseline.
     page.photos[frame.id].crop = moveCrop(group.width, group.height, frame, page.photos[frame.id].crop, 20, -10);
     const project: StoredProject = {
       version: 3, id: "synthetic-project", name: "Panorama test", formatId: template.formatId,
@@ -187,8 +187,8 @@ describe.each(cases)("$name compatibility", group => {
     expect(placement.width / baseline.width).toBeCloseTo(zoom, 9);
     expect(placement.height / frame.height).toBeCloseTo(zoom, 9);
     if (zoom < 1) {
-      expect(placement.x + placement.width / 2).toBeCloseTo(frame.x + frame.width / 2, 9);
-      expect(placement.y + placement.height / 2).toBeCloseTo(frame.y + frame.height / 2, 9);
+      expect(placement.x + placement.width / 2).toBeCloseTo(frame.x + frame.width / 2 + 20, 9);
+      expect(placement.y + placement.height / 2).toBeCloseTo(frame.y + frame.height / 2 - 10, 9);
     }
   });
 

@@ -3,8 +3,9 @@ import * as React from "react";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as viewport from "../canvas-viewport";
-import { moveCrop } from "../crop";
-import { snapFramePosition } from "../editor-alignment";
+import { centreCrop, DEFAULT_CROP, moveCrop } from "../crop";
+import { snapFramePosition, snapPhotoPosition, snapPhotoZoom } from "../editor-alignment";
+import type { CropState } from "../types";
 import { resizeFrame } from "../frame-resize";
 
 const content = { width: 1080, height: 1350 }, stage = { width: 800, height: 650 };
@@ -90,12 +91,12 @@ describe.each([.25, 1, 3])("editing at %sx canvas scale", scale => {
     const run = callbacks("editor-canvas"), frame = { id: "f", x: 100, y: 100, width: 400, height: 400, cornerRadius: 0 };
     const scope = { size: content, format: content, pointInCanvas, viewScaleRef: { current: scale },
       pointersRef: { current: new Map([[1, { x: 200, y: 200 }]]) }, frameDragRef: { current: { pointerId: 1, start: { x: 200, y: 200 }, frame } },
-      dragRef: { current: { frameId: "f", last: { x: 200, y: 200 }, distance: 0 } }, pinchRef: { current: null }, swapDragRef: { current: null },
+      dragRef: { current: { pointerId: 1, frameId: "f", last: { x: 200, y: 200 }, distance: 0 } }, pinchRef: { current: null }, swapDragRef: { current: null },
       frames: [frame], photos: { f: { sourceWidth: 1600, sourceHeight: 800, crop: { zoom: 1, positionX: 0, positionY: 0 } } },
-      moveFrameMode: false, snapEnabled: true, snapFramePosition, moveCrop, onCropChange: vi.fn(), onFrameMove: vi.fn(), onGuidesChange: vi.fn(),
+      moveFrameMode: false, snapEnabled: true, snapFramePosition, snapPhotoPosition, moveCrop, onCropChange: vi.fn(), onFrameMove: vi.fn(), onGuidesChange: vi.fn(),
       canvasPoint: (event: unknown) => run("canvasPoint", scope)(event) };
     run("handlePointerMove", scope)(eventAt(240, 220));
-    expect(scope.onCropChange).toHaveBeenCalledWith("f", { zoom: 1, positionX: .2, positionY: 0 });
+    expect(scope.onCropChange).toHaveBeenCalledWith("f", { zoom: 1, positionX: 0, positionY: 0, freePosition: { x: .1, y: .05 } });
     scope.moveFrameMode = true;
     run("handlePointerMove", scope)(eventAt(260, 230));
     expect(scope.onFrameMove).toHaveBeenCalledWith("f", 160, 130);
@@ -228,4 +229,82 @@ it("cancelling an editor gesture cannot complete a swap, open the picker or appl
     expect(scope.pointersRef.current.size).toBe(0); expect(scope.pinchRef.current).toBeNull();
     for (const action of [scope.onMovePhoto, scope.onRequestPhoto, scope.onCropChange, scope.onFrameMove]) expect(action).not.toHaveBeenCalled();
   }
+});
+
+describe("free photo gesture integration", () => {
+  const run = callbacks("editor-canvas");
+  function harness(scale = 1, snap = true) {
+    const frame = { id: "f", x: 100, y: 100, width: 400, height: 300, cornerRadius: 0 };
+    const photos = { f: { blobKey: "synthetic", sourceWidth: 800, sourceHeight: 600, crop: { ...DEFAULT_CROP, zoom: .5 } as CropState } };
+    const target = { getBoundingClientRect: () => ({ left: -100, top: -200, width: 1080 * scale, height: 1350 * scale }),
+      focus: vi.fn(), setPointerCapture: vi.fn(), hasPointerCapture: () => false };
+    const scope = { photos, frames: [frame], selectedFrameId: "f", size: content, format: content, viewScaleRef: { current: scale },
+      pointersRef: { current: new Map() }, dragRef: { current: null as unknown }, pinchRef: { current: null as unknown },
+      frameDragRef: { current: null }, swapDragRef: { current: null }, wheelRef: { current: null }, canvasRef: { current: target },
+      moveFrameMode: false, rearrangeMode: false, snapEnabled: snap, unavailableFrameIds: [],
+      pointInCanvas, moveCrop, snapPhotoPosition, setSwapTargetFrameId: vi.fn(), onSelectFrame: vi.fn(), onGuidesChange: vi.fn(),
+      onRequestPhoto: vi.fn(), onMovePhoto: vi.fn(),
+      onCropChange: vi.fn((id: string, crop: CropState) => { photos.f.crop = crop; }),
+      onZoomChange: vi.fn((id: string, zoom: number, tolerance: number) => { photos.f.crop = snapPhotoZoom(photos, [frame], id, zoom, tolerance)!.crop; }),
+      hitTest: (frames: typeof frame[], point: { x: number; y: number }) => frames.find(f => point.x >= f.x && point.x <= f.x + f.width && point.y >= f.y && point.y <= f.y + f.height),
+      pointerDistance: ([a, b]: { x: number; y: number }[]) => Math.hypot(a.x - b.x, a.y - b.y),
+      canvasPoint: (event: unknown): { x: number; y: number } => run("canvasPoint", scope)(event) };
+    const event = (pointerId: number, x: number, y: number, altKey = false) => ({ pointerId, clientX: -100 + x * scale, clientY: -200 + y * scale,
+      currentTarget: target, altKey, preventDefault: vi.fn() });
+    return { scope, photos, event, call: (name: string, ...args: unknown[]) => run(name, scope)(...args) };
+  }
+
+  it.each([.25, 1, 3])("passes through centre using small pointer deltas at %sx viewport scale", scale => {
+    const h = harness(scale);
+    h.call("handlePointerDown", h.event(1, 200, 200));
+    for (let i = 1; i <= 12; i++) h.call("handlePointerMove", h.event(1, 200 + i / scale, 200 - i / scale));
+    expect(h.photos.f.crop.freePosition!.x * 400 * scale).toBeCloseTo(12);
+    expect(h.photos.f.crop.freePosition!.y * 300 * scale).toBeCloseTo(-12);
+    expect(h.photos.f.crop.zoom).toBe(.5);
+    expect(h.scope.onRequestPhoto).not.toHaveBeenCalled(); expect(h.scope.onMovePhoto).not.toHaveBeenCalled();
+  });
+
+  it("does not lose rapid deltas before React rerenders, and Snap off/Alt permits exact small moves", () => {
+    for (const snap of [true, false]) {
+      const h = harness(1, snap), original = h.photos.f.crop;
+      h.scope.onCropChange.mockImplementation(() => undefined); // no props update between events
+      h.call("handlePointerDown", h.event(1, 200, 200));
+      for (let i = 1; i <= 10; i++) h.call("handlePointerMove", h.event(1, 200 + i, 200 + i, true));
+      expect(h.scope.onCropChange).toHaveBeenLastCalledWith("f", { ...original, freePosition: { x: expect.closeTo(.025), y: expect.closeTo(10 / 300) } });
+      expect(h.photos.f.crop).toBe(original);
+    }
+    const h = harness(1, false);
+    h.call("handlePointerDown", h.event(1, 200, 200)); h.call("handlePointerMove", h.event(1, 201, 199));
+    expect(h.photos.f.crop.freePosition).toEqual({ x: 1 / 400, y: -1 / 300 });
+  });
+
+  it("continues one-finger positioning after pinch, even when the second finger started outside a frame", () => {
+    const h = harness(1, false);
+    h.call("handlePointerDown", h.event(1, 200, 200));
+    h.call("handlePointerMove", h.event(1, 240, 220));
+    const offset = h.photos.f.crop.freePosition;
+    h.call("handlePointerDown", h.event(2, 600, 220)); // page background
+    h.call("handlePointerMove", h.event(2, 780, 220));
+    expect(h.photos.f.crop.zoom).toBe(.75); expect(h.photos.f.crop.freePosition).toEqual(offset);
+    h.call("endPointer", h.event(2, 780, 220), true);
+    h.call("handlePointerMove", h.event(1, 260, 205));
+    expect(h.photos.f.crop.freePosition!.x).toBeCloseTo(.15);
+    expect(h.photos.f.crop.freePosition!.y).toBeCloseTo(5 / 300);
+    h.call("cancelInteraction"); const crop = h.photos.f.crop;
+    h.call("handlePointerMove", h.event(1, 900, 900)); expect(h.photos.f.crop).toBe(crop);
+  });
+
+  it("selection alone does not opt a legacy crop into new geometry", () => {
+    const h = harness(), crop = h.photos.f.crop;
+    h.call("handlePointerDown", h.event(1, 200, 200)); h.call("endPointer", h.event(1, 200, 200), true);
+    expect(h.photos.f.crop).toBe(crop); expect(h.scope.onCropChange).not.toHaveBeenCalled();
+  });
+
+  it("Centre and Reset use distinct Undo groups and Centre preserves zoom", () => {
+    const app = callbacks("layouts-app"), selectedPhoto = { crop: moveCrop(800, 600, { id: "f", x: 0, y: 0, width: 400, height: 300, cornerRadius: 0 }, { ...DEFAULT_CROP, zoom: .37125 }, 70, -30) };
+    const scope = { selectedFrameId: "f", selectedPhoto, centreCrop, DEFAULT_CROP, updateCrop: vi.fn(), setAlignmentGuides: vi.fn() };
+    app("centreSelected", scope)(); app("resetSelected", scope)();
+    expect(scope.updateCrop).toHaveBeenNthCalledWith(1, "f", expect.objectContaining({ zoom: .37125, freePosition: { x: 0, y: 0 } }), "centre-photo");
+    expect(scope.updateCrop).toHaveBeenNthCalledWith(2, "f", DEFAULT_CROP, "reset-photo");
+  });
 });
