@@ -5,6 +5,8 @@ import { getFormat } from "@/lib/formats";
 import { resizeFrame, type ResizeHandle } from "@/lib/frame-resize";
 import { validateTemplate } from "@/lib/templates";
 import { FRAME_SELECTION_TINT } from "@/lib/selection-style";
+import { pointInCanvas } from "@/lib/canvas-viewport";
+import { CanvasViewport } from "./canvas-viewport";
 import type { CustomTemplate, NormalizedFrame } from "@/lib/types";
 
 type Guide = { axis: "x" | "y"; value: number };
@@ -50,12 +52,12 @@ function updateFrames(
   };
 }
 
-function nearestSnap(sourceValues: number[], targetValues: number[]): { delta: number; guide: number } | null {
+function nearestSnap(sourceValues: number[], targetValues: number[], tolerance = SNAP_DISTANCE): { delta: number; guide: number } | null {
   let result: { delta: number; guide: number } | null = null;
   for (const source of sourceValues) {
     for (const target of targetValues) {
       const delta = target - source;
-      if (Math.abs(delta) <= SNAP_DISTANCE && (!result || Math.abs(delta) < Math.abs(result.delta))) {
+      if (Math.abs(delta) <= tolerance && (!result || Math.abs(delta) < Math.abs(result.delta))) {
         result = { delta, guide: target };
       }
     }
@@ -74,8 +76,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [resizeFromCenter, setResizeFromCenter] = useState(false);
   const [guides, setGuides] = useState<Guide[]>([]);
-  const [canvasWidth, setCanvasWidth] = useState(520);
-  const canvasShellRef = useRef<HTMLDivElement>(null);
+  const [viewScale, setViewScale] = useState(1);
   const canvasRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<Interaction | null>(null);
 
@@ -85,27 +86,13 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
     [draft.frames, selectedIds],
   );
   const primaryFrame = selectedFrames.at(-1) ?? null;
-  const canvasHeight = (canvasWidth * format.height) / format.width;
+  const canvasWidth = format.width, canvasHeight = format.height;
 
   useEffect(() => {
     draftRef.current = draft;
     const timer = window.setTimeout(() => onDraftChange(draft), 350);
     return () => window.clearTimeout(timer);
   }, [draft, onDraftChange]);
-
-  useEffect(() => {
-    const shell = canvasShellRef.current;
-    if (!shell) return;
-    const update = () => {
-      const available = Math.max(260, Math.min(720, shell.clientWidth - 24));
-      const maxHeight = Math.max(380, window.innerHeight - 180);
-      setCanvasWidth(Math.min(available, (maxHeight * format.width) / format.height));
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(shell);
-    return () => observer.disconnect();
-  }, [format.height, format.width]);
 
   const replaceDraft = (next: CustomTemplate) => {
     draftRef.current = next;
@@ -187,14 +174,11 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
 
   const pointForEvent = (event: React.PointerEvent<HTMLElement>): { x: number; y: number } => {
     const rect = canvasRef.current!.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) / rect.width,
-      y: (event.clientY - rect.top) / rect.height,
-    };
+    return pointInCanvas(event, rect, { width: 1, height: 1 });
   };
 
   const beginInteraction = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (preview) return;
+    if (preview || interactionRef.current) return;
     const target = event.target as HTMLElement;
     const frameElement = target.closest<HTMLElement>("[data-template-frame-id]");
     const handleElement = target.closest<HTMLElement>("[data-resize-handle]");
@@ -256,11 +240,11 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
         const yTargets = [0, 0.5, 1, ...otherFrames.flatMap((frame) => [frame.y, frame.y + frame.height / 2, frame.y + frame.height])];
         const xSnap = nearestSnap(
           [primary.x + safeX, primary.x + primary.width / 2 + safeX, primary.x + primary.width + safeX],
-          xTargets,
+          xTargets, 5 / (canvasWidth * viewScale),
         );
         const ySnap = nearestSnap(
           [primary.y + safeY, primary.y + primary.height / 2 + safeY, primary.y + primary.height + safeY],
-          yTargets,
+          yTargets, 5 / (canvasHeight * viewScale),
         );
         if (xSnap) {
           safeX = clamp(safeX + xSnap.delta, -minX, 1 - maxX);
@@ -299,6 +283,14 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
     }
     interactionRef.current = null;
     setGuides([]);
+  };
+
+  const cancelInteraction = () => {
+    const interaction = interactionRef.current;
+    interactionRef.current = null;
+    if (interaction && !sameTemplate(interaction.before, draftRef.current)) replaceDraft(interaction.before);
+    setGuides([]);
+    if (interaction && canvasRef.current?.hasPointerCapture(interaction.pointerId)) canvasRef.current.releasePointerCapture(interaction.pointerId);
   };
 
   const alignSelected = (mode: "left" | "hcentre" | "right" | "top" | "vcentre" | "bottom") => {
@@ -377,15 +369,17 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
 
   return (
     <main className="template-designer-shell">
-      <section ref={canvasShellRef} className="template-canvas-workspace">
+      <section className="template-canvas-workspace">
         <div className="template-designer-topbar">
           <button className="text-button" type="button" onClick={onCancel}>← Templates</button>
           <div className="flex items-center gap-2">
             <button className="small-button compact" type="button" disabled={!past.length} onClick={undo}>Undo</button>
             <button className="small-button compact" type="button" disabled={!future.length} onClick={redo}>Redo</button>
-            <button className={`small-button compact ${preview ? "selected-tool" : ""}`} type="button" aria-pressed={preview} onClick={() => setPreview((value) => !value)}>Preview</button>
+            <button className={`small-button compact ${preview ? "selected-tool" : ""}`} type="button" aria-pressed={preview} onClick={() => { cancelInteraction(); setPreview((value) => !value); }}>Preview</button>
           </div>
         </div>
+        <CanvasViewport width={canvasWidth} height={canvasHeight} label="Template canvas" editable
+          onScaleChange={setViewScale} onInteractionCancel={cancelInteraction}>
         <div
           ref={canvasRef}
           className={`template-design-canvas ${preview ? "previewing" : ""}`}
@@ -393,7 +387,8 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
           onPointerDown={beginInteraction}
           onPointerMove={moveInteraction}
           onPointerUp={endInteraction}
-          onPointerCancel={endInteraction}
+          onPointerCancel={cancelInteraction}
+          onLostPointerCapture={event => { if (interactionRef.current?.pointerId === event.pointerId) cancelInteraction(); }}
         >
           {!preview && guides.map((guide, index) => (
             <span
@@ -432,6 +427,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
           })}
           {!draft.frames.length ? <div className="blank-canvas-message">Blank canvas<br /><span>Add your first photo frame</span></div> : null}
         </div>
+        </CanvasViewport>
       </section>
 
       <aside className="template-control-panel">
