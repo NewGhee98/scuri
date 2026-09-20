@@ -69,7 +69,7 @@ describe("selection is not a pointer edit", () => {
       swapDragRef: { current: null }, pinchRef: { current: mode === "pinch" ? { frameId: "f", startDistance: 100, startZoom: 1 } : null },
       dragRef: { current: mode === "photo" ? { frameId: "f", last: start, distance: 0 } : null }, frames: [frame],
       photos: { f: { sourceWidth: 6400, sourceHeight: 1440, crop: { zoom: 1, positionX: .5, positionY: .5 } } },
-      size: { width: 1080, height: 1350 }, format: { width: 1080, height: 1350 }, snapEnabled: true,
+      size: { width: 1080, height: 1350 }, format: { width: 1080, height: 1350 }, snapEnabled: true, viewScaleRef: { current: 1 },
       pointerDistance: ([a, b]: { x: number; y: number }[]) => Math.hypot(a.x - b.x, a.y - b.y),
       snapFramePosition, moveCrop, onCropChange: vi.fn(), onFrameMove: vi.fn(), onZoomChange: vi.fn(), onGuidesChange: vi.fn() };
     const move = new Function("scope", `with (scope) { ${pointerMove} return move; }`)(scope);
