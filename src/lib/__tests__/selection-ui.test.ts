@@ -20,7 +20,7 @@ function compile(name: string, node: ts.Node) {
 }
 function visit(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isArrowFunction(node.initializer)) compile(node.name.text, node.initializer);
-  if (ts.isCallExpression(node) && node.expression.getText(ast) === "draft.frames.map") compile("renderFrame", node.arguments[0]);
+  if (ts.isCallExpression(node) && node.expression.getText(ast) === "draft.frames.map" && node.arguments[0].getText(ast).includes("data-template-frame-id")) compile("renderFrame", node.arguments[0]);
   ts.forEachChild(node, visit);
 }
 visit(ast);
@@ -60,13 +60,14 @@ describe("template selection shading", () => {
       const draft = { ...structuredClone(template), updatedAt: "2026-09-20T00:00:00Z", syncState: "synced" };
       const before = structuredClone(draft), draftRef = { current: draft }, interactionRef = { current: null };
       const scope = { draftRef, interactionRef, preview: false, multiSelect, selectedIds: [template.frames[0].id],
-        setSelectedIds: vi.fn(), canvasRef: { current: { setPointerCapture: vi.fn() } },
+        setSelectedIds: vi.fn(), setReferenceId: vi.fn(), setLayoutNotice: vi.fn(), chooseFrame: vi.fn(), canvasRef: { current: { setPointerCapture: vi.fn() } },
         pointForEvent: () => ({ x: .5, y: .5 }), replaceDraft: vi.fn(), setPast: vi.fn(), setFuture: vi.fn(), setGuides: vi.fn(),
         sameTemplate: (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b) };
       const event = { pointerId: 1, preventDefault: vi.fn(), stopPropagation: vi.fn(),
         target: { closest: (selector: string) => selector === "[data-template-frame-id]" ? { dataset: { templateFrameId: template.frames[1].id } } : null } };
       callback("beginInteraction", scope)(event);
-      expect(scope.setSelectedIds).toHaveBeenCalledExactlyOnceWith(multiSelect ? template.frames.slice(0, 2).map(frame => frame.id) : [template.frames[1].id]);
+      if (multiSelect) expect(scope.chooseFrame).toHaveBeenCalledExactlyOnceWith(template.frames[1].id);
+      else expect(scope.setSelectedIds).toHaveBeenCalledExactlyOnceWith([template.frames[1].id]);
       callback("moveInteraction", scope)(event);
       callback("endInteraction", scope)(event);
       expect(draftRef.current).toBe(draft); expect(draft).toEqual(before);

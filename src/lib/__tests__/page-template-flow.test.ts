@@ -13,6 +13,8 @@ import { getFormat } from "../formats";
 import { openPhotoPicker, placeLibraryPhoto } from "../photo-picker";
 import { WorkspaceSession } from "../workspace";
 import { loadProjects, saveProjects } from "../storage";
+import { createBlankCustomTemplate } from "../custom-templates";
+import { arrangeFrames, setFrameRatio } from "../template-layout";
 import type { AppScreen, CustomTemplate, ProjectPage, ProjectPhoto, StoredProject, TemplateDefinition } from "../types";
 
 // Run the real component handlers with controlled state commits and deferred
@@ -114,6 +116,27 @@ function harness({ loaded = false, confirm = true, project = fixture(), custom =
 }
 
 type Harness = ReturnType<typeof harness>;
+it("saving designer ratios and arrangements leaves populated page snapshots and repeated crops unchanged", async () => {
+  const custom = { ...createBlankCustomTemplate("instagram-post"), name: "Synthetic reusable layout", status: "saved" as const,
+    frames: pair.frames.map(frame => ({ ...frame })) };
+  const h = harness({ custom: [custom] }); h.run("addPage"); h.settle(); await h.run("selectTemplate", custom); h.settle();
+  const page = h.state.pages.at(-1)!, original = Object.values(fixture().pages[0].photos)[0];
+  page.unavailablePhotos = Object.fromEntries(custom.frames.map((frame, i) => [frame.id, { ...original, frameId: frame.id,
+    crop: { zoom: i ? .65 : 1.3, positionX: 0, positionY: 0, freePosition: { x: i ? -.2 : .15, y: .12 } } }]));
+  h.settle(); const before = h.state.pages.map(serializePage).map(p => structuredClone(p));
+  const size = getFormat("instagram-post"), ids = custom.frames.map(frame => frame.id);
+  const changedFrames = setFrameRatio(custom.frames, ids, { width: 40, height: 9 }, size).frames;
+  const edited = { ...custom, frames: arrangeFrames(changedFrames, ids, "vertical", 32, true, size, "synthetic-stack").frames };
+  h.scope.templateCloudConfigured = false;
+  h.scope.saveTemplateDraftLocally = vi.fn((draft: CustomTemplate) => { h.state.customTemplates = [draft]; });
+  const save = new Function("scope", `with (scope) { ${callbacks.get("saveDesignedTemplate")}; return callback; }`)(h.scope);
+  await save(edited);
+  expect(h.scope.saveTemplateDraftLocally).toHaveBeenCalled(); expect(h.state.customTemplates[0].frames).not.toEqual(custom.frames);
+  expect(h.state.pages.map(serializePage)).toEqual(before);
+  expect(page.templateSnapshot!.frames).toEqual(custom.frames);
+  expect(page.unavailablePhotos![ids[0]].crop).not.toEqual(page.unavailablePhotos![ids[1]].crop);
+});
+
 describe("session-only photo selection", () => {
   it.each([false, true])("does not change composition, edit timestamps, history or autosave inputs (originals loaded: %s)", loaded => {
     const project = fixture();
