@@ -5,6 +5,8 @@ import * as image from "../image";
 import { getFormat } from "../formats";
 import { getTemplate } from "../templates";
 import type { PhotoAsset, ProjectPage } from "../types";
+import { fitCanvas, panCanvas, zoomCanvas } from "../canvas-viewport";
+import { serializePage } from "../project-photos";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe("shared editor, thumbnail and export drawing", () => {
@@ -56,5 +58,32 @@ describe("shared editor, thumbnail and export drawing", () => {
     expect(context.drawImage.mock.calls[0][0]).toBe(drawable);
     expect(context.stroke).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledOnce();
     expect(context.fillRect).toHaveBeenCalledTimes(2);
+  });
+
+  it("canvas view changes preserve stored crops and produce identical original-quality output geometry", async () => {
+    const context = { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn(), save: vi.fn(), beginPath: vi.fn(), roundRect: vi.fn(), clip: vi.fn(), restore: vi.fn() };
+    const canvas = { width: 0, height: 0, getContext: () => context, toBlob: (callback: (value: Blob) => void) => callback(new Blob(["jpeg"])) };
+    vi.stubGlobal("document", { createElement: () => canvas });
+    const drawable = {} as CanvasImageSource, original = new Blob(["original-bytes"]);
+    vi.spyOn(image, "decodeImage").mockResolvedValue({ drawable, width: 6400, height: 1440, close: vi.fn() });
+    const photo: PhotoAsset = { frameId: "photo-1", blobKey: "synthetic", sourceBlob: original, previewUrl: "blob:tiny",
+      sourceWidth: 6400, sourceHeight: 1440, crop: { zoom: .72, positionX: 0, positionY: 0 } };
+    const page: ProjectPage = { id: "p", templateId: "instagram-square-full-frame", background: "#202020", gutter: 32,
+      photos: { [photo.frameId]: photo }, selectedFrameId: photo.frameId, createdAt: "unchanged", updatedAt: "unchanged" };
+    const before = serializePage(page), format = getFormat("instagram-square"), template = getTemplate(page.templateId);
+    const output = { width: 3240, height: 3240 }, stage = { width: 800, height: 650 };
+    const views = [fitCanvas(stage, output), zoomCanvas(fitCanvas(stage, output), 1, { x: 400, y: 325 }, stage, output)];
+    views.push(panCanvas(zoomCanvas(views[1], 4, { x: 300, y: 200 }, stage, output), -400, 900, stage, output));
+    const renders = [];
+    for (const view of views) {
+      expect(view.scale).toBeGreaterThan(0);
+      context.roundRect.mockClear(); context.drawImage.mockClear();
+      await renderPagePreview(page, format, template, undefined, output);
+      renders.push({ width: canvas.width, height: canvas.height, clips: context.roundRect.mock.calls, draws: context.drawImage.mock.calls });
+      expect(serializePage(page)).toEqual(before);
+    }
+    expect(renders[0].width).toBe(3240); expect(renders[0].height).toBe(3240);
+    expect(renders[1]).toEqual(renders[0]); expect(renders[2]).toEqual(renders[0]);
+    expect(vi.mocked(image.decodeImage).mock.calls.every(([blob]) => blob === original)).toBe(true);
   });
 });

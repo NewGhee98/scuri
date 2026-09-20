@@ -344,7 +344,7 @@ input:disabled {
 
 .template-design-canvas {
   position: relative;
-  max-width: 100%;
+  max-width: none;
   margin: auto;
   overflow: hidden;
   box-shadow: 0 18px 55px rgb(0 0 0 / 15%);
@@ -1018,6 +1018,36 @@ input:disabled {
 .zoom-percent-input { width: 6rem; min-height: 40px; border: 1px solid #d8d8d3; border-radius: 9px; padding: 6px 9px; text-align: right; font-variant-numeric: tabular-nums; background: white; }
 .zoom-percent-input:focus { outline: 2px solid #315e44; outline-offset: 2px; }
 .zoom-percent-input[aria-invalid="true"] { border-color: #b33b36; }
+
+/* View transforms are editing UI only; design and export coordinates stay fixed. */
+.canvas-viewport { display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; height: max(340px, calc(100dvh - 260px)); }
+.template-canvas-workspace .canvas-viewport { height: max(340px, calc(100dvh - 220px)); }
+.canvas-view-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; padding-bottom: 4px; }
+.canvas-view-tools button, .canvas-view-percent { min-width: 44px; min-height: 44px; border: 1px solid #cfcfca; border-radius: 9px; background: #fff; color: #272725; }
+.canvas-view-tools button { padding: 6px 10px; font-size: 14px; cursor: pointer; }
+.canvas-view-tools button:disabled { opacity: .4; cursor: default; }
+.canvas-view-tools button[aria-pressed="true"] { background: #315e44; color: #fff; border-color: #315e44; }
+.canvas-view-tools :focus-visible, .canvas-viewport-stage:focus-visible { outline: 2px solid #0369a1; outline-offset: 2px; }
+.canvas-view-modes { display: flex; gap: 3px; margin-right: 6px; }
+.canvas-view-percent { display: flex; align-items: center; padding-right: 8px; font-size: 14px; }
+.canvas-view-percent input { width: 57px; min-height: 42px; padding: 4px; border: 0; border-radius: inherit; background: transparent; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+.canvas-view-percent input::-webkit-inner-spin-button { -webkit-appearance: none; }
+.canvas-view-help { margin: 0; padding: 2px 4px 6px; font-size: 11px; line-height: 16px; color: #62625b; text-align: center; }
+.canvas-viewport-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; user-select: none; -webkit-user-select: none; }
+.canvas-viewport-stage.navigating { cursor: grab; }
+.canvas-viewport-stage.navigating:active { cursor: grabbing; }
+.canvas-viewport-content { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.canvas-viewport-content .template-design-canvas:not(.previewing) { overflow: visible; }
+.canvas-viewport-content .designed-frame-label { font-size: calc(12px / var(--canvas-view-scale)); }
+/* Keep an 18px visible handle and a 40px touch target at every view scale. */
+.canvas-viewport-content .resize-handle { width: calc(40px / var(--canvas-view-scale)); height: calc(40px / var(--canvas-view-scale)); border: 0; background: transparent; box-shadow: none; }
+.canvas-viewport-content .resize-handle::after { content: ""; position: absolute; inset: 27.5%; border: calc(2px / var(--canvas-view-scale)) solid #111; border-radius: 50%; background: #fff; box-shadow: 0 2px 7px #0003; pointer-events: none; }
+.canvas-viewport-content .resize-handle.nw { top: calc(-20px / var(--canvas-view-scale)); left: calc(-20px / var(--canvas-view-scale)); }
+.canvas-viewport-content .resize-handle.ne { top: calc(-20px / var(--canvas-view-scale)); right: calc(-20px / var(--canvas-view-scale)); }
+.canvas-viewport-content .resize-handle.sw { bottom: calc(-20px / var(--canvas-view-scale)); left: calc(-20px / var(--canvas-view-scale)); }
+.canvas-viewport-content .resize-handle.se { bottom: calc(-20px / var(--canvas-view-scale)); right: calc(-20px / var(--canvas-view-scale)); }
+.canvas-viewport.export-canvas-viewport { height: 100%; min-height: 0; }
+
 .page-preview-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0; border: 0; background: #f5f5f0; color: #11110f; }
 .page-preview-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .page-preview-dialog::backdrop { background: #111; }
@@ -1027,10 +1057,9 @@ input:disabled {
 .export-size-input { min-height: 40px; border: 1px solid #d8d8d3; border-radius: 8px; padding: 6px 10px; background: white; }
 .export-size-input[aria-invalid="true"] { border-color: #b33b36; }
 .page-preview-dialog [aria-pressed="true"] { background: #315e44; color: white; }
-.page-preview-stage { position: relative; display: grid; place-items: center; min-height: 0; overflow: hidden; padding: 12px; touch-action: pan-y; text-align: center; }
-.page-preview-stage img { position: absolute; inset: 0; width: 100%; height: 100%; padding: 12px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
-.page-preview-detail { display: block; place-items: start; overflow: auto; touch-action: pan-x pan-y; text-align: left; }
-.page-preview-detail img { position: static; display: block; justify-self: start; max-width: none; max-height: none; padding: 0; object-fit: fill; }
+.page-preview-stage { position: relative; display: grid; min-width: 0; min-height: 0; overflow: hidden; padding: 8px; text-align: center; }
+.page-preview-stage > p { align-self: center; }
+.page-preview-stage img { display: block; max-width: none; max-height: none; user-select: none; -webkit-user-drag: none; }
 @media (max-width: 700px) {
   .page-preview-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto; }
   .page-preview-quality { max-height: 22dvh; border-left: 0; border-top: 1px solid rgb(0 0 0 / 10%); padding: 10px 12px; }

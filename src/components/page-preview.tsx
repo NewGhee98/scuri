@@ -10,6 +10,7 @@ import { disposePhotoAsset } from "@/lib/image";
 import { PhotoPreviewContext } from "./photo-preview-context";
 import type { CanvasFormat, ProjectPage, TemplateDefinition } from "@/lib/types";
 import { ExportQualityReview } from "./export-quality-review";
+import { CanvasViewport } from "./canvas-viewport";
 
 export function PagePreview({ pages, initialPageId, format, resolveTemplate, outputWidth, onOutputWidthChange, pageNumbers, onExport, onClose }: {
   pages: ProjectPage[]; initialPageId: string | null; format: CanvasFormat;
@@ -19,10 +20,7 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const session = useContext(PhotoPreviewContext);
-  const stage = useRef<HTMLDivElement>(null);
-  const swipe = useRef<{ x: number; y: number } | null>(null);
   const [index, setIndex] = useState(Math.max(0, pages.findIndex(page => page.id === initialPageId)));
-  const [detail, setDetail] = useState(false);
   const [custom, setCustom] = useState(![1, 2, 3].some(scale => outputWidth === format.width * scale));
   const sizeResult = useMemo(() => {
     try { return { size: getExportSize(format, outputWidth), error: "" }; }
@@ -50,8 +48,6 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
     dialog.current?.showModal();
     return () => { document.body.style.overflow = previousOverflow; focused?.focus(); };
   }, []);
-
-  useEffect(() => { stage.current?.scrollTo(0, 0); }, [request, detail]);
 
   useEffect(() => {
     let cancelled = false, url: string | undefined;
@@ -81,8 +77,8 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
 
   return <dialog ref={dialog} className="page-preview-dialog" aria-labelledby="page-preview-title"
     onCancel={event => { event.preventDefault(); onClose(); }} onKeyDown={event => {
-      // Detail mode leaves arrow keys for scrolling; inputs keep native controls.
-      if (detail || (event.target instanceof HTMLElement && event.target.closest("input, select, textarea"))) return;
+      // Canvas navigation owns its arrow keys; inputs keep native controls.
+      if (event.target instanceof HTMLElement && event.target.closest("input, select, textarea, .canvas-viewport")) return;
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); navigate(event.key === "ArrowLeft" ? -1 : 1); }
     }}>
     <header className="grid gap-3 border-b border-black/10 p-3 sm:p-4">
@@ -104,24 +100,17 @@ export function PagePreview({ pages, initialPageId, format, resolveTemplate, out
         {custom ? <label className="grid gap-1">Width (pixels)<input className="export-size-input w-32" type="number" inputMode="numeric"
           min={format.width} max={maximumExportWidth(format)} step={exportWidthStep(format)} value={outputWidth || ""}
           aria-invalid={Boolean(sizeResult.error)} aria-describedby="export-size-help" onChange={event => onOutputWidthChange(Number(event.target.value))} /></label> : null}
-        <div className="flex gap-2" role="group" aria-label="Preview magnification">
-          <button type="button" className="small-button" aria-pressed={!detail} onClick={() => setDetail(false)}>Fit page</button>
-          <button type="button" className="small-button" aria-pressed={detail} onClick={() => setDetail(true)}>100% detail</button>
-        </div>
       </div>
-      <p id="export-size-help" className="text-xs text-neutral-600">{sizeResult.error || `${custom ? `Width rounds to multiples of ${exportWidthStep(format)} to keep ${format.aspectRatio}. ` : ""}Export size only; your layout and crops stay unchanged.${detail ? " Scroll to inspect the image at 100%." : ""}`}</p>
+      <p id="export-size-help" className="text-xs text-neutral-600">{sizeResult.error || `${custom ? `Width rounds to multiples of ${exportWidthStep(format)} to keep ${format.aspectRatio}. ` : ""}Export size only; your layout and crops stay unchanged. 100% detail shows the JPEG at its actual output dimensions.`}</p>
     </header>
     <div className="page-preview-body">
-      <div ref={stage} className={`page-preview-stage${detail ? " page-preview-detail" : ""}`} tabIndex={detail ? 0 : undefined} aria-label="Page image preview"
-        onPointerDown={event => { if (!detail) swipe.current = { x: event.clientX, y: event.clientY }; }}
-        onPointerCancel={() => { swipe.current = null; }} onPointerUp={event => {
-          const start = swipe.current; swipe.current = null;
-          if (!detail && start && Math.abs(event.clientX - start.x) > 50 && Math.abs(event.clientX - start.x) > Math.abs(event.clientY - start.y) * 1.5) navigate(event.clientX < start.x ? 1 : -1);
-        }}>
+      <div className="page-preview-stage" aria-label="Page image preview">
         {!size ? <p role="status">Choose a valid output size to preview.</p>
           : currentRender?.error ? <p role="alert">{currentRender.error}</p>
-          : currentRender?.url ? <Image unoptimized draggable={false} src={currentRender.url} width={size.width} height={size.height}
-            style={detail ? { width: size.width, height: size.height } : undefined} alt={`Export preview of page ${pageNumbers[pageIndex]}`} />
+          : currentRender?.url ? <CanvasViewport key={`${page.id}:${size.width}:${size.height}`} width={size.width} height={size.height} label="Export preview" className="export-canvas-viewport">
+            <Image unoptimized draggable={false} src={currentRender.url} width={size.width} height={size.height}
+              style={{ width: size.width, height: size.height }} alt={`Export preview of page ${pageNumbers[pageIndex]}`} />
+            </CanvasViewport>
           : <p role="status">{unavailable ? "Loading originals for the export preview…" : "Preparing preview…"}</p>}
       </div>
       <aside className="page-preview-quality">{size ? <ExportQualityReview pages={checks} onSelectPage={id => setIndex(Math.max(0, pages.findIndex(item => item.id === id)))} />
