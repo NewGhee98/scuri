@@ -6,7 +6,7 @@ import * as viewport from "../canvas-viewport";
 import { centreCrop, DEFAULT_CROP, moveCrop } from "../crop";
 import { snapFramePosition, snapPhotoPosition, snapPhotoZoom } from "../editor-alignment";
 import type { CropState } from "../types";
-import { resizeFrame } from "../frame-resize";
+import { resizeLayoutSelection, moveFrameGroup } from "../template-layout";
 
 const content = { width: 1080, height: 1350 }, stage = { width: 800, height: 650 };
 const { fitCanvas, zoomCanvas, panCanvas, resizeViewport, pointInCanvas, CanvasNavigationGesture } = viewport;
@@ -106,7 +106,8 @@ describe.each([.25, 1, 3])("editing at %sx canvas scale", scale => {
     const before = { frames: [frame], updatedAt: "unchanged", syncState: "synced" };
     const scope = { pointInCanvas, canvasRef: { current: { getBoundingClientRect: () => rect, hasPointerCapture: () => false } },
       draftRef: { current: before }, interactionRef: { current: { pointerId: 1, mode: "resize", frameId: "f", handle: "se", before, start: { x: .5, y: .4 }, selectedIds: ["f"] } as unknown },
-      resizeFromCenter: false, resizeFrame, snapEnabled: false, setGuides: vi.fn(), setPast: vi.fn(), setFuture: vi.fn(),
+      resizeFromCenter: false, resizeLayoutSelection, moveFrameGroup, designSize: content, canvasWidth: content.width, canvasHeight: content.height,
+      viewScale: scale, setLayoutNotice: vi.fn(), snapEnabled: false, setGuides: vi.fn(), setPast: vi.fn(), setFuture: vi.fn(),
       clamp: (n: number, min: number, max: number) => Math.min(max, Math.max(min, n)),
       pointForEvent: (event: unknown) => run("pointForEvent", scope)(event),
       updateFrames: (...args: unknown[]) => run("updateFrames", scope)(...args),
