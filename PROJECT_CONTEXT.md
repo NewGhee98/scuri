@@ -134,7 +134,7 @@ On 2026-08-30, PR #8 added compact filters to the Templates library. Users can c
 
 ### Image repositioning
 
-- Images can be repositioned within a fixed frame by dragging; movement is constrained to keep the frame covered.
+- Images can be dragged on both axes at every photo zoom, including exact-fit and smaller-than-frame sizes. The fixed frame clips the photo and exposed space uses the page background. Centre photo preserves zoom; Reset centres at 0%. Optional free-position metadata preserves deliberate placement through later zoom changes, while untouched legacy crops retain their historical rendering. See the 20 September positioning release below.
 
 Existing living backlog document:
 
@@ -147,6 +147,8 @@ Existing project history document:
 - `https://docs.google.com/document/d/1EzYIQcQbDIdQ-Rzzr38FwE7vnDpavuda2tsc5_JuuBw/edit`
 
 Other Scuri project docs have also existed (for example Product Overview / Status & Roadmap); use them as supporting history, but this file should remain the concise technical/product handoff.
+
+Confirmed documentation inventory on 20 September: the signed-in `App Projects / scuri` Drive folder contains those two documents plus [Product Overview](https://docs.google.com/document/d/1R1yIt6UgGGTSJAnbp1wzg6ZZTLNyseoxrXUeJtdug3s/edit) and [Status & Roadmap](https://docs.google.com/document/d/1NnVgZOhONDBdp9_tZMU2mngKThWCbRVT6K-xNOqbi2g/edit). Their August state descriptions predate project sync, photo backups, the independent library and all recent editor work. Product/status/backlog summaries should reflect deployed capabilities; dated timeline and implementation records remain historical. The README links the full set.
 
 ---
 
@@ -785,9 +787,33 @@ Local Chrome QA used only synthetic template copies on blank-cloud `127.0.0.1:30
 
 Physical iPad Air 11-inch M2 Safari touch, Pencil, pinch, virtual keyboard and performance remain untested. Desktop viewport/hit-target checks and synthetic pointer callbacks do not certify physical-device behaviour. Live cloud synchronization was not exercised; persistence coverage uses the existing transport with a fake client. No live project, asset, original, migration or deployment was changed. Evidence: `../../outputs/SCURI_TEMPLATE_DESIGN_2026-09-20.md`, `scuri-template-layout-tests.txt`, `scuri-template-layout-typecheck.txt`, `scuri-template-layout-lint.txt` and `scuri-template-layout-build.txt`.
 
+## Template design tools production — 20 September 2026
+
+Following the user's explicit deployment request, [PR #28](https://github.com/NewGhee98/scuri/pull/28), "Add coordinated template resizing, proportions and spacing", merged into `main` as `8398085f8ab3221027faa6e669084c3d159633c4`. Both GitHub checks passed and there were no merge conflicts. Published head `bde014467452c48ba93ab0b78badce56bb4ed6d2`, merged main and tested local commit `36b5c18997e77b12183319ae5b6d2ea298b30317` share the identical complete tree `07ccbe64d38046dde47f74e5417e35f3d9371d62`; all 12 changed file hashes match. Exact committed blobs were published through the signed-in GitHub upload UI in dependency-first batches, with every Preview reaching Ready. No application code changed after the 506-test/typecheck/lint/build and desktop QA verification above.
+
+Vercel Preview [99o3RB656eWVquTfgqkjpyK2Z81q](https://vercel.com/nugee/scuri/99o3RB656eWVquTfgqkjpyK2Z81q) was verified **Ready / Latest / Preview** before merge, source `bde0144`, with a 34-second build ending at 11:34:32 BST. Production [4pCqfGKNsb3j9M5mV6ViNn6rcETS](https://vercel.com/nugee/scuri/4pCqfGKNsb3j9M5mV6ViNn6rcETS) was verified **Ready / Latest / Production / Current**, source `8398085`, with `scuri.vercel.app` assigned. Its 47-second build completed at 11:37:03 BST (10:37:03 UTC). Immutable deployment: https://scuri-mwkme35bl-nugee.vercel.app. Public verification at 10:39:06 UTC returned HTTP 200, checked 11 JavaScript/CSS assets and passed all 55 new/retained feature checks, including coordinated sizing/arrangement controls and preceding positioning, viewport, selection, filter and library features. These checks used no account session or project data.
+
+No migration, live data repair, Supabase/Drive asset operation, original rewrite or environment/credential change occurred. Saved frame rectangles remain authoritative; optional editing metadata uses the existing JSON representation. Existing project-page snapshots, assignments and crops are not rewritten when a reusable template is edited. Missing local bytes still never imply deletion, and historical Islands recovery limitations remain unchanged. Refresh Scuri normally on editing devices to load the new controls; do not clear browser storage. Physical iPad Air 11-inch M2 Safari touch, Pencil, pinch, virtual keyboard and performance remain untested, as does live cloud synchronization; desktop and fake-transport checks do not certify those paths.
+
+Evidence: `../../outputs/template-tools-release-baseline.json`, `template-tools-release-branch-verification.json`, `template-tools-production-main-verification.json`, `template-tools-production-public-verification.json`, and `SCURI_TEMPLATE_TOOLS_PRODUCTION_2026-09-20.md`. This post-release record is local only; deployed documentation contains the implementation and validation record above.
+
+## Project photos scrolling and documentation — 20 September 2026 (tested, awaiting release)
+
+The user reported the gallery moving briefly and then stuttering/stopping while scrolling, and requested reconciliation of the GitHub/Drive documentation. Work is on `fix/project-photos-scroll`, based on local `36b5c18`; fresh public GitHub verification confirmed main `8398085` has the identical complete tree `07ccbe64d38046dde47f74e5417e35f3d9371d62`. The preceding template-tools production record and all previous changes are retained. No new production deployment was requested for this task.
+
+**Cause and correction:** `PhotoLibraryGallery`'s layout effect depended on every reported `view.scrollTop` and wrote the remembered offset back to the scrolling element after every native event. Same-value writes can cancel touch momentum, and delayed React commits can rewind a browser that has already advanced. Height-only ResizeObserver updates also triggered unnecessary restoration. The component now distinguishes native observations by identity (weak references, including delayed echoes) from explicit view/reset commands. Native scroll reports still update virtualization and the session-only remembered view, but never write scrollTop back. Initial visible-dialog restoration, explicit filter/scroll resets and actual row/toolbar reflow retain anchored restoration; height-only or width changes without repacking leave native scrolling alone. Restoration also skips already-matching offsets. Preview hydration does not request scroll restoration.
+
+**Validation:** all 512 tests across 39 files, standalone typecheck, full ESLint and the production build pass. Six new tests exercise the real component/effects: native/fractional scrolling with no setter calls, delayed updates while the compositor advances, preview/height-only changes, explicit reset with unchanged filters, toolbar/column/thumbnail reflow, hidden-dialog restoration and focus without scrolling. The native, delayed and height-only regressions fail against the old implementation. No crop, geometry, original-loading, sync, persistence or migration code changed.
+
+Desktop Chrome QA used a blank-cloud production build at `127.0.0.1:3032` and a generated backup with 120 synthetic originals and two populated pages. Repeated browser scrolling advanced through the virtual gallery (observed offsets approximately 2274 and 5554 CSS px with 24 cards mounted), including arriving previews. Returning from photo inspection restored the photo region and focused card. Panorama filtering showed 60/120 and reset to zero; clearing filters restored the full library. Both 1180×820 and 820×1180 CSS viewports were exercised. Composition Undo stayed disabled and loaded-original count stayed zero; captured warning/error logs were empty. Temporary QA tab/server were closed and the viewport override reset. This is not physical iPad Safari momentum/Pencil/pinch validation or a live cloud round trip; those remain acceptance checks.
+
+**Documentation reconciliation:** README, this handoff, VERIFICATION and the photo-library acceptance checklist now describe current features/status. Historical sync/client/zoom/checkpoint notes are explicitly labelled; migration-review and Islands-recovery notes distinguish the user's reported schema confirmation from independent verification and retain the no-repair/no-repeat-migration boundary. The stale missing `CLAUDE_START_HERE.md` reference was replaced with the current handoff/checklist. All four documents in the signed-in Drive `App Projects / scuri` folder were read, updated and exported for read-back: Product Overview, Status & Roadmap, Upcoming Features and Change Timeline. Current-state documents no longer describe project metadata as device-only or positioning/backups as unbuilt. Every original timeline text line survives, with older handoff headings dated as historical; the September release history and pending scrolling fix are added. They clearly distinguish deployed PR #28 from this fix awaiting release. All four read-backs contain main `8398085` and current 512-test verification. Before/after evidence is in `../../outputs/scuri-docs-2026-09-20/`.
+
+No live project/asset/original, Supabase record, migration or credential was modified. Drive writes were restricted to the four requested documentation files, retaining their private sharing. Supabase remains authoritative for metadata and assignments; Drive stores image bytes; missing bytes never imply deletion. This work does not recover historical Islands mappings. Evidence: `../../outputs/SCURI_SCROLL_AND_DOCUMENTATION_2026-09-20.md` and `scuri-scroll-{before-tests,tests,typecheck,lint,build}.txt`.
+
 ## Guidance for future coding agents / chats
 
-Earlier deployment/version statements are historical; the latest production release is recorded in Free photo positioning production above. Recheck live state before further changes.
+Earlier deployment/version statements are historical; the latest production release is recorded in Template design tools production above. The scrolling correction is separately tested and awaiting release; do not describe it as live until deployment is verified. Recheck live state before further changes.
 
 Before making changes:
 

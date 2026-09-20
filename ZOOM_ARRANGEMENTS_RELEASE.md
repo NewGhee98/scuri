@@ -1,5 +1,7 @@
 # Scuri: zoom out and suggest arrangements
 
+Historical 13 September implementation record, reconciled 20 September. Both features are included in current production through PR #28. The original restriction centring negative zoom was superseded by PR #27: photos now move freely on both axes at every zoom, with legacy crops preserved until edited. The library now admits 250 unique photos and projects support 30 pages. The user subsequently reported the photo-library migration applied; do not rerun SQL from this note. See `PROJECT_CONTEXT.md` and `README.md` for current behaviour and `VERIFICATION.md` for current checks. Below is the original package history, not current deployment status.
+
 Prepared locally on 13 September 2026. Both requested features are implemented on top of the preceding client safety release. All 136 tests, typecheck, lint and production build passed. Nothing was deployed; no live service, browser session or credentials were used. One additive migration is prepared for review only.
 
 ## Photo zoom

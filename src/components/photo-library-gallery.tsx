@@ -12,6 +12,11 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, focusPhotoK
   const [bounds, setBounds] = useState({ width: 0, height: 0, header: 0 });
   const restored = useRef(false);
   const focused = useRef(false);
+  // View updates from native scrolling are observations, not scroll commands.
+  // Keep their identity even if React commits one after the browser has moved on.
+  const nativeViews = useRef(new WeakSet<LibraryView>());
+  const latestNativeView = useRef<LibraryView | null>(null);
+  const restoration = useRef<{ view: LibraryView; columns: number; rowHeight: number; header: number; filterKey: string } | null>(null);
   const geometry = galleryGeometry(bounds.width, view.size), packed = galleryRows(rows, geometry.columns);
   const range = visibleGalleryRange(view.scrollTop, bounds.height, geometry.rowHeight, packed.length, bounds.header);
   const visible = packed.slice(range.start, range.end);
@@ -32,14 +37,21 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, focusPhotoK
   }, []);
   useLayoutEffect(() => {
     const element = container.current; if (!element || !bounds.width || !bounds.height) return;
-    const anchor = view.anchor;
+    const previous = restoration.current;
+    const reflow = !!previous && (previous.columns !== geometry.columns || previous.rowHeight !== geometry.rowHeight || previous.header !== bounds.header);
+    restoration.current = { view, columns: geometry.columns, rowHeight: geometry.rowHeight, header: bounds.header, filterKey };
+    if (previous && !reflow && previous.filterKey === filterKey && (previous.view === view || nativeViews.current.has(view))) return;
+    const position = reflow && previous?.filterKey === filterKey && nativeViews.current.has(view) ? latestNativeView.current ?? view : view;
+    const anchor = position.anchor;
     const index = anchor ? packed.findIndex(row => row.some(item => item.row.photo.blobKey === anchor)) : -1;
-    element.scrollTop = index >= 0 ? bounds.header + index * geometry.rowHeight + (view.anchorOffset ?? 0) : view.scrollTop;
+    const top = index >= 0 ? bounds.header + index * geometry.rowHeight + (position.anchorOffset ?? 0) : position.scrollTop;
+    // Even a same-value assignment can interrupt native touch momentum. Restore
+    // only for opening, actual row reflow, or an explicit filter/scroll reset.
+    if (Math.abs(element.scrollTop - top) > 0.5) element.scrollTop = top;
     restored.current = true;
-    // Native scrolling already matches this value. Also honour explicit resets
-    // when clearing an already-empty filter, without requiring a filter change.
+    // Preview hydration changes row objects without requesting a restoration.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bounds.width, bounds.height, bounds.header, geometry.columns, geometry.rowHeight, filterKey, view.scrollTop]);
+  }, [bounds.width, bounds.height, bounds.header, geometry.columns, geometry.rowHeight, filterKey, view]);
   useEffect(() => {
     if (!focusPhotoKey || focused.current || !bounds.width) return;
     const card = [...(container.current?.querySelectorAll<HTMLButtonElement>("[data-photo-key]") ?? [])].find(item => item.dataset.photoKey === focusPhotoKey);
@@ -55,7 +67,9 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, focusPhotoK
   return <div className="library-gallery-scroll" ref={container} tabIndex={0} aria-label="Project photos. Use Page Up and Page Down to browse." onScroll={event => {
     if (!restored.current || !event.currentTarget.getClientRects().length) return;
     const top = event.currentTarget.scrollTop, anchor = galleryScrollAnchor(top, geometry.rowHeight, bounds.header);
-    onView({ ...view, scrollTop: top, anchor: anchor ? packed[anchor.index]?.[0]?.row.photo.blobKey : undefined, anchorOffset: anchor?.offset });
+    const next = { ...view, scrollTop: top, anchor: anchor ? packed[anchor.index]?.[0]?.row.photo.blobKey : undefined, anchorOffset: anchor?.offset };
+    nativeViews.current.add(next); latestNativeView.current = next;
+    onView(next);
   }}>
     <div ref={heading}>{header}</div>
     {!rows.length ? empty ?? <p className="library-empty">No photos match. Clear filters to see the whole library, including unavailable photos.</p> : null}

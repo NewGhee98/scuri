@@ -1,5 +1,7 @@
 # Preserve Drive upload checkpoints during protection recovery
 
+Historical implementation record, reconciled 20 September 2026. This checkpoint protection is included in current production through PR #28; the local-only wording below refers to its original preparation. Later library backup work adds reserved IDs and resumable checkpoints for original/preview/thumbnail uploads. See `PROJECT_CONTEXT.md`, `README.md` and `VERIFICATION.md` for current status and remaining live-service acceptance. No migration, lost-file rediscovery or live repair is implied.
+
 Focused fix for [PR #15's P2 review finding](https://github.com/NewGhee98/scuri/pull/15#discussion_r4001065158). Prepared from GitHub main commit a8b0e5417ff0685929580e791a05e6e75ae7fecd, which matched the previously checked Vercel production deployment. This fix is local until separately published and deployed.
 
 ## Problem and change
