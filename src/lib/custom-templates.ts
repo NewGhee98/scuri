@@ -3,8 +3,9 @@ import { resolveFrames } from "./crop";
 import { getFormat } from "./formats";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
 import { validateTemplate } from "./templates";
+import { isTextLayers } from "./text";
 import { workspaceKey } from "./workspace";
-import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
+import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition, TextBox } from "./types";
 
 const CUSTOM_TEMPLATES_KEY = "layouts.custom-templates.v1";
 
@@ -20,6 +21,7 @@ interface TemplateRow {
   format_id: FormatId;
   background: string;
   frames: NormalizedFrame[];
+  text_layers?: TextBox[];
   status: "draft" | "saved";
   source_template_id: string | null;
   created_at: string;
@@ -66,6 +68,7 @@ function isCustomTemplate(value: unknown): value is CustomTemplate {
     typeof template.updatedAt !== "string"
   ) return false;
   const candidate = template as CustomTemplate;
+  if (candidate.textLayers !== undefined && !isTextLayers(candidate.textLayers)) return false;
   return validateTemplate({
     id: candidate.id,
     name: candidate.name,
@@ -76,6 +79,7 @@ function isCustomTemplate(value: unknown): value is CustomTemplate {
     defaultGutter: candidate.defaultGutter,
     frameInsetMultiplier: candidate.frameInsetMultiplier,
     frames: candidate.frames,
+    textLayers: candidate.textLayers,
   }).length === 0 || candidate.status === "draft";
 }
 
@@ -161,6 +165,7 @@ export function copyAsCustomTemplate(
     defaultBackground: template.defaultBackground,
     defaultGutter: 0,
     frames: materializeTemplateFrames(template),
+    ...(template.textLayers ? { textLayers: template.textLayers.map(box => ({ ...box, id: crypto.randomUUID() })) } : {}),
     source: "custom",
     status: "draft",
     sourceTemplateId: template.id,
@@ -171,6 +176,9 @@ export function copyAsCustomTemplate(
 }
 
 function rowToTemplate(row: TemplateRow): CustomTemplate {
+  if (row.text_layers !== undefined && !isTextLayers(row.text_layers)) {
+    throw new Error("Cloud template text could not be validated; local templates were retained.");
+  }
   const format = getFormat(row.format_id);
   return {
     id: row.id,
@@ -181,6 +189,7 @@ function rowToTemplate(row: TemplateRow): CustomTemplate {
     defaultBackground: row.background,
     defaultGutter: 0,
     frames: row.frames,
+    ...(row.text_layers !== undefined ? { textLayers: row.text_layers } : {}),
     source: "custom",
     status: row.status,
     sourceTemplateId: row.source_template_id ?? undefined,
@@ -243,13 +252,14 @@ export async function loadCloudTemplates(): Promise<CustomTemplate[]> {
   if (!client) return [];
   const { data, error } = await client
     .from("templates")
-    .select("id, owner_id, name, format_id, background, frames, status, source_template_id, created_at, updated_at")
+    .select("*")
     .order("updated_at", { ascending: false });
   if (error) throw error;
   return (data as TemplateRow[]).map(rowToTemplate).filter(isCustomTemplate);
 }
 
 export async function saveCloudTemplate(template: CustomTemplate, options?: { ownerId: string; isCurrent: () => boolean }): Promise<CustomTemplate> {
+  if (template.textLayers !== undefined && !isTextLayers(template.textLayers)) throw new Error("Template text could not be validated. Your local copy is retained.");
   const client = getTemplateCloudClient();
   if (!client) throw new Error("Template cloud storage has not been connected yet.");
   const { data: userData, error: userError } = await client.auth.getUser();
@@ -262,6 +272,8 @@ export async function saveCloudTemplate(template: CustomTemplate, options?: { ow
     format_id: template.formatId,
     background: template.defaultBackground,
     frames: template.frames,
+    // Omit for legacy templates; an explicit [] persists removal of the last box.
+    ...(template.textLayers !== undefined ? { text_layers: template.textLayers } : {}),
     status: template.status,
     source_template_id: template.sourceTemplateId ?? null,
     created_at: template.createdAt,
@@ -270,9 +282,22 @@ export async function saveCloudTemplate(template: CustomTemplate, options?: { ow
   const { data, error } = await client
     .from("templates")
     .upsert(row, { onConflict: "id" })
-    .select("id, owner_id, name, format_id, background, frames, status, source_template_id, created_at, updated_at")
+    .select("*")
     .single();
-  if (error) throw error;
+  if (error) {
+    if (template.textLayers !== undefined && (error.code === "PGRST204" || error.code === "42703")) {
+      throw new Error("Template text is saved on this device. Cloud text storage needs the additive templates.text_layers update before this template can sync. Do not clear local storage.");
+    }
+    throw error;
+  }
+  const confirmedText = (data as TemplateRow)?.text_layers;
+  // JSONB may reorder object keys. Compare the flat text fields by value while
+  // retaining array order, which controls the stacking of text boxes.
+  if (template.textLayers !== undefined && (!isTextLayers(confirmedText) ||
+      confirmedText.length !== template.textLayers.length || !template.textLayers.every((box, index) =>
+        Object.entries(box).every(([key, value]) => confirmedText[index][key as keyof TextBox] === value)))) {
+    throw new Error("Cloud storage did not confirm the template text. Your local copy is retained; retry sync before using another device.");
+  }
   return rowToTemplate(data as TemplateRow);
 }
 

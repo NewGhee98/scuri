@@ -8,6 +8,8 @@ import { snapPhotoZoom, type AlignmentGuide } from "@/lib/editor-alignment";
 import { movePageFrame, reorderPageFrame } from "@/lib/page-frames";
 import { consolidateLibraryDuplicates, type DuplicateGroup, type DuplicateScan } from "@/lib/photo-duplicates";
 import { PhotoZoomControl } from "./photo-zoom-control";
+import { TextTools } from "./text-tools";
+import { useTextEditing } from "./text-layer";
 import { PagePreview } from "./page-preview";
 import { PhotoPreviewContext } from "./photo-preview-context";
 import { displayPagePhotos, EMPTY_PHOTO_PREVIEWS, PhotoPreviewCache } from "@/lib/photo-preview-cache";
@@ -236,6 +238,8 @@ export function LayoutsApp() {
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [rearrangeMode, setRearrangeMode] = useState(false);
   const [moveFrameMode, setMoveFrameMode] = useState(false);
+  const [textMode, setTextMode] = useState(false);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [compositionGuides, setCompositionGuides] = useState(true);
   // Selection is editing UI, not a saved page edit. Keep old saved selections
@@ -326,6 +330,7 @@ export function LayoutsApp() {
   if (previousEditorContext !== editorContext) {
     setPreviousEditorContext(editorContext); setAlignmentGuides([]); setMoveFrameMode(false); setShowPagePreview(false);
     setEditorSelectedFrameId(null);
+    setTextMode(false); setSelectedTextId(null);
   }
   const unavailablePhotoCount = pages.reduce((count, page) => count + Object.keys(page.unavailablePhotos ?? {}).length, 0);
   const missingPhotoCount = activePage && template ? getMissingPhotoCount(serializePage(activePage), template) : 0;
@@ -964,6 +969,13 @@ export function LayoutsApp() {
     setEditorSelectedFrameId(frameId);
   };
 
+  const textEdit = useTextEditing(template?.textLayers, boxes => {
+    // Selection/draft movement is UI only; commit a complete gesture once.
+    if (!activePage || !template || activeProjectRef.current?.id !== projectId) return;
+    updatePage(activePage.id, page => ({ ...page,
+      templateSnapshot: { ...resolvePageTemplate(page), textLayers: structuredClone(boxes) } }));
+  });
+
   const persistActiveProject = (): StoredProject[] => {
     const saved = buildStoredProject();
     if (!saved) return projectsRef.current;
@@ -1225,7 +1237,8 @@ export function LayoutsApp() {
       updatePage(targetPage.id, (page) => ({
         ...page,
         templateId: nextTemplate.id,
-        templateSnapshot: { ...nextTemplate, frames: nextTemplate.frames.map((frame) => ({ ...frame })) },
+        templateSnapshot: { ...structuredClone(nextTemplate),
+          ...(page.templateSnapshot?.textLayers ? { textLayers: structuredClone(page.templateSnapshot.textLayers) } : {}) },
         background: nextTemplate.defaultBackground,
         gutter: nextTemplate.defaultGutter,
         selectedFrameId: nextTemplate.frames[0]?.id ?? null,
@@ -1245,7 +1258,7 @@ export function LayoutsApp() {
     const page: ProjectPage = {
       id: crypto.randomUUID(),
       templateId: nextTemplate.id,
-      templateSnapshot: { ...nextTemplate, frames: nextTemplate.frames.map((frame) => ({ ...frame })) },
+      templateSnapshot: structuredClone(nextTemplate),
       background: nextTemplate.defaultBackground,
       gutter: nextTemplate.defaultGutter,
       selectedFrameId: nextTemplate.frames[0]?.id ?? null,
@@ -1392,10 +1405,10 @@ export function LayoutsApp() {
       setTemplateDraft(null);
       setScreen("templates");
       setNotice({ kind: "success", text: "Template saved to the cloud and available on your signed-in devices." });
-    } catch {
+    } catch (error) {
       if (!isCurrent()) return;
       replaceCustomTemplates(customTemplatesRef.current.map((item) => item.id === pending.id ? { ...item, syncState: "error" } : item));
-      setNotice({ kind: "error", text: "The template is safe on this device but could not reach the cloud. Try again when online." });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "The template is safe on this device but could not reach the cloud. Try again when online." });
     } finally {
       if (isCurrent()) setTemplateCloudBusy(false);
     }
@@ -2320,12 +2333,13 @@ export function LayoutsApp() {
           <section className="min-w-0 rounded-[20px] bg-[#e8e8e4] p-3 sm:p-6 lg:min-h-[calc(100dvh-104px)] lg:p-8">
             <EditorCanvas key={activePage.id}
               format={format}
-              template={template}
+              template={textMode ? { ...template, textLayers: textEdit.boxes } : template}
               background={activePage.background}
               gutter={activePage.gutter}
               photos={displayedPhotos}
               unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
-              selectedFrameId={selectedFrameId}
+              selectedFrameId={textMode ? null : selectedFrameId}
+              textEditing={textMode} selectedTextId={selectedTextId} onSelectText={setSelectedTextId} onTextChange={textEdit.commit}
               rearrangeMode={rearrangeMode}
               moveFrameMode={moveFrameMode} snapEnabled={snapEnabled} guides={alignmentGuides}
               compositionGuides={compositionGuides}
@@ -2348,11 +2362,20 @@ export function LayoutsApp() {
                 <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-600">{template.frames.length - missingPhotoCount}/{template.frames.length}</span>
               </div>
               <p className="mt-2 text-sm leading-5 text-neutral-600">
-                {moveFrameMode ? "Drag a frame with its photo. Edges snap gently; keep dragging to move past. Changes apply to this page." : rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. Add or replace photos from your project library."}
+                {textMode ? "Add text, then drag its box anywhere on the page. Choose Photos to edit the images beneath it." : moveFrameMode ? "Drag a frame with its photo. Edges snap gently; keep dragging to move past. Changes apply to this page." : rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. Add or replace photos from your project library."}
               </p>
             </div>
 
             <div className="control-section">
+              <div className="text-mode-switch" role="group" aria-label="Page editing tools">
+                {[false, true].map(value => <button key={String(value)} type="button" aria-pressed={textMode === value} onClick={() => {
+                  textEdit.commit(); setTextMode(value); setMoveFrameMode(false); setRearrangeMode(false); setAlignmentGuides([]);
+                }}>{value ? "Text" : "Photos"}</button>)}
+              </div>
+              {textMode ? <TextTools boxes={textEdit.boxes} selectedId={selectedTextId} onSelect={setSelectedTextId}
+                onPreview={textEdit.preview} onCommit={textEdit.commit} onCancel={textEdit.cancel}
+                width={format.width} height={format.height} snap={snapEnabled} onSnap={setSnapEnabled} /> : null}
+              <div hidden={textMode}>
               {selectedPhoto && selectedResolvedFrame ? <PhotoZoomControl key={`${activePage.id}:${selectedPhoto.frameId}:${selectedPhoto.blobKey}`}
                 zoom={selectedPhoto.crop.zoom} minimum={Math.min(selectedPhoto.crop.zoom, minimumPhotoZoom(selectedPhoto.sourceWidth, selectedPhoto.sourceHeight, selectedResolvedFrame))}
                 onChange={(zoom, snap) => {
@@ -2403,6 +2426,7 @@ export function LayoutsApp() {
               <p className="mt-2 text-[11px] leading-4 text-neutral-500">
                 Import multiple photos to the library, then choose which photo to use in each frame.
               </p>
+              </div>
             </div>
 
             <div className="control-section">

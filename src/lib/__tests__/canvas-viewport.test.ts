@@ -107,7 +107,7 @@ describe.each([.25, 1, 3])("editing at %sx canvas scale", scale => {
     const scope = { pointInCanvas, canvasRef: { current: { getBoundingClientRect: () => rect, hasPointerCapture: () => false } },
       draftRef: { current: before }, interactionRef: { current: { pointerId: 1, mode: "resize", frameId: "f", handle: "se", before, start: { x: .5, y: .4 }, selectedIds: ["f"] } as unknown },
       resizeFromCenter: false, resizeLayoutSelection, moveFrameGroup, designSize: content, canvasWidth: content.width, canvasHeight: content.height,
-      viewScale: scale, setLayoutNotice: vi.fn(), snapEnabled: false, setGuides: vi.fn(), setPast: vi.fn(), setFuture: vi.fn(),
+      viewScale: scale, setLayoutNotice: vi.fn(), snapEnabled: false, setGuides: vi.fn(), setPast: vi.fn(), setFuture: vi.fn(), setTextCancelKey: vi.fn(),
       clamp: (n: number, min: number, max: number) => Math.min(max, Math.max(min, n)),
       pointForEvent: (event: unknown) => run("pointForEvent", scope)(event),
       updateFrames: (...args: unknown[]) => run("updateFrames", scope)(...args),
@@ -222,7 +222,7 @@ it("cancelling an editor gesture cannot complete a swap, open the picker or appl
       swapDragRef: { current: mode === "swap" ? { pointerId: 1, sourceFrameId: "f", targetFrameId: "other" } : null },
       frameDragRef: { current: mode === "frame" ? { pointerId: 1 } : null }, wheelRef: { current: { frameId: "f" } },
       canvasRef: { current: { hasPointerCapture: () => true, releasePointerCapture: vi.fn() } },
-      moveFrameMode: mode === "frame", setSwapTargetFrameId: vi.fn(), onGuidesChange: vi.fn(),
+      moveFrameMode: mode === "frame", setSwapTargetFrameId: vi.fn(), onGuidesChange: vi.fn(), setTextCancelKey: vi.fn(),
       onMovePhoto: vi.fn(), onRequestPhoto: vi.fn(), onCropChange: vi.fn(), onFrameMove: vi.fn() };
     run("cancelInteraction", scope)();
     const event = { pointerId: 1, preventDefault: vi.fn() };
@@ -243,7 +243,7 @@ describe("free photo gesture integration", () => {
       pointersRef: { current: new Map() }, dragRef: { current: null as unknown }, pinchRef: { current: null as unknown },
       frameDragRef: { current: null }, swapDragRef: { current: null }, wheelRef: { current: null }, canvasRef: { current: target },
       moveFrameMode: false, rearrangeMode: false, snapEnabled: snap, unavailableFrameIds: [],
-      pointInCanvas, moveCrop, snapPhotoPosition, setSwapTargetFrameId: vi.fn(), onSelectFrame: vi.fn(), onGuidesChange: vi.fn(),
+      pointInCanvas, moveCrop, snapPhotoPosition, setSwapTargetFrameId: vi.fn(), onSelectFrame: vi.fn(), onGuidesChange: vi.fn(), setTextCancelKey: vi.fn(),
       onRequestPhoto: vi.fn(), onMovePhoto: vi.fn(),
       onCropChange: vi.fn((id: string, crop: CropState) => { photos.f.crop = crop; }),
       onZoomChange: vi.fn((id: string, zoom: number, tolerance: number) => { photos.f.crop = snapPhotoZoom(photos, [frame], id, zoom, tolerance)!.crop; }),

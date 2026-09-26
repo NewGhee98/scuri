@@ -1,15 +1,19 @@
 # Scuri
 
+**New coding session: [START_HERE.md](START_HERE.md)** is the canonical current-status summary and reading order. This README covers usage and setup.
+
 Scuri is a mobile-first photo-template editor for Instagram posts and stories. It is a focused alternative to the layout workflow in apps such as Unfold: start a project, build and reorder several template pages, design reusable layouts, adjust every crop and export the completed set.
 
 All image selection, composition and export happens in the browser. Signing in makes both your custom templates and your projects (layouts, crops, page order and photo metadata) follow you across devices via Supabase. Google Drive, connected separately, stores the untouched full-resolution originals so a project opened on a new device does not depend on that device having ever seen the photos before.
 
 ## What works
 
+The features below describe the established app. **New local work:** movable page text and reusable template text, with Cinzel, Cormorant Garamond and Inter, colour, exact size/spacing and shared export rendering. This text feature is not deployed; see [text tools and release prerequisite](docs/TEXT_TOOLS.md).
+
 - Instagram portrait posts at **1080 × 1350 (4:5)**.
 - Instagram square posts at **1080 × 1080 (1:1)**.
 - Instagram Stories at **1080 × 1920 (9:16)**.
-- Eight data-defined templates for each format, including one-, two-, three- and four-photo layouts.
+- Data-defined utility and editorial templates for each format, plus four portrait panorama layouts.
 - A project library with up to 250 unique photos and 30 ordered pages per project.
 - Autosaved page drafts, page duplication and explicit page readiness.
 - Touch drag reordering with accessible Earlier and Later controls.
@@ -57,20 +61,24 @@ Deleting a signed-in project stops its queued sync, waits for an active save and
 
 **Build precise templates:** Select multiple, choose a matching Reference frame, apply exact ratio presets (including 40:9 and 768:115), then use Same width/height and Horizontal row/Vertical stack. Keep gaps consistent maintains the chosen gap while resizing; margins are separate minimum clearances. Centre group does not stretch frames to fill whitespace. Ratio locks and bounds are respected, and each committed action/gesture can be undone. Existing pages keep their own template snapshots when a reusable template changes. The built-in portrait picker includes exact five-strip Standard Pano and seven-strip Ultra Pano layouts plus their deliberately cropped borderless alternatives.
 
+**Add text (local text branch):** choose Text → Add text in a page or template. Type a title/caption, select its font, colour, size, letter/line spacing and alignment, then drag the box into position. Leave a text field to commit its draft; completed edits and moves support Undo. Text boxes have independent styles and remain proportional at larger exports. Navigate mode still controls the whole canvas. Existing photo configurations and text-free pages are unchanged.
+
 ## Current release and documentation — 20 September 2026
 
-Production is [scuri.vercel.app](https://scuri.vercel.app), most recently verified at main `8398085` through [PR #28](https://github.com/NewGhee98/scuri/pull/28). Vercel marked that release Ready / Current. It includes export quality/preview/proportional scaling, the rebuilt photo library, spacious photo viewing, Add-page filters, selection tint, independent canvas navigation, free photo positioning and coordinated template tools. The Project photos scrolling correction in this branch is separately tested and awaiting production release; it is not part of that verified production commit.
+Production was freshly verified on **20 September 2026, 20:07–20:11 UTC** as [PR #29](https://github.com/NewGhee98/scuri/pull/29), main [`24075d1`](https://github.com/NewGhee98/scuri/commit/24075d1e4c8cd6dfc2936d77332f8cd3793bf268), with [Vercel Ready / Production / Current](https://vercel.com/nugee/scuri/G6GijpLztNtqiQNT966cjQms2S7Z) serving [scuri.vercel.app](https://scuri.vercel.app). The Project photos scrolling correction is included. PR #28 is the preceding release.
 
-The technical handoff and dated release evidence are in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md); active work is in [CURRENT_TASK.md](CURRENT_TASK.md). [VERIFICATION.md](VERIFICATION.md) distinguishes the latest checks from historical packages, and the [Project photos checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md) records outstanding device/service acceptance. Historical release notes below are preserved as history, not instructions to rerun migrations or recover live data.
+[START_HERE.md](START_HERE.md) owns current status, nondeployed work and priorities. [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) owns implementation and preservation rules; [CURRENT_TASK.md](CURRENT_TASK.md) records active work. [VERIFICATION.md](VERIFICATION.md), the [portable release evidence](docs/evidence/2026-09-20-production.md) and [release checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md) distinguish recorded results from fresh checks and outstanding acceptance. Previous release decisions remain in [dated history](docs/history/PROJECT_CONTEXT_THROUGH_2026-09-20.md).
 
-Drive documentation: [Product Overview](https://docs.google.com/document/d/1R1yIt6UgGGTSJAnbp1wzg6ZZTLNyseoxrXUeJtdug3s/edit), [Status & Roadmap](https://docs.google.com/document/d/1NnVgZOhONDBdp9_tZMU2mngKThWCbRVT6K-xNOqbi2g/edit), [Upcoming Features](https://docs.google.com/document/d/1MoA7dIhztuWHU3lsp4ljRJa9EU6OgCBAumSu6KLH_HA/edit), and [Change Timeline](https://docs.google.com/document/d/1EzYIQcQbDIdQ-Rzzr38FwE7vnDpavuda2tsc5_JuuBw/edit). Their older claims that projects are device-local, photo positioning is future work or portable backups are only proposed are superseded by the current implementation.
+The 26 September text implementation is local only. GitHub main was rechecked on 25 September and still matched PR #29; Vercel and Drive summaries were not refreshed in this implementation task. Reusable template text needs the reviewed additive `templates.text_layers` column before release; page text uses existing snapshot JSON. No migration has been run.
+
+Drive documentation: [Product Overview](https://docs.google.com/document/d/1R1yIt6UgGGTSJAnbp1wzg6ZZTLNyseoxrXUeJtdug3s/edit), [Status & Roadmap](https://docs.google.com/document/d/1NnVgZOhONDBdp9_tZMU2mngKThWCbRVT6K-xNOqbi2g/edit), [Upcoming Features](https://docs.google.com/document/d/1MoA7dIhztuWHU3lsp4ljRJa9EU6OgCBAumSu6KLH_HA/edit), and [Change Timeline](https://docs.google.com/document/d/1EzYIQcQbDIdQ-Rzzr38FwE7vnDpavuda2tsc5_JuuBw/edit). These are product/status summaries; the repository owns technical handoff detail. Sharing remains private. The documentation audit records their read-back status.
 
 ## Local development
 
-Requires Node.js 20.9 or newer. Node.js 22 LTS is recommended.
+Use a Node.js runtime compatible with the locked dependencies. [package.json](package.json) defines scripts and direct dependencies; [package-lock.json](package-lock.json) records exact resolved versions and engine requirements. Avoid independent version lists in handoff documents.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -79,6 +87,8 @@ Open [http://localhost:3000](http://localhost:3000).
 Copy `.env.example` to `.env.local` and add the two Supabase public values if you want to test account and cross-device template sync.
 
 ## Cloud setup
+
+Reference procedure for a separately authorized setup task. Existing live schema, RLS/grants, auth, Google API/consent/origin settings and environment values were **not reverified by the documentation audit**. Inspect before changing anything; this guide does not authorize configuration changes or migrations. Expected public variable names are in [.env.example](.env.example).
 
 ### Supabase (templates + projects)
 
@@ -126,7 +136,7 @@ npm test
 npm run build
 ```
 
-The current offline suite has **512 tests across 39 files**, including gallery scroll ownership/restoration, coordinated template geometry and Undo, viewport navigation, legacy/free crops, proportional exports, library/backup persistence, fresh-device safety and explicit deletion. Typecheck, ESLint and the production build also pass. See [VERIFICATION.md](VERIFICATION.md) for dated checks and limits; automated tests do not certify physical iPad or live cloud behaviour.
+The PR #29 release record on 20 September reports **512 tests across 39 files passed**, including gallery scroll ownership/restoration, coordinated template geometry and Undo, viewport navigation, legacy/free crops, proportional exports, library/backup persistence, fresh-device safety and explicit deletion. Typecheck, ESLint and the production build were also recorded as passing. These application checks were not rerun during the documentation-only audit. See [VERIFICATION.md](VERIFICATION.md) for dated checks and limits; automated tests do not certify physical iPad or live cloud behaviour.
 
 ## Production
 
@@ -138,6 +148,8 @@ npm start
 The app requires a secure HTTPS origin for production PWA and Web Share behaviour. Localhost is treated as secure during development.
 
 ## Deploy to Vercel
+
+For a separately authorized release. Git integration can create Preview deployments for branch pushes as well as Production deployments for main; a documentation-only PR is not automatically exempt. Check the integration before publishing when deployment is forbidden.
 
 1. Import the GitHub repository into Vercel.
 2. Keep the detected **Next.js** framework preset and default build settings.
@@ -207,7 +219,7 @@ That single object is expanded for all current formats. The same editor, thumbna
 - A project deleted on a device that is offline or signed out is *not* queued for cloud deletion; deletion there is blocked (with a message) until that device can reach Supabase, rather than silently deleting locally while orphaning the cloud copy.
 - Google Drive's "Authorized JavaScript origins" do not support wildcards, so Drive connect only works on origins you explicitly authorize (see Cloud setup above) - typically production and localhost, not every ephemeral Vercel Preview URL. Supabase project sync is unaffected.
 - If a project is deleted on another device while a signed-out/offline device still holds unsynced edits to it, reconnecting recreates it as a new project (suffixed "(recovered)") rather than restoring the exact original id.
-- Use **Download project backup** to save a portable `.scuri.zip` file before clearing browser data. Missing originals are disclosed; restore the needed originals to this device before making a complete portable backup. **Restore backup** previews the package and restores it as a new project. Packages are limited to 256 MB.
+- Use **Download project backup** to save a portable `.scuri.zip` file before clearing browser data. Missing originals are disclosed; restore the needed originals to this device before making a complete portable backup. **Restore backup** previews the package and restores it as a new project. Packages are limited to 256 MiB.
 - HEIC availability depends on whether the browser can decode the selected file; the explicit supported types are JPEG, PNG and WebP.
 - iOS memory pressure can still affect unusually large source files. Editing uses a downscaled preview, while export decodes originals one frame at a time.
 - Browser share/download wording varies by iOS version. The generated JPEG preview remains available if the share sheet is unavailable.
@@ -215,11 +227,11 @@ That single object is expanded for all current formats. The same editor, thumbna
 
 ## Short roadmap
 
-1. Run the cross-device acceptance test in `PROJECT_CONTEXT.md` and `docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md` on physical iPad and laptop hardware (this needs a real Supabase session and Google account - not something that can be verified from an automated build).
+1. Run the cross-device acceptance test in [VERIFICATION.md](VERIFICATION.md#outstanding-acceptance) and the [release checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md) on physical iPad and laptop hardware (this needs a real Supabase session and Google account - not something that can be verified from an automated build).
 2. Design and review a transactional project/pages/assets save and consistent read to address the known cross-device race above.
 3. Extend portable backups with larger streaming packages and persistent project history after the transactional sync work.
 4. Consider landscape formats through the existing format definition system.
-5. Complete the Google Picker API/origin configuration and signed-in source-import acceptance checks before advertising direct Google imports as verified.
+5. Inspect the Google Picker API/origin configuration and complete signed-in source-import acceptance before advertising direct Google imports as verified. Any necessary service changes need separate authorization.
 
 ## Project photos
 

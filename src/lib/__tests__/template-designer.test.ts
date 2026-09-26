@@ -7,6 +7,7 @@ import * as formats from "../formats";
 import * as templates from "../templates";
 import * as selection from "../selection-style";
 import * as viewport from "../canvas-viewport";
+import * as text from "../text";
 import { createBlankCustomTemplate } from "../custom-templates";
 import type { CustomTemplate } from "../types";
 
@@ -43,7 +44,13 @@ function harness(initial = fixture(), scale = 1) {
   const exports: Record<string, (props: object) => React.ReactElement> = {};
   const dependencies: Record<string, unknown> = { react: hooks, "@/lib/template-layout": layout, "@/lib/formats": formats,
     "@/lib/templates": templates, "@/lib/selection-style": selection, "@/lib/canvas-viewport": viewport,
+    "@/lib/text": text, "./text-tools": { TextTools: function TextTools() { return null; } },
     "./canvas-viewport": { CanvasViewport: function CanvasViewport() { return null; } } };
+  const textModule = {};
+  new Function("require", "exports", ts.transpileModule(readFileSync(new URL("../../components/text-layer.tsx", import.meta.url), "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React },
+  }).outputText)((name: string) => dependencies[name], textModule);
+  dependencies["./text-layer"] = textModule;
   new Function("require", "exports", `const React = require('react'); ${compiled}`)((name: string) => {
     if (!(name in dependencies)) throw Error(`Missing test dependency ${name}`); return dependencies[name];
   }, exports);
@@ -92,6 +99,45 @@ function harness(initial = fixture(), scale = 1) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("template designer selection and edits", () => {
+  it("commits the latest native colour event before a rerender and never commits a cancelled draft on blur", () => {
+    const initial = fixture(); initial.textLayers = [text.createTextBox("title")];
+    const h = harness(initial); h.call("Text");
+    const tools = () => h.nodes().find(node => node.props.placeholders === true)!;
+    const callbacks = tools().props;
+    (callbacks.onPreview as (v: unknown) => void)([{ ...initial.textLayers[0], colour: "#ffffff" }]);
+    (callbacks.onCommit as () => void)(); h.render();
+    expect(h.draft().textLayers![0].colour).toBe("#ffffff");
+    h.call("Undo"); expect(h.draft()).toEqual(initial);
+    const canceled = tools().props;
+    (canceled.onPreview as (v: unknown) => void)([{ ...initial.textLayers[0], opacity: .2 }]);
+    (canceled.onCancel as () => void)();
+    (canceled.onCommit as () => void)(); h.render();
+    expect(h.draft()).toEqual(initial);
+    expect(h.find("Undo").props.disabled).toBe(true);
+  });
+
+  it("keeps text slider drafts out of autosave, commits once and restores the complete action with Undo/Redo", () => {
+    const initial = fixture(), h = harness(initial);
+    h.call("Text");
+    const tools = () => h.nodes().find(node => node.props.placeholders === true)!;
+    const commit = (boxes: unknown) => { (tools().props.onCommit as (v: unknown) => void)(boxes); h.render(); };
+    commit([text.createTextBox("title")]);
+    const base = structuredClone(h.draft());
+    const preview = (boxes: unknown) => { (tools().props.onPreview as (v: unknown) => void)(boxes); h.render(); };
+    preview([{ ...base.textLayers![0], fontSize: 70 }]);
+    preview([{ ...base.textLayers![0], fontSize: 80, letterSpacing: 10 }]);
+    expect(h.draft()).toEqual(base);
+    (tools().props.onCommit as () => void)(); h.render();
+    expect(h.draft().textLayers![0]).toMatchObject({ fontSize: 80, letterSpacing: 10 });
+    h.call("Undo"); expect(h.draft()).toEqual(base);
+    h.call("Redo"); expect(h.draft().textLayers![0].fontSize).toBe(80);
+    expect(h.draft().frames).toEqual(initial.frames);
+    const beforeCancel = structuredClone(h.draft());
+    preview([{ ...base.textLayers![0], x: .2 }]);
+    (tools().props.onCancel as () => void)(); h.render();
+    expect(h.draft()).toEqual(beforeCancel);
+  });
+
   it("lets an unlocked frame choose its existing proportion as a preset and acquire the lock", () => {
     const initial = fixture(); initial.frames = layout.setFrameRatio(initial.frames, ["a"], { width: 40, height: 9 }, size).frames;
     initial.frames[0].aspectRatioLocked = false; delete initial.frames[0].aspectRatio;

@@ -2,6 +2,7 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
 import { getProjectPhotos, hasUnassignedPhotos, mergePhotoLibraries, preserveProjectLibrary } from "./project-photo-library";
 import { isProjectPhoto } from "./project-validation";
+import { isTextLayers } from "./text";
 import { nextProjectEditTime } from "./project-time";
 import type {
   CropState,
@@ -132,6 +133,9 @@ function assetRowToStoredPhoto(row: Omit<ProjectAssetRow, "created_at" | "update
 }
 
 function pageRowToStoredPage(row: ProjectPageRow, assets: ProjectAssetRow[]): StoredProjectPage {
+  if (row.template_snapshot?.textLayers !== undefined && !isTextLayers(row.template_snapshot.textLayers)) {
+    throw new Error("Cloud page text could not be validated; local compositions were retained.");
+  }
   const photos: Record<string, StoredPhotoAsset> = {};
   for (const asset of assets) {
     if (asset.page_id !== row.id) continue;

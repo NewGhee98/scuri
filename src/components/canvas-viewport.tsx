@@ -106,7 +106,7 @@ export function CanvasViewport({ width, height, label, children, editable = fals
       <button type="button" aria-pressed={view.fit} onClick={fit}>Fit</button>
       <button type="button" aria-label={editable ? "Canvas at 100%" : "100% detail"} onClick={() => changeZoom(1)}>100%</button>
     </div>
-    <p id={helpId} className="canvas-view-help">{navigation ? "Drag to pan · Pinch to zoom the canvas" : "Edit photos or frames · Choose Navigate to pan or zoom the canvas"}</p>
+    <p id={helpId} className="canvas-view-help">{navigation ? "Drag to pan · Pinch to zoom the canvas" : "Edit photos, frames or text · Choose Navigate to pan or zoom the canvas"}</p>
     <div ref={stageRef} className={`canvas-viewport-stage${navigation ? " navigating" : ""}`} aria-label={`${label} viewport`} aria-describedby={helpId}
       role="region" tabIndex={navigation ? 0 : -1}
       onPointerDownCapture={event => {

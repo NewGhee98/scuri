@@ -1,5 +1,6 @@
 import { FORMATS, getFormat } from "./formats";
 import type { CustomTemplate, FormatId, NormalizedFrame, TemplateDefinition } from "./types";
+import { isTextLayers } from "./text";
 
 export type TemplateEdgeStyle = "rounded" | "straight" | "mixed";
 
@@ -285,6 +286,7 @@ export function validateTemplate(template: TemplateDefinition): string[] {
     errors.push("Template canvas must match its output format.");
   }
   if (template.frames.length === 0) errors.push("A template needs at least one frame.");
+  if (template.textLayers !== undefined && !isTextLayers(template.textLayers)) errors.push("Template text is invalid or exceeds its limits.");
   if (new Set(template.frames.map((item) => item.id)).size !== template.frames.length) {
     errors.push("Frame IDs must be unique within a template.");
   }

@@ -1,6 +1,6 @@
 # Islands: manual recovery later
 
-Status reviewed 20 September 2026: the prevention fixes and later library/editor features are deployed through PR #28, but no historical Islands recovery or fresh live project/Drive-original inspection is established by this documentation update. This manual procedure remains separate, requires explicit authorization and preserves originals and evidence. The current Project photos scrolling fix and document reconciliation do not change that boundary. See `PROJECT_CONTEXT.md` for release status.
+Status reviewed 20 September 2026: prevention fixes are included in verified PR #29 production, but historical Islands recovery and current original availability are **not established**. This procedure requires separate explicit live-data authorization. The documentation audit inspects release/document status only; it does not inspect projects, assets or original photos. [START_HERE](START_HERE.md) owns current release status.
 
 This is a procedure for a later session with authorized live connectors. No live recovery, database inspection, Drive listing or deployment was performed for this code fix. Treat the handoff's project identifiers, counts, file listings and claims that originals survive as historical evidence to verify, not confirmed current state.
 
