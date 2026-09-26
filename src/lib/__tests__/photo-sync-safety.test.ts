@@ -11,6 +11,8 @@ import { centreCrop, coverPlacement, moveCrop } from "../crop";
 import { displayPagePhotos } from "../photo-preview-cache";
 import { ProjectHistory } from "../project-history";
 import { moveLayoutPhoto } from "../project";
+import { createTextBox } from "../text";
+import { getTemplate } from "../templates";
 import type { StoredPhotoAsset, StoredProject } from "../types";
 
 vi.mock("../supabase-client", () => ({ getSupabaseClient: vi.fn(), isSupabaseConfigured: () => true }));
@@ -135,6 +137,24 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  it("pushes and reloads edited page text with empty IndexedDB while preserving every remote photo", async () => {
+    const cloud = fakeCloud(), source = structuredClone(cloud.initial);
+    source.updatedAt = edited;
+    source.pages[0].templateSnapshot = { ...getTemplate("instagram-post-vertical-pair"), id: "test-template",
+      frames: getTemplate("instagram-post-vertical-pair").frames.map((frame, i) => ({ ...frame, id: `frame-${i + 1}` })),
+      textLayers: [{ ...createTextBox("title"), text: "Offline title", fontSize: 63, letterSpacing: 12 }] };
+    const [page] = reconcileProjectPages(source);
+    expect(Object.keys(page.photos)).toHaveLength(0);
+    expect(Object.keys(page.unavailablePhotos!)).toHaveLength(2);
+    const pushed = await pushProjectToCloud({ ...source, pages: [serializePage(page)] });
+    expect(pushed).toMatchObject({ conflict: false, partial: false });
+    const [pulled] = await pullProjectsFromCloud();
+    expect(pulled.pages[0].templateSnapshot?.textLayers).toEqual(source.pages[0].templateSnapshot.textLayers);
+    expect(pulled.pages[0].photos).toEqual(source.pages[0].photos);
+    expect(cloud.mutations.filter(m => m.operation === "delete")).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("round-trips independent free positions through previews, hydration, local/cloud saves and Undo", async () => {
     const cloud = fakeCloud();
     // Fabricated rows only: two independent placements share the same original.

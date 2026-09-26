@@ -16,6 +16,7 @@ import { loadProjects, saveProjects } from "../storage";
 import { createBlankCustomTemplate } from "../custom-templates";
 import { arrangeFrames, setFrameRatio } from "../template-layout";
 import type { AppScreen, CustomTemplate, ProjectPage, ProjectPhoto, StoredProject, TemplateDefinition } from "../types";
+import { createTextBox } from "../text";
 
 // Run the real component handlers with controlled state commits and deferred
 // service responses. No copied decision logic, live services or photo bytes.
@@ -341,6 +342,27 @@ describe("filtered Add page chooser", () => {
 });
 
 describe("explicit template intent and cancellation", () => {
+  it("copies text defaults for a new page without touching populated pages, and later template edits cannot rewrite the page", async () => {
+    const project = fixture();
+    project.pages[0].templateSnapshot = { ...structuredClone(single), textLayers: [{ ...createTextBox("existing"), text: "Keep my title" }] };
+    const before = structuredClone(project.pages[0]), h = harness({ project });
+    const candidate = { ...structuredClone(pair), textLayers: [createTextBox("default-title")] };
+    h.run("addPage"); h.settle(); await h.run("selectTemplate", candidate); h.settle();
+    expect(serializePage(h.state.pages[0])).toEqual(before);
+    expect(h.state.pages[1].templateSnapshot?.textLayers).toEqual(candidate.textLayers);
+    candidate.textLayers[0].text = "A later template edit";
+    expect(h.state.pages[1].templateSnapshot?.textLayers?.[0].text).toBe("Your text");
+    expect(h.confirmPrompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps page-specific text when deliberately changing only the photo layout", async () => {
+    const project = fixture();
+    project.pages[0].templateSnapshot = { ...structuredClone(single), textLayers: [{ ...createTextBox("existing"), text: "Keep my title" }] };
+    const h = harness({ project }); h.run("changePageLayout"); h.settle();
+    await h.run("selectTemplate", { ...pair, textLayers: [createTextBox("other")] }); h.settle();
+    expect(h.state.pages[0].templateSnapshot?.textLayers).toEqual(project.pages[0].templateSnapshot.textLayers);
+  });
+
   it("creates a first page and consumes a selection only once before a rerender", async () => {
     const h = harness({ project: { ...fixture(), activePageId: null, pages: [] } });
     h.run("addPage"); h.settle();

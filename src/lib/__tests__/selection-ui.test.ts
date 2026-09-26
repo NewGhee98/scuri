@@ -7,6 +7,7 @@ import { FRAME_SELECTION_TINT } from "../selection-style";
 import { TemplateThumbnail } from "../../components/template-thumbnail";
 import { getTemplatesForFormat } from "../templates";
 import { drawCroppedPhoto } from "../draw-photo";
+import { drawTextLayers } from "../text";
 
 // Exercise the real designer render callback and selection handlers without a
 // second implementation of the selection/preview conditions or draft changes.
@@ -33,7 +34,7 @@ const template = getTemplatesForFormat("instagram-post").find(item => item.frame
 describe("template selection shading", () => {
   it("shades every selected frame with the shared tint, without changing geometry or the draft", () => {
     const before = structuredClone(template), selectedIds = template.frames.slice(0, 2).map(frame => frame.id);
-    const renderFrame = callback("renderFrame", { React, FRAME_SELECTION_TINT, selectedIds, preview: false });
+    const renderFrame = callback("renderFrame", { React, FRAME_SELECTION_TINT, selectedIds, preview: false, textMode: false });
     const markup = renderToStaticMarkup(React.createElement(React.Fragment, null, template.frames.map(renderFrame)));
     expect(markup.match(/class="frame-selection-shade"/g)).toHaveLength(2);
     expect(markup.match(/aria-hidden="true"/g)).toHaveLength(2);
@@ -45,7 +46,7 @@ describe("template selection shading", () => {
   it("retains all four handles for a single selection and omits all editing decoration in Preview and thumbnails", () => {
     const selectedIds = [template.frames[0].id];
     const render = (preview: boolean) => renderToStaticMarkup(React.createElement(React.Fragment, null,
-      template.frames.map(callback("renderFrame", { React, FRAME_SELECTION_TINT, selectedIds, preview }))));
+      template.frames.map(callback("renderFrame", { React, FRAME_SELECTION_TINT, selectedIds, preview, textMode: false }))));
     expect(render(false).match(/data-resize-handle=/g)).toHaveLength(4);
     for (const markup of [render(true), renderToStaticMarkup(React.createElement(TemplateThumbnail, { template }))]) {
       expect(markup).not.toContain("frame-selection-shade");
@@ -59,7 +60,7 @@ describe("template selection shading", () => {
     for (const multiSelect of [false, true]) {
       const draft = { ...structuredClone(template), updatedAt: "2026-09-20T00:00:00Z", syncState: "synced" };
       const before = structuredClone(draft), draftRef = { current: draft }, interactionRef = { current: null };
-      const scope = { draftRef, interactionRef, preview: false, multiSelect, selectedIds: [template.frames[0].id],
+      const scope = { draftRef, interactionRef, preview: false, textMode: false, multiSelect, selectedIds: [template.frames[0].id],
         setSelectedIds: vi.fn(), setReferenceId: vi.fn(), setLayoutNotice: vi.fn(), chooseFrame: vi.fn(), canvasRef: { current: { setPointerCapture: vi.fn() } },
         pointForEvent: () => ({ x: .5, y: .5 }), replaceDraft: vi.fn(), setPast: vi.fn(), setFuture: vi.fn(), setGuides: vi.fn(),
         sameTemplate: (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b) };
@@ -97,7 +98,8 @@ it.each([.4, 1, 2])("page thumbnail drawing keeps free positioning and exposed b
     ctx.fillRect.mockImplementation(() => expect(ctx.fillStyle).toBe("#181818"));
     const scope = { canvasRef: { current: { getContext: () => ctx } }, width: 280, height: 350, window: { devicePixelRatio: 2 },
       page: { background: "#181818", selectedFrameId }, frames: [{ id: "f", x: 10, y: 20, width: 260, height: 60, cornerRadius: 6 }],
-      photos: { f: photo }, cacheRef: { current: new Map([[photo.previewUrl, { complete: true, naturalWidth: 640 }]]) }, drawCroppedPhoto };
+      photos: { f: photo }, cacheRef: { current: new Map([[photo.previewUrl, { complete: true, naturalWidth: 640 }]]) }, drawCroppedPhoto,
+      fonts: { ready: true }, drawTextLayers, template };
     new Function("scope", `with (scope) { ${draw} return draw(); }`)(scope);
     expect(ctx.fillRect).toHaveBeenCalledTimes(2); expect(ctx.stroke).not.toHaveBeenCalled();
     results.push({ draw: ctx.drawImage.mock.calls, fills: ctx.fillRect.mock.calls, clips: ctx.roundRect.mock.calls });
