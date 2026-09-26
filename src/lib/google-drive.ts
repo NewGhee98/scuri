@@ -1,4 +1,5 @@
 import type { StoredPhotoAsset } from "./types";
+import { driveRequest, driveResponseError } from "./drive-request";
 
 // Google Drive is the high-resolution file warehouse for Scuri: untouched
 // full-resolution originals, lightweight previews and optional exports.
@@ -112,18 +113,15 @@ export function revokeGoogleDriveAccess(accessToken: string): Promise<void> {
 }
 
 async function driveFetch<T>(accessToken: string, path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${DRIVE_API}${path}`, {
+  const response = await driveRequest(`${DRIVE_API}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       ...(init?.body ? { "Content-Type": "application/json; charset=UTF-8" } : {}),
       ...init?.headers,
     },
-  });
-  if (!response.ok) {
-    const detail = await response.json().catch(() => null) as { error?: { message?: string } } | null;
-    throw new Error(detail?.error?.message || `Google Drive request failed (${response.status}).`);
-  }
+  }, "Accessing Drive folders");
+  if (!response.ok) throw await driveResponseError(response, "Accessing Drive folders");
   return response.json() as Promise<T>;
 }
 
@@ -230,10 +228,10 @@ function safeFilename(value: string): string {
 }
 
 async function downloadDriveFile(accessToken: string, fileId: string, signal?: AbortSignal): Promise<Blob> {
-  const response = await fetch(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`, {
+  const response = await driveRequest(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`, {
     headers: { Authorization: `Bearer ${accessToken}` }, signal,
-  });
-  if (!response.ok) throw new Error(`Google Drive download failed (${response.status}).`);
+  }, "Downloading original");
+  if (!response.ok) throw await driveResponseError(response, "Downloading original");
   return response.blob();
 }
 
