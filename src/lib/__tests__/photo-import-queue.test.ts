@@ -35,7 +35,7 @@ describe("one-file-at-a-time intake", () => {
     const before = structuredClone(h.project.pages);
     h.queue.add("synthetic", fileImportSources([original])); await finished(h.queue);
     expect(h.queue.getSnapshot()[0]).toMatchObject({ state: "duplicate", blobKey: "old-0" });
-    expect(h.blobs.get("old-0")).toBe(original); expect(h.project.photoLibrary![0].driveOriginalId).toBe("completed-original");
+    expect(await h.blobs.get("old-0")!.arrayBuffer()).toEqual(await original.arrayBuffer()); expect(h.project.photoLibrary![0].driveOriginalId).toBe("completed-original");
     expect(h.project.pages).toEqual(before); expect(h.prepare).not.toHaveBeenCalled();
   });
   it("admits the 250th unique photo, rejects the 251st and allows known duplicate reuse at capacity", async () => {
@@ -48,6 +48,31 @@ describe("one-file-at-a-time intake", () => {
     const h = harness(1); h.project.photoLibrary![0].sourceName = "same.jpg";
     h.queue.add("synthetic", fileImportSources([file("same.jpg")])); await finished(h.queue);
     expect(h.project.photoLibrary).toHaveLength(2);
+  });
+  it("reselects only exact existing originals and refuses an unrelated file with the same name", async () => {
+    const h = harness(), original = file("same.jpg", "original");
+    h.queue.add("synthetic", fileImportSources([original])); await finished(h.queue);
+    const photo = h.project.photoLibrary![0];
+    h.project.pages = [{ id: "page", templateId: "instagram-post-full-frame", background: "#ffffff", gutter: 0,
+      selectedFrameId: "photo-1", createdAt: stamp, updatedAt: stamp,
+      photos: { "photo-1": { ...photo, frameId: "photo-1", crop: { positionX: .2, positionY: -.1, zoom: -.25 } } } }];
+    const placements = structuredClone(h.project.pages);
+    h.blobs.clear();
+    h.queue.add("synthetic", fileImportSources([original, file("same.jpg", "different")]).map(source => ({ ...source, restoreOnly: true })));
+    await finished(h.queue);
+    expect(h.queue.getSnapshot().slice(1).map(item => item.state)).toEqual(["duplicate", "failed"]);
+    expect(h.queue.getSnapshot().at(-1)?.detail).toContain("Nothing was added or replaced");
+    expect(h.project.photoLibrary).toHaveLength(1);
+    expect(h.project.photoLibrary![0].blobKey).toBe(photo.blobKey);
+    expect(h.project.pages).toEqual(placements);
+    expect(await h.blobs.get(photo.blobKey)!.text()).toBe("original");
+  });
+  it("does not publish an unreadable picker file as imported", async () => {
+    const h = harness(), unavailable = file("unavailable.jpg");
+    vi.spyOn(unavailable, "arrayBuffer").mockRejectedValue(new DOMException("Provider access expired", "NotReadableError"));
+    h.queue.add("synthetic", fileImportSources([unavailable])); await finished(h.queue);
+    expect(h.queue.getSnapshot()[0]).toMatchObject({ state: "failed", detail: expect.stringContaining("Reselect") });
+    expect(h.save).not.toHaveBeenCalled(); expect(h.commit).not.toHaveBeenCalled();
   });
   it("pauses remaining intake on durable-storage failure and retries safely", async () => {
     const h = harness(); h.save.mockRejectedValueOnce(new Error("QuotaExceededError"));
