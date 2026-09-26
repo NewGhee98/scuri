@@ -11,7 +11,7 @@ import { getFormat } from "@/lib/formats";
 import { DEFAULT_CROP } from "@/lib/crop";
 import type { PhotoAnalysis } from "@/lib/photo-palette";
 import type { ProjectPhoto, ProjectPage, StoredProject, TemplateDefinition } from "@/lib/types";
-import type { PhotoImportItem, PhotoImportSource } from "@/lib/photo-import-queue";
+import { fileImportSources, type PhotoImportItem, type PhotoImportSource } from "@/lib/photo-import-queue";
 import { DEFAULT_LIBRARY_VIEW, filterLibraryRows, libraryRows, readLibraryView, rememberLibraryView, type LibraryView, type Orientation, type ColourClass } from "@/lib/photo-library-view";
 import { workspaceKey } from "@/lib/workspace";
 import { CompositionThumbnail } from "./composition-thumbnail";
@@ -43,6 +43,9 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   onCombineDuplicates, onOverride, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, onRetryBackup, initiallyImport }: Props) {
   const { session: previewSession } = usePhotoPreviewSession(), previewCache = previewSession?.cache;
   const photos = projectPhotoGroups(project).map(group => group.photo);
+  const projectImports = imports.filter(item => item.projectId === project.id);
+  // Restoring bytes can leave every library metadata field unchanged.
+  const completedImportsKey = JSON.stringify(projectImports.filter(item => item.state === "imported" || item.state === "duplicate").map(item => item.id));
   const libraryKey = JSON.stringify(photos.map(photo => [photo.blobKey, photo.sourceWidth, photo.sourceHeight, photo.fileSize, photo.drivePreviewId, photo.driveThumbnailId]));
   const [analysed, setAnalysed] = useState<Record<string, Analysed>>({});
   const [processing, setProcessing] = useState(false), [suggesting, setSuggesting] = useState(false);
@@ -52,6 +55,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   const [returnFocusKey, setReturnFocusKey] = useState<string>();
   const [tool, setTool] = useState<keyof typeof toolLabels | null>(null);
   const [viewerControlsHidden, setViewerControlsHidden] = useState(false);
+  const restoreFiles = useRef<HTMLInputElement>(null);
   const viewKey = workspaceKey(`scuri.library-view.${project.id}`, ownerId);
   const [view, setView] = useState<LibraryView>(() => readLibraryView(viewKey));
   const clientRef = useRef<PhotoAnalysisClient | null>(null), cancelRef = useRef<(() => void) | null>(null);
@@ -68,11 +72,13 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
     if (!open && dialog.current?.open) dialog.current.close();
   }, [open]);
   useEffect(() => {
-    let client: PhotoAnalysisClient;
-    try { client = new PhotoAnalysisClient(); clientRef.current = client; }
-    catch { queueMicrotask(() => setMessage("Local analysis is unavailable. You can still browse and place photos.")); return; }
-    return () => { client.dispose(); clientRef.current = null; suggestionClient.current?.dispose(); suggestionClient.current = null;
-      Object.values(analysedRef.current).forEach(item => URL.revokeObjectURL(item.url)); };
+    try { clientRef.current = new PhotoAnalysisClient(); }
+    catch { queueMicrotask(() => setMessage("Local analysis is unavailable. You can still browse and place photos.")); }
+    return () => { clientRef.current?.dispose(); clientRef.current = null; };
+  }, [retry]);
+  useEffect(() => () => {
+    suggestionClient.current?.dispose(); suggestionClient.current = null;
+    Object.values(analysedRef.current).forEach(item => URL.revokeObjectURL(item.url));
   }, []);
   useEffect(() => {
     const client = clientRef.current;
@@ -85,7 +91,8 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       await idle(); if (cancelled) return; setProcessing(true);
       for (const photo of photosRef.current) {
         if (cancelled || !isCurrent()) break;
-        if (analysedRef.current[photo.blobKey]) continue;
+        const known = analysedRef.current[photo.blobKey];
+        if (known) { previewCache.rememberThumbnail(photo, known.thumbnail); continue; }
         try {
           await idle(); if (cancelled) break;
           let result = await client.cached(photo, ownerId);
@@ -98,6 +105,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
             result = await client.analyse(photo, blob, ownerId);
           }
           if (cancelled || !isCurrent()) break;
+          previewCache.rememberThumbnail(photo, result.thumbnail);
           const item = { ...result, url: URL.createObjectURL(result.thumbnail) };
           analysedRef.current = { ...analysedRef.current, [photo.blobKey]: item };
           setAnalysed(analysedRef.current);
@@ -106,7 +114,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       if (!cancelled) setProcessing(false);
     })();
     return () => { cancelled = true; };
-  }, [libraryKey, ownerId, accessRevision, retry, getVolatileBlob, getDriveToken, previewCache, open]);
+  }, [libraryKey, completedImportsKey, ownerId, accessRevision, retry, getVolatileBlob, getDriveToken, previewCache, open]);
   useEffect(() => { const resume = () => { if (!document.hidden) setRetry(value => value + 1); };
     document.addEventListener("visibilitychange", resume); return () => document.removeEventListener("visibilitychange", resume); }, []);
   const suggest = async () => {
@@ -133,7 +141,6 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   });
   const toggleOrientation = (value: Orientation) => changeView({ ...view, scrollTop: 0, anchor: undefined, orientations: view.orientations.includes(value) ? view.orientations.filter(item => item !== value) : [...view.orientations, value] });
   const toggleColour = (value: ColourClass) => changeView({ ...view, scrollTop: 0, anchor: undefined, colours: view.colours.includes(value) ? view.colours.filter(item => item !== value) : [...view.colours, value] });
-  const projectImports = imports.filter(item => item.projectId === project.id);
   const filterCount = view.orientations.length + view.colours.length + (view.usage === "all" ? 0 : 1);
   const clearFilters = () => changeView({ ...DEFAULT_LIBRARY_VIEW, size: view.size, sort: view.sort });
   const backedUp = photos.filter(photo => photo.driveOriginalId).length;
@@ -200,6 +207,13 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
             <div className="library-import-list">{backupStatus.map(status => <p key={status.blobKey}>{photos.find(photo => photo.blobKey === status.blobKey)?.sourceName ?? "Photo"} · {status.stage}
               {status.total !== undefined ? ` · ${((status.sent ?? 0) / 1048576).toFixed(1)} / ${(status.total / 1048576).toFixed(1)} MB` : ""}{status.error ? ` · ${status.error}` : ""}</p>)}</div>
             <button type="button" className="text-button" onClick={onRetryBackup}>Retry backup / reconnect Drive</button></div>
+          <div>
+            <p>If originals are unavailable, choose the same files from Photos or Files. Exact matches restore the existing photos without changing placements or crops. Other files are left unchanged.</p>
+            <input ref={restoreFiles} hidden type="file" accept="image/jpeg,image/png,image/webp" multiple aria-label="Reselect original photos"
+              onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = "";
+                if (files.length) onImport(fileImportSources(files).map(source => ({ ...source, restoreOnly: true }))); }} />
+            <button type="button" className="secondary-button" onClick={() => restoreFiles.current?.click()}>Reselect originals…</button>
+          </div>
           {projectImports.length ? <details><summary>Import progress: {projectImports.filter(item => ["imported", "duplicate"].includes(item.state)).length}/{projectImports.length} finished</summary>
             <div className="library-import-list">{projectImports.map(item => <div key={item.id}><span>{item.name} · {item.state}{item.detail ? ` — ${item.detail}` : ""}</span>
               {item.state === "failed" || item.state === "paused" ? <button type="button" className="text-button" onClick={() => onRetryImport(item.id)}>Retry</button> : null}</div>)}</div>
