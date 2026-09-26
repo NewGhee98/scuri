@@ -41,6 +41,26 @@ export interface NormalizedFrame {
   arrangement?: FrameArrangement;
 }
 
+/** Page-relative text, stored in the page's independent template snapshot.
+ * Type sizes/spacing use reference canvas pixels, never viewport/export pixels. */
+export interface TextBox {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  font: "cinzel" | "cormorant" | "inter";
+  fontSize: number;
+  weight: 400 | 500 | 600 | 700;
+  italic: boolean;
+  letterSpacing: number;
+  lineHeight: number;
+  align: "left" | "center" | "right";
+  colour: string;
+  opacity: number;
+  background: string | null;
+}
+
 export interface TemplateDefinition {
   id: string;
   name: string;
@@ -53,6 +73,7 @@ export interface TemplateDefinition {
   /** Optional multiplier for gutters at the outside edge of the canvas. */
   outerInsetMultiplier?: number;
   frames: NormalizedFrame[];
+  textLayers?: TextBox[];
 }
 
 export interface ResolvedFrame {

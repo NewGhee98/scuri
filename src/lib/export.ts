@@ -1,6 +1,7 @@
 import { drawCroppedPhoto } from "./draw-photo";
 import { getExportSize, resolveExportFrames, type ExportSize } from "./export-settings";
 import { decodeImage } from "./image";
+import { drawTextLayers, ensureTextFonts } from "./text";
 import type { CanvasFormat, PhotoAsset, ProjectPage, TemplateDefinition } from "./types";
 
 export interface ExportOptions {
@@ -23,6 +24,8 @@ export function renderPagePreview(page: ProjectPage, format: CanvasFormat, templ
 
 export async function renderComposition(options: ExportOptions): Promise<Blob> {
   const { format, template, background, gutter, photos, quality = 0.94, signal } = options;
+  signal?.throwIfAborted();
+  await ensureTextFonts(template.textLayers ?? []);
   signal?.throwIfAborted();
   const outputSize = options.outputSize ?? getExportSize(format);
   const frames = resolveExportFrames(format, template, gutter, outputSize);
@@ -52,6 +55,7 @@ export async function renderComposition(options: ExportOptions): Promise<Blob> {
     }
   }
 
+  drawTextLayers(context, template, outputSize.width, outputSize.height);
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (blob) => signal?.aborted ? reject(signal.reason) : (blob ? resolve(blob) : reject(new Error("The JPEG export could not be created."))),
