@@ -1,10 +1,10 @@
 # Scuri verification
 
-[START_HERE](START_HERE.md) is the canonical current-status handoff. Production was freshly verified on **20 September 2026, 20:07–20:11 UTC** as [PR #29](https://github.com/NewGhee98/scuri/pull/29), source [`24075d1`](https://github.com/NewGhee98/scuri/commit/24075d1e4c8cd6dfc2936d77332f8cd3793bf268), [Vercel Ready / Production / Current](https://vercel.com/nugee/scuri/G6GijpLztNtqiQNT966cjQms2S7Z). This includes the Project photos scrolling correction. PR #28 is historical, not the latest production release.
+[START_HERE](START_HERE.md) is the canonical current-status handoff. The text application release was verified on **26 September 2026, 09:47–09:50 UTC** as [PR #30](https://github.com/NewGhee98/scuri/pull/30), source [`5446dd3`](https://github.com/NewGhee98/scuri/commit/5446dd3706ef2b206d141c9ef06dfa8bc2e1689f), [Vercel Ready / Production / Current at verification](https://vercel.com/nugee/scuri/8KQocDzx1muqMTuVCzoJVkGWthk6). Source equality, public assets and the applied additive migration are recorded in [release evidence](docs/evidence/2026-09-26-text-release.md). The later publication of this record changes documentation only.
 
 ## Evidence and scope
 
-**Local text work, 26 September:** **533 tests in 41 files, standalone typecheck, lint and the normal production build passed** on `feat/page-text`. The [text verification record](docs/evidence/2026-09-26-text-tools.md) includes synthetic Chrome editing/export checks and documentation validation. This feature is not deployed and its reusable-template migration has not run. The table below remains the dated PR #29/documentation evidence.
+**Text implementation, 26 September:** **533 tests in 41 files, standalone typecheck, lint and the normal production build passed** on `feat/page-text`. The [text verification record](docs/evidence/2026-09-26-text-tools.md) includes synthetic Chrome editing/export checks and documentation validation. Publication did not change application code or rerun those local checks: the complete tested tree matched the GitHub branch and merged main, and Vercel independently built preview and production successfully. The additive template text migration was applied and verified. The table below remains dated PR #29/documentation evidence.
 
 | Evidence | Status |
 | --- | --- |

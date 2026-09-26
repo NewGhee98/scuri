@@ -6,4 +6,4 @@ Start with [START_HERE.md](START_HERE.md); see [handoff maintenance](PROJECT_CON
 
 ## Active
 
-None. Local text implementation and checks are recorded in [text verification](docs/evidence/2026-09-26-text-tools.md). Publication and migration review remain separate next steps in [START_HERE](START_HERE.md#work-outside-production), including the prior documentation branch's unresolved publication question. No deployment or live migration is authorized by this completed task record.
+None. Text tools shipped through PR #30; deployment and the additive migration are recorded in [release verification](docs/evidence/2026-09-26-text-release.md). [START_HERE](START_HERE.md) records current status and remaining acceptance. This completed task record does not authorize later service or live-data work.
