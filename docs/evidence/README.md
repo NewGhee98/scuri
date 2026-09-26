@@ -4,7 +4,8 @@
 
 | Record | Scope |
 | --- | --- |
-| [Local text tools](2026-09-26-text-tools.md) | New implementation checks and isolated synthetic Chrome QA; not deployed, migration not run |
+| [Text production release](2026-09-26-text-release.md) | PR #30, tested-tree equality, Vercel production, public assets/font bytes and applied additive migration with preservation read-back |
+| [Local text tools](2026-09-26-text-tools.md) | Earlier implementation checks and isolated synthetic Chrome QA; the release record above documents subsequent deployment and migration |
 | [PR #29 production](2026-09-20-production.md) | Fresh GitHub/Vercel release identity plus clearly labelled recorded implementation, build and smoke checks |
 | [Documentation audit](2026-09-20-documentation-audit.md) | Baseline preservation, documentation-only validation, Drive read-backs and review publication status |
 | [Historical context](../history/PROJECT_CONTEXT_THROUGH_2026-09-20.md) | Product decisions, earlier implementations and dated releases, including the previously local-only PR #29 notes |
