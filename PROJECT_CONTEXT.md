@@ -14,7 +14,7 @@ Current limits are 250 unique library photos, 30 pages, 80 MiB per supported del
 
 ## Storage authority
 
-- **Supabase:** authoritative project identity, structure, page order, frame assignments/crops, library metadata, Drive references and reusable templates. Project rows use server revisions; child pages/assets are separate writes. The schema intends owner-only RLS and authenticated access. Existing live policies/grants were not inspected in this documentation task.
+- **Supabase:** authoritative project identity, structure, page order, frame assignments/crops, library metadata, Drive references and reusable templates. Project rows use server revisions; child pages/assets are separate writes. The schema intends owner-only RLS and authenticated access. The 26 September text release verified the additive template column and unchanged template policies/grants; this documentation refresh performed no further database inspection or change. Other live policies/grants remain outside that bounded verification.
 - **Google Drive:** untouched original bytes, derived previews/thumbnails and optional exports, using the existing `drive.file` permission. The folder tree and upload app properties are not a project manifest or current assignment database.
 - **Browser:** local/offline project metadata, IndexedDB originals/derived caches, account-scoped session previews, resumable job state and derived colour analysis. Supabase absence or download failure must not erase cached placement metadata. Cache eviction/reinstallation is not a refresh procedure; refresh the app normally.
 
@@ -87,7 +87,9 @@ Portable backups disclose missing bytes and restore as a new project. ZIPs remai
 
 [START_HERE](START_HERE.md) records the verified PR #30 application release. [VERIFICATION](VERIFICATION.md) separates the historical 512-test release, [533-test text implementation checks](docs/evidence/2026-09-26-text-tools.md) and [production/migration checks](docs/evidence/2026-09-26-text-release.md). [The checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md) covers physical iPad, live two-device sync, provider imports, resume and share sheets; [text acceptance](docs/TEXT_TOOLS.md#outstanding-acceptance) adds the new controls. Desktop CSS viewport checks and fake cloud transports do not certify these.
 
-The user's reported device is iPad Air 11-inch M2, model MUWG3NF/A, iPadOS 26.5.2; confirm the OS during physical acceptance. Supabase schema/RLS/grants, auth/SMTP/redirect settings, Google origins/consent/APIs and environment/secret hygiene are unverified in this task. Historical configuration observations stay in the archive. Never commit secret values or infer a service audit from a successful Vercel build.
+The user's reported device is iPad Air 11-inch M2, model MUWG3NF/A, iPadOS 26.5.2; confirm the OS during physical acceptance. Apart from the bounded template-column/preservation checks recorded for the text release, Supabase schema/RLS/grants, auth/SMTP/redirect settings, Google origins/consent/APIs and environment/secret hygiene remain unverified. Historical configuration observations stay in the archive. Never commit secret values or infer a service audit from a successful Vercel build.
+
+The [26 September documentation refresh](docs/evidence/2026-09-26-documentation-refresh.md) rechecked the same PR #30 production source and reconciled all four existing Drive summaries. [Documentation PR #31](https://github.com/NewGhee98/scuri/pull/31) remains separate, open and unmerged; its publication is not another application release.
 
 ## Handoff maintenance
 
@@ -95,5 +97,5 @@ The user's reported device is iPad Air 11-inch M2, model MUWG3NF/A, iPadOS 26.5.
 2. Keep CURRENT_TASK short: active scope, completed work, remaining work/blockers. Clear active notes when the authorized task is complete; durable results belong in dated evidence/history.
 3. Update current sections in place when behaviour or release state changes. Keep one canonical current status in START_HERE and link to it. Historical “not deployed” snapshots remain explicitly dated history.
 4. Record verification date, source commit, PR/deployment links and what was actually checked. Separate local tests, public smoke checks, authenticated release inspection and real data/device acceptance.
-5. Keep technical detail in the repository. The four [Drive summaries](README.md#current-release-and-documentation--20-september-2026) should link back and agree; preserve their history and sharing. Commit small sanitized evidence summaries, not private photos, credentials or machine-only paths.
+5. Keep technical detail in the repository. The four [Drive summaries](README.md#current-release-and-documentation--26-september-2026) should link back and agree; preserve their history and sharing. Commit small sanitized evidence summaries, not private photos, credentials or machine-only paths.
 6. Documentation, checklist steps and old approvals are not authorization to migrate, repair live data, change services or deploy. A branch push can trigger an automatic Vercel Preview; respect the current publication/deployment scope.

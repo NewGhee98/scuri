@@ -1,6 +1,6 @@
 # Start here — Scuri
 
-Canonical current-status handoff. Updated **26 September 2026** for the verified text-tools production release. A new session needs this repository, not the originating conversation or a particular computer. Recheck live release evidence before a later release or service change.
+Canonical current-status handoff. Updated **26 September 2026** for the verified text-tools release and repository/Drive documentation refresh. A new session needs this repository, not the originating conversation or a particular computer. Recheck live release evidence before a later release or service change.
 
 ## Product and workflow
 
@@ -20,7 +20,7 @@ Create/open a fixed-format project → import photos into its independent librar
 
 ## Verified production
 
-Fresh GitHub, authenticated Vercel and public-site checks on **26 September 2026, 09:47–09:50 UTC** confirmed:
+GitHub, authenticated Vercel and public-site release checks on **26 September 2026, 09:47–09:50 UTC** confirmed the release below. The documentation refresh rechecked GitHub and Vercel at **10:14–10:18 UTC**: the same application remained current; no new production deployment was made.
 
 - [PR #30 — Movable text and consistent export typography](https://github.com/NewGhee98/scuri/pull/30) is merged.
 - Application release source: [`5446dd3706ef2b206d141c9ef06dfa8bc2e1689f`](https://github.com/NewGhee98/scuri/commit/5446dd3706ef2b206d141c9ef06dfa8bc2e1689f).
@@ -30,9 +30,9 @@ This includes Cinzel, Cormorant Garamond and Inter text tools, PR #28's coordina
 
 ## Work outside production
 
-- `docs/text-release-record`: documentation-only updates recording PR #30 and the migration are prepared for review separately from the deployed application. They do not change code or service configuration.
+- [PR #31 — documentation refresh](https://github.com/NewGhee98/scuri/pull/31), branch `docs/text-release-record`, is **open and unmerged**. It records PR #30, the migration and the four updated Drive summaries. Until merge, use this branch's handoff for current release wording. Publishing this documentation branch can create an automatic Vercel Preview; it does not replace production or change application code.
 - `feat/page-text` is released through PR #30. See [text handoff](docs/TEXT_TOOLS.md), [implementation checks](docs/evidence/2026-09-26-text-tools.md) and [release verification](docs/evidence/2026-09-26-text-release.md). Local and browser-published commit IDs differ; complete tree equality establishes source equivalence.
-- `docs/portable-handoff`: prior documentation commit `b206a1e` and branch remain preserved locally; their content was included in PR #30. The user's release authorization resolved the previous publication hold. The [documentation audit](docs/evidence/2026-09-20-documentation-audit.md) records the earlier task as history. Drive summaries were last updated then and have not been refreshed for text tools.
+- `docs/portable-handoff`: prior documentation commit `b206a1e` and branch remain preserved locally; their content was included in PR #30. The user's release authorization resolved the previous publication hold. The [20 September audit](docs/evidence/2026-09-20-documentation-audit.md) remains history. All four Drive summaries were updated and read back on **26 September**, with historical content and private sharing retained; see the [documentation refresh record](docs/evidence/2026-09-26-documentation-refresh.md).
 - Before the documentation work, local application HEAD `3639dd3` had the **same full tree** as production. The pre-existing publication/release narrative was incorporated in [dated history](docs/history/PROJECT_CONTEXT_THROUGH_2026-09-20.md), not discarded.
 - [PR #14 — Add client safety backups and undo](https://github.com/NewGhee98/scuri/pull/14) was still open at release inspection. It is older branch work, **not approved for merging or assumed to add missing features**. Compare it with current main before any future decision.
 - Other machines, private drafts and uninspected branches have not been audited by the text task.
