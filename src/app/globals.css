@@ -1,5 +1,37 @@
 @import "tailwindcss";
 
+/* Bundled, versioned faces. Loaded on use, then cached by the existing worker. */
+@font-face { font-family: "Scuri Cinzel"; src: url("/fonts/cinzel-v1.ttf") format("truetype"); font-weight: 400 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Scuri Cormorant"; src: url("/fonts/cormorant-v1.ttf") format("truetype"); font-weight: 400 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Scuri Cormorant"; src: url("/fonts/cormorant-italic-v1.ttf") format("truetype"); font-weight: 400 700; font-style: italic; font-display: block; }
+@font-face { font-family: "Scuri Inter"; src: url("/fonts/inter-v1.ttf") format("truetype"); font-weight: 400 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Scuri Inter"; src: url("/fonts/inter-italic-v1.ttf") format("truetype"); font-weight: 400 700; font-style: italic; font-display: block; }
+
+.text-layer { position: absolute; inset: 0; z-index: 100; pointer-events: none; overflow: hidden; }
+.text-artwork { display: block; pointer-events: none; }
+.text-hit-target { position: absolute; padding: 0; border: 0; background: transparent; pointer-events: auto; touch-action: none; cursor: move; }
+.text-hit-target.selected { background: rgb(80 130 160 / .09); }
+.text-hit-target:focus-visible { outline: calc(1px / var(--canvas-view-scale, 1)) solid #006996; outline-offset: calc(3px / var(--canvas-view-scale, 1)); }
+.text-hit-target::after { content: ""; position: absolute; inset: calc(min(0px, (100% - 44px / var(--canvas-view-scale, 1)) / 2)) 0; }
+.text-selection-label { position: absolute; top: 0; left: 0; transform: scale(calc(1 / var(--canvas-view-scale, 1))) translateY(-100%); transform-origin: top left; white-space: nowrap; font: 11px/20px system-ui; color: #16475a; background: #ffffffdd; padding: 0 4px; }
+.text-font-status { position: absolute; inset: 12px 12px auto; pointer-events: auto; font: 18px/1.4 system-ui; color: #5a231c; background: #fff; padding: 12px; }
+.text-font-status button { padding: 10px; text-decoration: underline; }
+.text-thumbnail-status { position: absolute; bottom: 4px; left: 4px; background: #fffffff0; color: #5a231c; padding: 3px; font-size: 11px; }
+.text-tools, .text-box-controls { display: grid; gap: 12px; }
+.text-tools { padding: 16px 0; }
+.text-mode-switch { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: #ededeb; }
+.text-mode-switch button { flex: 1; min-height: 44px; border-radius: 9px; font-size: 14px; }
+.text-mode-switch button[aria-pressed="true"] { background: #fff; box-shadow: 0 1px 3px #0002; font-weight: 600; }
+.text-field { display: grid; gap: 5px; min-width: 0; font-size: 12px; }
+.text-field select, .text-field textarea, .text-field input, .text-number-control input[type="text"] { min-height: 44px; width: 100%; min-width: 0; border: 1px solid #0002; border-radius: 9px; padding: 8px; background: #fff; color: #171717; font-size: 16px; }
+.text-field textarea { resize: vertical; }
+.text-control-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: end; }
+.text-checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 13px; }
+.text-checkbox input { width: 18px; height: 18px; }
+.text-number-control { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 4px 12px; align-items: center; }
+.text-number-control > span { grid-column: 1 / -1; font-size: 12px; }
+.text-number-control .range { min-height: 44px; }
+
 :root {
   color-scheme: light;
   --header-height: 64px;
