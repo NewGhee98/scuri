@@ -7,9 +7,10 @@ import { drawCompositionGuides } from "@/lib/composition-guides";
 import { FRAME_SELECTION_TINT } from "@/lib/selection-style";
 import { pointInCanvas } from "@/lib/canvas-viewport";
 import { CanvasViewport } from "./canvas-viewport";
+import { TextLayer } from "./text-layer";
 import type { DisplayPhoto } from "@/lib/photo-preview-cache";
 import { snapFramePosition, snapPhotoPosition, type AlignmentGuide } from "@/lib/editor-alignment";
-import type { CanvasFormat, CropState, ResolvedFrame, TemplateDefinition } from "@/lib/types";
+import type { CanvasFormat, CropState, ResolvedFrame, TemplateDefinition, TextBox } from "@/lib/types";
 
 interface EditorCanvasProps {
   format: CanvasFormat;
@@ -32,6 +33,10 @@ interface EditorCanvasProps {
   onFrameMove: (frameId: string, x: number, y: number) => void;
   onGuidesChange: (guides: AlignmentGuide[]) => void;
   onViewWidthChange: (width: number) => void;
+  textEditing?: boolean;
+  selectedTextId?: string | null;
+  onSelectText?: (id: string) => void;
+  onTextChange?: (boxes: TextBox[]) => void;
 }
 
 interface Point {
@@ -79,6 +84,7 @@ export function EditorCanvas({
   onFrameMove,
   onGuidesChange,
   onViewWidthChange,
+  textEditing = false, selectedTextId, onSelectText, onTextChange,
 }: EditorCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
@@ -93,8 +99,10 @@ export function EditorCanvas({
   const viewScaleRef = useRef(1);
   const [imageRevision, setImageRevision] = useState(0);
   const [swapTargetFrameId, setSwapTargetFrameId] = useState<string | null>(null);
+  const [textCancelKey, setTextCancelKey] = useState(0);
 
   const cancelInteraction = () => {
+    setTextCancelKey(value => value + 1);
     const ids = [...pointersRef.current.keys()];
     pointersRef.current.clear(); dragRef.current = null; pinchRef.current = null;
     swapDragRef.current = null; frameDragRef.current = null; wheelRef.current = null;
@@ -107,9 +115,11 @@ export function EditorCanvas({
   }, [format.width, onViewWidthChange]);
 
   useEffect(() => {
+    const ids = [...pointersRef.current.keys()];
     pointersRef.current.clear(); dragRef.current = null; pinchRef.current = null;
     swapDragRef.current = null; frameDragRef.current = null; wheelRef.current = null;
-  }, [moveFrameMode, rearrangeMode]);
+    for (const id of ids) if (canvasRef.current?.hasPointerCapture(id)) canvasRef.current.releasePointerCapture(id);
+  }, [moveFrameMode, rearrangeMode, textEditing]);
 
   useEffect(() => {
     if (!guides.length) return;
@@ -394,10 +404,12 @@ export function EditorCanvas({
   return (
     <CanvasViewport width={format.width} height={format.height} label="Page canvas" editable
       onScaleChange={changeViewScale} onInteractionCancel={cancelInteraction}>
+      <div className="relative" style={{ width: format.width, height: format.height }}>
       <canvas
         ref={canvasRef}
         className={`ios-gesture-surface block touch-none bg-white shadow-[0_16px_50px_rgba(0,0,0,0.14)] outline-none focus-visible:ring-2 focus-visible:ring-sky-700 focus-visible:ring-offset-4 ${moveFrameMode || rearrangeMode ? "cursor-grab" : ""}`}
-        aria-label={moveFrameMode ? "Photo layout canvas in move frame mode. Drag the selected frame or use arrow keys to move it."
+        aria-label={textEditing ? "Page canvas in text mode. Select and drag a text box, or choose Photos to edit images."
+          : moveFrameMode ? "Photo layout canvas in move frame mode. Drag the selected frame or use arrow keys to move it."
           : rearrangeMode
           ? "Photo layout canvas in rearrange mode. Drag a filled frame onto another frame to swap or move its photo."
           : "Photo layout canvas. Tap a frame to select it, drag to reposition, and pinch to zoom."}
@@ -406,14 +418,17 @@ export function EditorCanvas({
         draggable={false}
         onContextMenu={(event) => event.preventDefault()}
         onDragStart={(event) => event.preventDefault()}
-        onKeyDown={handleKeyDown}
+        onKeyDown={textEditing ? undefined : handleKeyDown}
         onPointerCancel={cancelInteraction}
         onLostPointerCapture={event => { if (pointersRef.current.has(event.pointerId)) cancelInteraction(); }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={(event) => endPointer(event, true)}
-        onWheel={handleWheel}
+        onPointerDown={textEditing ? undefined : handlePointerDown}
+        onPointerMove={textEditing ? undefined : handlePointerMove}
+        onPointerUp={textEditing ? undefined : (event) => endPointer(event, true)}
+        onWheel={textEditing ? undefined : handleWheel}
       />
+      {template.textLayers?.length ? <TextLayer template={template} selectedId={selectedTextId} editable={textEditing}
+        snap={snapEnabled} onSelect={onSelectText} onCommit={onTextChange} cancelKey={textCancelKey} /> : null}
+      </div>
     </CanvasViewport>
   );
 }

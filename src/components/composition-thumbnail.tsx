@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { resolveFrames } from "@/lib/crop";
 import { drawCroppedPhoto } from "@/lib/draw-photo";
+import { drawTextLayers } from "@/lib/text";
+import { EMPTY_TEXT, useTextFonts } from "./text-layer";
 import type { CanvasFormat, ProjectPage, TemplateDefinition } from "@/lib/types";
 import { usePagePreviews } from "./photo-preview-context";
 
@@ -15,6 +17,7 @@ interface CompositionThumbnailProps {
 export function CompositionThumbnail({ format, page, template }: CompositionThumbnailProps) {
   const [visible, setVisible] = useState(false);
   const photos = usePagePreviews(page, visible);
+  const fonts = useTextFonts(template.textLayers ?? EMPTY_TEXT, visible);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cacheRef = useRef(new Map<string, HTMLImageElement>());
   const [revision, setRevision] = useState(0);
@@ -74,14 +77,18 @@ export function CompositionThumbnail({ format, page, template }: CompositionThum
       }
       context.restore();
     }
-  }, [frames, height, page.background, photos, revision]);
+    if (fonts.ready) drawTextLayers(context, template, width, height);
+  }, [frames, height, page.background, photos, revision, template, fonts.ready]);
 
   return (
+    <div className="relative">
     <canvas
       ref={canvasRef}
       className="block h-auto w-full bg-white"
       style={{ aspectRatio: `${format.width}/${format.height}` }}
       aria-label={`${template.name} page preview`}
     />
+    {!fonts.ready && template.textLayers?.length ? <span className="text-thumbnail-status">{fonts.error ? "Text font unavailable" : "Loading text…"}</span> : null}
+    </div>
   );
 }

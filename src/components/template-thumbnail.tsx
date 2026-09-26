@@ -1,5 +1,6 @@
 import { resolveFrames } from "@/lib/crop";
 import type { TemplateDefinition } from "@/lib/types";
+import { TextThumbnail } from "./text-thumbnail";
 
 interface TemplateThumbnailProps {
   template: TemplateDefinition;
@@ -10,6 +11,8 @@ export function TemplateThumbnail({ template, selected = false }: TemplateThumbn
   const width = 180;
   const height = (width * template.canvasHeight) / template.canvasWidth;
   const frames = resolveFrames(template, template.defaultGutter, width, height);
+
+  if (template.textLayers?.length) return <TextThumbnail template={template} selected={selected} />;
 
   return (
     <svg

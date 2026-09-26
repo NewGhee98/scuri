@@ -11,6 +11,8 @@ import { validateTemplate } from "@/lib/templates";
 import { FRAME_SELECTION_TINT } from "@/lib/selection-style";
 import { pointInCanvas } from "@/lib/canvas-viewport";
 import { CanvasViewport } from "./canvas-viewport";
+import { TextLayer, useTextEditing } from "./text-layer";
+import { TextTools } from "./text-tools";
 import type { CustomTemplate, FrameMargins, NormalizedFrame } from "@/lib/types";
 
 type Guide = { axis: "x" | "y"; value: number; gap?: { start: number; end: number; cross: number; pixels: number } };
@@ -102,6 +104,9 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
   const [referenceId, setReferenceId] = useState(initialTemplate.frames[0]?.id ?? "");
   const [multiSelect, setMultiSelect] = useState(false);
   const [preview, setPreview] = useState(false);
+  const [textMode, setTextMode] = useState(false);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [textCancelKey, setTextCancelKey] = useState(0);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [resizeFromCenter, setResizeFromCenter] = useState(false);
   const [guides, setGuides] = useState<Guide[]>([]);
@@ -151,6 +156,10 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
     setFuture([]);
     replaceDraft(next);
   };
+
+  const textEdit = useTextEditing(draft.textLayers, boxes => commit({ ...draftRef.current,
+    textLayers: structuredClone(boxes), updatedAt: new Date().toISOString(),
+    syncState: draftRef.current.syncState === "synced" ? "pending" : draftRef.current.syncState }));
 
   const commitLayout = (result: LayoutResult) => {
     setLayoutNotice(result.notice ?? "");
@@ -234,7 +243,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
   };
 
   const beginInteraction = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (preview || interactionRef.current) return;
+    if (preview || textMode || interactionRef.current) return;
     const target = event.target as HTMLElement;
     const frameElement = target.closest<HTMLElement>("[data-template-frame-id]");
     const handleElement = target.closest<HTMLElement>("[data-resize-handle]");
@@ -348,6 +357,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
   };
 
   const cancelInteraction = () => {
+    setTextCancelKey(value => value + 1);
     const interaction = interactionRef.current;
     interactionRef.current = null;
     if (interaction && !sameTemplate(interaction.before, draftRef.current)) replaceDraft(interaction.before);
@@ -444,7 +454,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
             />
           ))}
           {draft.frames.map((frame, index) => {
-            const selected = selectedIds.includes(frame.id);
+            const selected = !textMode && selectedIds.includes(frame.id);
             return (
               <div
                 key={frame.id}
@@ -473,7 +483,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
               </div>
             );
           })}
-          {!preview && selectedIds.length > 1 ? <div className="template-selection-handles" style={{
+          {!preview && !textMode && selectedIds.length > 1 ? <div className="template-selection-handles" style={{
             left: `${selectionBounds.x * 100}%`, top: `${selectionBounds.y * 100}%`,
             width: `${selectionBounds.width * 100}%`, height: `${selectionBounds.height * 100}%`,
           }}>
@@ -486,6 +496,8 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
             top: `${(activeArrangement.axis === "vertical" ? (members[0].y + members[0].height + members[1].y) / 2 : members[0].y + members[0].height / 2) * 100}%`,
           }}>{Number(activeArrangement.gap.toFixed(2))} px · all gaps</span> : null}
           {!draft.frames.length ? <div className="blank-canvas-message">Blank canvas<br /><span>Add your first photo frame</span></div> : null}
+          {textEdit.boxes.length ? <TextLayer template={{ ...draft, textLayers: textEdit.boxes }} selectedId={selectedTextId}
+            editable={textMode && !preview} snap={snapEnabled} onSelect={setSelectedTextId} onCommit={textEdit.commit} cancelKey={textCancelKey} /> : null}
         </div>
         </CanvasViewport>
       </section>
@@ -504,6 +516,15 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
           <p className="mt-2 text-xs text-neutral-500">{draft.frames.length} {draft.frames.length === 1 ? "photo frame" : "photo frames"}</p>
         </div>
 
+        <div className="text-mode-switch" role="group" aria-label="Template editing tools">
+          {[false, true].map(value => <button key={String(value)} type="button" aria-pressed={textMode === value} onClick={() => {
+            textEdit.commit(); cancelInteraction(); setTextMode(value);
+          }}>{value ? "Text" : "Frames"}</button>)}
+        </div>
+        {textMode ? <TextTools placeholders boxes={textEdit.boxes} selectedId={selectedTextId} onSelect={setSelectedTextId}
+          onPreview={textEdit.preview} onCommit={textEdit.commit} onCancel={textEdit.cancel}
+          width={canvasWidth} height={canvasHeight} snap={snapEnabled} onSnap={setSnapEnabled} /> : null}
+        <div hidden={textMode}>
         <div className="control-section grid gap-2">
           <button className="primary-button w-full" type="button" onClick={addFrame}>+ Add photo frame</button>
           <div className="grid grid-cols-2 gap-2">
@@ -684,6 +705,7 @@ export function TemplateDesigner({ initialTemplate, onCancel, onDraftChange, onS
           </div>
         </div>
 
+        </div>
         <div className="mt-auto grid gap-2 pt-5">
           <button className="primary-button w-full" type="button" disabled={saving || validationErrors.length > 0} onClick={save}>
             {saving ? "Saving to cloud…" : "Save template"}
