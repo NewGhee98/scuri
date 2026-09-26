@@ -6,4 +6,4 @@ Start with [START_HERE.md](START_HERE.md); see [handoff maintenance](PROJECT_CON
 
 ## Active
 
-None. Local text implementation and checks are recorded in [text verification](docs/evidence/2026-09-26-text-tools.md). Publication and migration review remain separate next steps in [START_HERE](START_HERE.md#work-outside-production), including the prior documentation branch's unresolved publication question. No deployment or live migration is authorized by this completed task record.
+None. Text tools shipped through PR #30. The repository and four Drive summaries are reconciled in [documentation PR #31](https://github.com/NewGhee98/scuri/pull/31), which remains open for review; see the [refresh record](docs/evidence/2026-09-26-documentation-refresh.md). [START_HERE](START_HERE.md) records the verified production release, applied migration and remaining acceptance. Review status does not authorize merge, service changes or live-data work.

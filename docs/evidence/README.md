@@ -4,13 +4,15 @@
 
 | Record | Scope |
 | --- | --- |
-| [Local text tools](2026-09-26-text-tools.md) | New implementation checks and isolated synthetic Chrome QA; not deployed, migration not run |
+| [26 September documentation refresh](2026-09-26-documentation-refresh.md) | Fresh release/PR read-backs, four saved private Drive summaries, retained history, link validation and open documentation PR #31 |
+| [Text production release](2026-09-26-text-release.md) | PR #30, tested-tree equality, Vercel production, public assets/font bytes and applied additive migration with preservation read-back |
+| [Local text tools](2026-09-26-text-tools.md) | Earlier implementation checks and isolated synthetic Chrome QA; the release record above documents subsequent deployment and migration |
 | [PR #29 production](2026-09-20-production.md) | Fresh GitHub/Vercel release identity plus clearly labelled recorded implementation, build and smoke checks |
 | [Documentation audit](2026-09-20-documentation-audit.md) | Baseline preservation, documentation-only validation, Drive read-backs and review publication status |
 | [Historical context](../history/PROJECT_CONTEXT_THROUGH_2026-09-20.md) | Product decisions, earlier implementations and dated releases, including the previously local-only PR #29 notes |
 | [Historical verification](../history/VERIFICATION_THROUGH_2026-09-20.md) | Earlier test counts/package checks; not current verification |
 
-GitHub source/PR links are public. Vercel dashboard and Drive document links may require existing owner access; their dated read-back summaries are portable evidence, not a promise that another session can open them. A repository migration file does not prove it ran live. The user-reported Supabase migration is explicitly not independently reverified.
+GitHub source/PR links are public. Vercel dashboard and Drive document links may require existing owner access; their dated read-back summaries are portable evidence, not a promise that another session can open them. A repository migration file does not prove it ran live. The user-reported `projects.photo_library` migration remains independently unverified; the later `templates.text_layers` migration has the bounded release verification recorded above. Neither is a comprehensive live-configuration audit.
 
 ## Legacy local artifacts
 

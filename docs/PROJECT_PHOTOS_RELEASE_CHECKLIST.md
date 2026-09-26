@@ -1,8 +1,10 @@
 # Project photos release acceptance
 
-Implementation date: 19 September 2026. Production reverified **20 September 2026, 20:07–20:11 UTC**: [PR #29](https://github.com/NewGhee98/scuri/pull/29), main `24075d1`, [Vercel Ready / Production / Current](https://vercel.com/nugee/scuri/G6GijpLztNtqiQNT966cjQms2S7Z). The scrolling correction is deployed. The library shipped in PR #22; later releases remain [historical records](history/PROJECT_CONTEXT_THROUGH_2026-09-20.md). [START_HERE](../START_HERE.md) is the canonical status; [VERIFICATION](../VERIFICATION.md) separates recorded checks from this documentation audit.
+Library implementation date: 19 September 2026. The current application release is [PR #30](https://github.com/NewGhee98/scuri/pull/30), verified **26 September 2026, 09:47–09:50 UTC** with text tools and all prior library/scrolling changes retained. See [production evidence](evidence/2026-09-26-text-release.md). The library shipped in PR #22 and scrolling correction in PR #29; previous releases remain [historical records](history/PROJECT_CONTEXT_THROUGH_2026-09-20.md). [START_HERE](../START_HERE.md) is the canonical status; [VERIFICATION](../VERIFICATION.md) separates local checks, release checks and outstanding acceptance. Add the [physical-device text checks](TEXT_TOOLS.md#outstanding-acceptance) when accepting this release.
 
 This is an acceptance procedure, not authorization to change services or data. Use synthetic/disposable projects for authorized tests; never reset existing assets or rewrite live originals.
+
+The [26 September documentation refresh](evidence/2026-09-26-documentation-refresh.md) rechecked the same production release and updated the four Drive summaries. It did not complete any of the physical-device or live-service checks below. [Documentation PR #31](https://github.com/NewGhee98/scuri/pull/31) remains open for review.
 ## Automated and local acceptance
 
 - Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`.
