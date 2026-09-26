@@ -1,12 +1,14 @@
 import { reserveDriveFileId, uploadReservedDriveFile } from "./drive-resumable";
-import { ensureProjectDriveFolders } from "./google-drive";
+import { downloadGoogleDrivePhoto, ensureProjectDriveFolders } from "./google-drive";
 import { createPhotoPreview } from "./image";
 import { getProjectPhotos } from "./project-photo-library";
 import type { PhotoBackupCheckpoint } from "./photo-backup";
 import type { ProjectPhoto, StoredProject } from "./types";
 import { workspaceKey } from "./workspace";
+import { savePhotoBlob } from "./storage";
+import { fingerprintOriginal } from "./photo-fingerprint";
 
-export interface PhotoBackupStatus { blobKey: string; stage: string; sent?: number; total?: number; error?: string }
+export interface PhotoBackupStatus { blobKey: string; stage: string; sent?: number; total?: number; error?: string; needsOriginal?: boolean }
 interface Dependencies {
   project: () => StoredProject | undefined; token: () => string | null; current: () => boolean;
   source: (key: string) => Promise<Blob | null>;
@@ -30,11 +32,46 @@ export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> 
   for (const original of getProjectPhotos(initial)) {
     if (!deps.current() || !deps.token()) return false;
     let photo = getProjectPhotos(deps.project()!).find(item => item.blobKey === original.blobKey);
-    if (!photo || (photo.driveOriginalId && photo.drivePreviewId && (!photo.importedAt || photo.driveThumbnailId))) continue;
-    const source = await deps.source(photo.blobKey);
-    if (!source) { deps.progress({ blobKey: photo.blobKey, stage: "Original unavailable on this device; reselect the exact file to resume" }); continue; }
+    if (!photo) continue;
+    if (photo.driveOriginalId && photo.drivePreviewId && (!photo.importedAt || photo.driveThumbnailId)) {
+      deps.progress({ blobKey: photo.blobKey, stage: "Backed up" }); continue;
+    }
     let preview: Blob | undefined, thumbnail: Blob | undefined;
     try {
+      let source: Blob | null = null, sourceError: unknown;
+      try {
+        source = await deps.source(photo.blobKey);
+        if (source) {
+          if (!source.size || (photo.fileSize !== undefined && source.size !== photo.fileSize) ||
+            (photo.fingerprint && await fingerprintOriginal(source) !== photo.fingerprint)) {
+            throw new Error("Stored original bytes did not match this photo");
+          }
+          // Legacy originals may have no checksum. Blob metadata alone is not
+          // proof that its backing file can still be read.
+          if (!photo.fingerprint) await source.slice(0, 1).arrayBuffer();
+        }
+      } catch (error) { sourceError = error; source = null; }
+      if (!deps.current() || !deps.token()) return false;
+      if (!source && photo.driveOriginalId) {
+        deps.progress({ blobKey: photo.blobKey, stage: "Restoring original from Drive" });
+        source = await downloadGoogleDrivePhoto(deps.token()!, photo.driveOriginalId, deps.signal);
+        if (!deps.current() || !deps.token()) return false;
+        if ((photo.fileSize !== undefined && source.size !== photo.fileSize) ||
+          (photo.fingerprint && await fingerprintOriginal(source) !== photo.fingerprint)) {
+          throw new Error("The Drive download did not match this original. Existing files are unchanged.");
+        }
+        if (!deps.current()) return false;
+        // Local cache failure must not block rebuilding missing Drive previews.
+        await savePhotoBlob(photo.blobKey, source).catch(() => {});
+      }
+      if (!deps.current() || !deps.token()) return false;
+      if (!source) {
+        success = false;
+        deps.progress({ blobKey: photo.blobKey, stage: "Original unavailable on this device", needsOriginal: true,
+          error: sourceError instanceof Error ? `Local photo storage could not be read: ${sourceError.message}. Reselect the original to resume.`
+            : "No local original or completed Drive backup is available. Reselect the original to resume." });
+        continue;
+      }
       const placedPage = deps.project()!.pages.find(page => Object.values(page.photos).some(item => item.blobKey === photo!.blobKey));
       const placement = placedPage && Object.values(placedPage.photos).find(item => item.blobKey === photo!.blobKey);
       for (const kind of ["original", "preview", "thumbnail"] as const) {

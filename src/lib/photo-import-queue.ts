@@ -1,15 +1,16 @@
 import { getProjectPhotos, getVisibleProjectPhotos, MAX_PROJECT_PHOTOS, mergePhotoLibraries } from "./project-photo-library";
 import { nextProjectEditTime } from "./project-time";
+import { snapshotImportFile } from "./photo-original-storage";
 import type { ProjectPhoto, StoredProject } from "./types";
 
-export interface PhotoImportSource { id: string; name: string; file: (signal: AbortSignal) => Promise<File>; release?: () => void }
+export interface PhotoImportSource { id: string; name: string; file: (signal: AbortSignal) => Promise<File>; release?: () => void; restoreOnly?: boolean }
 export type ImportState = "queued" | "reading" | "checking" | "saving" | "imported" | "duplicate" | "failed" | "paused";
 export interface PhotoImportItem { id: string; projectId: string; name: string; state: ImportState; detail?: string; blobKey?: string }
 interface Dependencies {
   current: () => boolean; project: (id: string) => StoredProject | undefined;
   validate: (file: File) => void; fingerprint: (file: File) => Promise<string>;
   prepare: (file: File, blobKey: string) => Promise<ProjectPhoto>;
-  saveOriginal: (key: string, file: File) => Promise<void>;
+  saveOriginal: (key: string, file: File, fingerprint: string) => Promise<void>;
   commit: (project: StoredProject) => void;
   knownFingerprint?: (photo: ProjectPhoto) => string | undefined;
   checkpoint?: (projectId: string, photo: ProjectPhoto) => Promise<void>;
@@ -54,9 +55,12 @@ export class PhotoImportQueue {
         try {
           if (!current()) throw new Error("The destination project is no longer available.");
           this.update(item.id, { state: "reading" });
-          const file = await source.file(this.controller.signal);
+          const selected = await source.file(this.controller.signal);
           if (!current()) throw new Error("The destination project is no longer available.");
-          this.dependencies.validate(file); this.update(item.id, { state: "checking" });
+          this.dependencies.validate(selected);
+          const file = await snapshotImportFile(selected);
+          if (!current()) throw new Error("The destination project is no longer available.");
+          this.update(item.id, { state: "checking" });
           const fingerprint = await this.dependencies.fingerprint(file);
           if (!current()) throw new Error("The destination project is no longer available.");
           let latest = this.dependencies.project(item.projectId)!;
@@ -64,13 +68,14 @@ export class PhotoImportQueue {
           if (duplicate) {
             // Exact verified bytes can safely restore an evicted local original.
             // Retain its identity and every existing placement/crop/Drive ID.
-            try { await this.dependencies.saveOriginal(duplicate.blobKey, file); }
-            catch { this.paused = true; throw new Error("Device storage is full. This photo is already in the library; retry to restore its original."); }
+            try { await this.dependencies.saveOriginal(duplicate.blobKey, file, fingerprint); }
+            catch { this.paused = true; throw new Error("Device storage could not save and verify this original. Intake paused; check free storage and retry. The existing photo is unchanged."); }
             if (!current()) throw new Error("The destination project is no longer available.");
             latest = this.dependencies.project(item.projectId)!;
             this.dependencies.commit({ ...latest, photoLibrary: getProjectPhotos(latest).map(photo => photo.blobKey === duplicate.blobKey ? { ...photo, fingerprint } : photo), updatedAt: nextProjectEditTime(latest) });
             this.update(item.id, { state: "duplicate", blobKey: duplicate.blobKey, detail: "Already in this project; original available again for backup" }); this.release(item.id); continue;
           }
+          if (source.restoreOnly) throw new Error("This file does not exactly match a verified photo in this project. Nothing was added or replaced.");
           if (getVisibleProjectPhotos(latest).length >= MAX_PROJECT_PHOTOS) throw new Error(`The library already has ${MAX_PROJECT_PHOTOS} photos. Existing photos are unchanged.`);
           const blobKey = item.blobKey ?? crypto.randomUUID();
           this.update(item.id, { state: "saving", blobKey });
@@ -79,8 +84,8 @@ export class PhotoImportQueue {
           const photo: ProjectPhoto = { ...prepared, fingerprint, importedAt: new Date(this.orders.get(item.id)!).toISOString(), importOrder: this.orders.get(item.id) };
           // If durable original storage fails, stop intake; do not retain hundreds
           // of decoded/volatile originals and pretend they were imported.
-          try { await this.dependencies.saveOriginal(blobKey, file); }
-          catch { this.paused = true; throw new Error("Device storage could not save this original. Intake paused; free storage and Retry. No existing photo was removed."); }
+          try { await this.dependencies.saveOriginal(blobKey, file, fingerprint); }
+          catch { this.paused = true; throw new Error("Device storage could not save and verify this original. Intake paused; check free storage and retry. No existing photo was removed."); }
           if (!current()) throw new Error("The destination project is no longer available.");
           latest = this.dependencies.project(item.projectId)!;
           const newlyKnown = getProjectPhotos(latest).find(item => item.fingerprint === fingerprint);
