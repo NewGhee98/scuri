@@ -25,6 +25,82 @@ function harness(size = 1_300_000) {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("immutable resumable original uploads", () => {
+  it("automatically checks the accepted offset after Safari loses a chunk response", async () => {
+    vi.useFakeTimers();
+    const h = harness(), normal = h.fetcher.getMockImplementation()!;
+    let interrupted = false;
+    h.fetcher.mockImplementation(async (url, init) => {
+      const result = await normal(url, init);
+      if (init?.method === "PUT" && !interrupted) { interrupted = true; throw new TypeError("Load failed"); }
+      return result;
+    });
+    const result = expect(uploadReservedDriveFile(h.options)).resolves.toBe("reserved"); void result.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000); await result;
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) =>
+      (init!.headers as Record<string, string>)["Content-Range"])).toEqual([
+      "bytes 0-1048575/1300000", "bytes */1300000", "bytes 1048576-1299999/1300000",
+    ]);
+    expect(h.journalEntries.size).toBe(0);
+  });
+  it("recovers a lost final response without sending any bytes twice", async () => {
+    vi.useFakeTimers();
+    const h = harness(100), normal = h.fetcher.getMockImplementation()!;
+    h.fetcher.mockImplementation(async (url, init) => {
+      const result = await normal(url, init);
+      if (init?.method === "PUT") throw new TypeError("Load failed");
+      return result;
+    });
+    const result = expect(uploadReservedDriveFile(h.options)).resolves.toBe("reserved"); void result.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000); await result;
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    expect(h.journalEntries.size).toBe(0);
+  });
+  it("requires reconnect for a revoked token without repeatedly sending it", async () => {
+    const h = harness(); h.fetcher.mockResolvedValue(new Response(null, { status: 401 }));
+    await expect(uploadReservedDriveFile(h.options)).rejects.toMatchObject({ needsReconnect: true });
+    expect(h.fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([429, 503])("resumes after a transient %s without allocating another file", async status => {
+    vi.useFakeTimers();
+    const h = harness(), normal = h.fetcher.getMockImplementation()!;
+    let interrupted = false;
+    h.fetcher.mockImplementation(async (url, init) => {
+      const response = await normal(url, init);
+      if (init?.method === "PUT" && !interrupted) { interrupted = true; return new Response(null, { status }); }
+      return response;
+    });
+    const upload = uploadReservedDriveFile(h.options);
+    const checked = expect(upload).resolves.toBe("reserved"); void checked.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000); await checked;
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) =>
+      (init!.headers as Record<string, string>)["Content-Range"])).toContain("bytes */1300000");
+  });
+  it("bounds automatic retries and retains the session when the connection stays down", async () => {
+    vi.useFakeTimers();
+    const h = harness(), normal = h.fetcher.getMockImplementation()!, retrying = vi.fn();
+    h.fetcher.mockImplementation(async (url, init) => {
+      if (init?.method === "PUT") throw new TypeError("Load failed");
+      return normal(url, init);
+    });
+    const checked = expect(uploadReservedDriveFile({ ...h.options, retrying })).rejects.toThrow("connection to Drive was interrupted");
+    void checked.catch(() => {});
+    await vi.advanceTimersByTimeAsync(20_000); await checked;
+    expect(retrying.mock.calls).toEqual([[1, 1000], [2, 2000], [3, 4000]]);
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(4);
+    expect(h.journalEntries.get(h.options.journalKey)?.session).toBe(session);
+  });
+  it("stops retrying immediately when the workspace is cancelled", async () => {
+    vi.useFakeTimers();
+    const h = harness(), abort = new AbortController();
+    h.fetcher.mockRejectedValue(new TypeError("Load failed"));
+    const checked = expect(uploadReservedDriveFile({ ...h.options, signal: abort.signal,
+      retrying: () => abort.abort() })).rejects.toThrow("workspace or project changed");
+    void checked.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0); await checked;
+    expect(h.fetcher).toHaveBeenCalledTimes(1);
+  });
   it("persists the session, uses 256 KiB multiple chunks and verifies completion before clearing the journal", async () => {
     const h = harness(); expect(await uploadReservedDriveFile(h.options)).toBe("reserved");
     const starts = h.fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
