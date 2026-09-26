@@ -7,8 +7,9 @@ import type { ProjectPhoto, StoredProject } from "./types";
 import { workspaceKey } from "./workspace";
 import { savePhotoBlob } from "./storage";
 import { fingerprintOriginal } from "./photo-fingerprint";
+import { DriveRequestError } from "./drive-request";
 
-export interface PhotoBackupStatus { blobKey: string; stage: string; sent?: number; total?: number; error?: string; needsOriginal?: boolean }
+export interface PhotoBackupStatus { blobKey: string; stage: string; sent?: number; total?: number; error?: string; needsOriginal?: boolean; needsReconnect?: boolean }
 interface Dependencies {
   project: () => StoredProject | undefined; token: () => string | null; current: () => boolean;
   source: (key: string) => Promise<Blob | null>;
@@ -20,23 +21,34 @@ interface Dependencies {
  * rendition checkpoints, no speculative original downloads or file updates. */
 export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> {
   const initial = deps.project(), token = deps.token();
-  if (!initial || !token || !deps.current()) return true;
+  if (!initial || !deps.current()) return true;
+  const first = getProjectPhotos(initial).find(photo => !photo.driveOriginalId || !photo.drivePreviewId || (photo.importedAt && !photo.driveThumbnailId));
+  const canContinue = (blobKey = first?.blobKey) => {
+    if (!deps.current()) return false;
+    if (deps.token()) return true;
+    if (blobKey) deps.progress({ blobKey, stage: "Backup paused", needsReconnect: true,
+      error: "Reconnect Drive to continue the backup." });
+    return false;
+  };
+  if (!token) { canContinue(); return !first; }
   let folders: Awaited<ReturnType<typeof ensureProjectDriveFolders>>;
   try { folders = await ensureProjectDriveFolders(token, initial.id, initial.name, initial.driveFolderId); }
   catch (error) {
-    const first = getProjectPhotos(initial).find(photo => !photo.driveOriginalId || !photo.drivePreviewId || (photo.importedAt && !photo.driveThumbnailId));
-    if (first && deps.current()) deps.progress({ blobKey: first.blobKey, stage: "Backup paused", error: error instanceof Error ? error.message : "Drive folders are unavailable. Reconnect and retry." });
+    if (first && deps.current()) deps.progress({ blobKey: first.blobKey, stage: "Backup paused",
+      ...(error instanceof DriveRequestError && error.needsReconnect ? { needsReconnect: true } : {}),
+      error: error instanceof Error ? error.message : "Drive folders are unavailable. Reconnect and retry." });
     return false;
   }
   let success = true;
   for (const original of getProjectPhotos(initial)) {
-    if (!deps.current() || !deps.token()) return false;
+    if (!canContinue(original.blobKey)) return false;
     let photo = getProjectPhotos(deps.project()!).find(item => item.blobKey === original.blobKey);
     if (!photo) continue;
     if (photo.driveOriginalId && photo.drivePreviewId && (!photo.importedAt || photo.driveThumbnailId)) {
       deps.progress({ blobKey: photo.blobKey, stage: "Backed up" }); continue;
     }
     let preview: Blob | undefined, thumbnail: Blob | undefined;
+    let step = "Reading original";
     try {
       let source: Blob | null = null, sourceError: unknown;
       try {
@@ -51,11 +63,12 @@ export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> 
           if (!photo.fingerprint) await source.slice(0, 1).arrayBuffer();
         }
       } catch (error) { sourceError = error; source = null; }
-      if (!deps.current() || !deps.token()) return false;
+      if (!canContinue(photo.blobKey)) return false;
       if (!source && photo.driveOriginalId) {
         deps.progress({ blobKey: photo.blobKey, stage: "Restoring original from Drive" });
+        step = "Restoring original from Drive";
         source = await downloadGoogleDrivePhoto(deps.token()!, photo.driveOriginalId, deps.signal);
-        if (!deps.current() || !deps.token()) return false;
+        if (!canContinue(photo.blobKey)) return false;
         if ((photo.fileSize !== undefined && source.size !== photo.fileSize) ||
           (photo.fingerprint && await fingerprintOriginal(source) !== photo.fingerprint)) {
           throw new Error("The Drive download did not match this original. Existing files are unchanged.");
@@ -64,7 +77,7 @@ export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> 
         // Local cache failure must not block rebuilding missing Drive previews.
         await savePhotoBlob(photo.blobKey, source).catch(() => {});
       }
-      if (!deps.current() || !deps.token()) return false;
+      if (!canContinue(photo.blobKey)) return false;
       if (!source) {
         success = false;
         deps.progress({ blobKey: photo.blobKey, stage: "Original unavailable on this device", needsOriginal: true,
@@ -78,7 +91,8 @@ export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> 
         const completed = kind === "original" ? "driveOriginalId" : kind === "preview" ? "drivePreviewId" : "driveThumbnailId";
         const pending = kind === "original" ? "originalId" : kind === "preview" ? "previewId" : "thumbnailId";
         if (photo[completed] || (kind === "thumbnail" && !photo.importedAt)) continue;
-        if (!deps.current() || !deps.token()) return false;
+        if (!canContinue(photo.blobKey)) return false;
+        step = `Saving ${kind} upload identity`;
         let fileId = photo.pendingUpload?.[pending];
         if (!fileId) {
           deps.progress({ blobKey: photo.blobKey, stage: `Saving ${kind} upload identity` });
@@ -93,24 +107,34 @@ export async function backUpProjectPhotos(deps: Dependencies): Promise<boolean> 
           if (!fileId) throw new Error("Upload identity could not be reconciled.");
         }
         if (photo[completed]) continue;
+        step = `Preparing ${kind}`;
         if (kind === "preview" && !preview) { const derived = await createPhotoPreview(source); URL.revokeObjectURL(derived.previewUrl); preview = derived.blob; }
         if (kind === "thumbnail" && !thumbnail) { const derived = await createPhotoPreview(preview ?? source, { longEdge: 640 }); URL.revokeObjectURL(derived.previewUrl); thumbnail = derived.blob; }
         const blob = kind === "original" ? source : kind === "preview" ? preview! : thumbnail!;
         const identity: Record<string, string> = { scuriProjectId: initial.id, scuriBlobKey: photo.blobKey, scuriType: kind };
         if (placedPage && placement) { identity.scuriPageId = placedPage.id; identity.scuriFrameId = placement.frameId; }
+        step = `Uploading ${kind}`;
         const id = await uploadReservedDriveFile({ fileId, blob, token: deps.token, current: deps.current, signal: deps.signal,
           journalKey: workspaceKey(`scuri.upload.${initial.id}.${photo.blobKey}.${kind}`, deps.ownerId),
           metadata: { name: kind === "original" ? (photo.sourceName ?? `${photo.blobKey}.jpg`).replace(/[\\/:*?"<>|]/g, "-").slice(0, 120) : `${photo.blobKey}.${kind}.webp`,
             parents: [kind === "original" ? folders.originalsFolderId : folders.previewsFolderId], appProperties: identity },
           progress: (sent, total) => deps.progress({ blobKey: original.blobKey, stage: `Uploading ${kind}`, sent, total }),
+          retrying: (attempt, delay) => deps.progress({ blobKey: original.blobKey,
+            stage: `Connection interrupted; retrying ${kind} in ${delay / 1000}s (attempt ${attempt}/3)` }),
         });
         deps.progress({ blobKey: photo.blobKey, stage: `Uploaded ${kind}; metadata pending` });
+        step = `Saving ${kind} backup confirmation`;
         photo = await deps.checkpoint({ blobKey: photo.blobKey, driveFolderId: folders.projectFolderId, [completed]: id });
       }
       deps.progress({ blobKey: photo.blobKey, stage: "Backed up" });
     } catch (error) {
       success = false;
-      deps.progress({ blobKey: photo.blobKey, stage: "Backup paused", error: error instanceof Error ? error.message : "Retry backup" });
+      if (!deps.current()) return false;
+      const message = error && typeof error === "object" && "message" in error && typeof error.message === "string"
+        ? error.message : "Retry backup";
+      deps.progress({ blobKey: photo.blobKey, stage: "Backup paused",
+        ...(error instanceof DriveRequestError && error.needsReconnect ? { needsReconnect: true } : {}),
+        error: `${step}: ${message}` });
       // Auth/quota/network issues should back off, not issue hundreds of errors.
       break;
     }

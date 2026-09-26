@@ -43,6 +43,7 @@ function fakeCloud() {
   const mutations: Mutation[] = [];
   let failure: { table: Table; operation: string } | undefined;
   let raceOnUpdate = false;
+  let loseUpdateResponse = false;
   const from = (table: Table) => {
     let operation = "select";
     let payload: Row[] = [];
@@ -68,6 +69,10 @@ function fakeCloud() {
       if (operation === "update") {
         data = rows[table].filter(matches);
         for (const row of data) Object.assign(row, payload[0], { revision: Number(row.revision) + 1, updated_at: committed });
+        if (table === "projects" && loseUpdateResponse) {
+          loseUpdateResponse = false;
+          return { data: null, error: new TypeError("Load failed") };
+        }
       }
       if (operation === "upsert") {
         // Model both schema constraints, so replacements/swaps fail if row
@@ -110,6 +115,7 @@ function fakeCloud() {
   const client = { from, auth: { getUser: async () => ({ data: { user: { id: "test-owner" } }, error: null }) } };
   vi.mocked(getSupabaseClient).mockReturnValue(client as unknown as NonNullable<ReturnType<typeof getSupabaseClient>>);
   return { initial, rows, mutations,
+    loseNextUpdateResponse: () => { loseUpdateResponse = true; },
     failNext: (table: Table, operation: string) => { failure = { table, operation }; },
     raceNextUpdate: () => { raceOnUpdate = true; } };
 }
@@ -137,6 +143,34 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  it("acknowledges an already committed backup checkpoint after its response is lost", async () => {
+    const cloud = fakeCloud(), before = structuredClone(cloud.rows.project_assets);
+    const local = applyPhotoBackupCheckpoint(cloud.initial, {
+      blobKey: "test-blob-1", driveFolderId: "test-folder", pendingUpload: { thumbnailId: "reserved-thumbnail" },
+    }, edited);
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(local)).rejects.toThrow("Load failed");
+    expect(cloud.rows.projects[0].revision).toBe(8);
+    // JSONB may return nested keys in a different order.
+    cloud.rows.project_assets[0].crop = { zoom: 1.5, positionY: -0.1, positionX: 0.2 };
+    const result = await pushProjectToCloud(local);
+    expect(result).toMatchObject({ conflict: false, partial: false, project: { revision: 8 } });
+    expect(cloud.mutations).toHaveLength(1);
+    expect(cloud.rows.project_assets).toEqual(before);
+    if (!("project" in result)) throw new Error("Expected acknowledgement");
+    expect(getProjectPhotos(result.project)[0].pendingUpload?.thumbnailId).toBe("reserved-thumbnail");
+  });
+  it("still preserves a real remote crop change after a lost checkpoint response", async () => {
+    const cloud = fakeCloud();
+    const local = applyPhotoBackupCheckpoint(cloud.initial, {
+      blobKey: "test-blob-1", driveFolderId: "test-folder", pendingUpload: { thumbnailId: "reserved-thumbnail" },
+    }, edited);
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(local)).rejects.toThrow("Load failed");
+    cloud.rows.project_assets[0].crop = { positionX: 0.8, positionY: -0.1, zoom: 2 };
+    expect(await pushProjectToCloud(local)).toMatchObject({ conflict: true });
+    expect(cloud.mutations).toHaveLength(1);
+  });
   it("pushes and reloads edited page text with empty IndexedDB while preserving every remote photo", async () => {
     const cloud = fakeCloud(), source = structuredClone(cloud.initial);
     source.updatedAt = edited;

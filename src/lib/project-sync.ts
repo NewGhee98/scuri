@@ -225,6 +225,23 @@ function storedProjectToRows(project: StoredProject, ownerId: string, remote: St
   return { pages, assets };
 }
 
+// Postgres JSONB can reorder object keys. Array order (pages/library) is meaningful.
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}
+
+function samePersistedContent(local: StoredProject, remote: StoredProject, ownerId: string): boolean {
+  const content = (project: StoredProject) => {
+    const rows = storedProjectToRows(project, ownerId, remote);
+    return { name: project.name.trim() || "Untitled project", formatId: project.formatId,
+      activePageId: project.activePageId, driveFolderId: project.driveFolderId ?? null,
+      photoLibrary: getProjectPhotos(project), pages: rows.pages,
+      assets: rows.assets.sort((a, b) => a.id.localeCompare(b.id)) };
+  };
+  return canonicalJson(content(local)) === canonicalJson(content(remote));
+}
+
 /** Absence is not deletion intent, even when some other photos did hydrate.
  * Page loss is checked too because the existing foreign key cascades deletes. */
 export function hasUnexplainedPhotoLoss(local: StoredProject, remote: StoredProject): boolean {
@@ -317,7 +334,15 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   const remote = await fetchCloudProject(client, project.id);
   assertCurrent();
   if (remote && hasUnexplainedPhotoLoss(project, remote)) return { assetProtection: true, remote };
-  if (remote && remote.revision !== project.revision) return { conflict: true, remote };
+  if (remote && remote.revision !== project.revision) {
+    // A committed metadata save can lose its HTTP response. Acknowledge only a
+    // complete content match, including every child row, crop and rendition ID.
+    // Any different composition still takes the existing conflict-copy path.
+    if (samePersistedContent(project, remote, ownerId)) return { conflict: false, partial: false,
+      project: { ...project, pages: remote.pages, photoLibrary: remote.photoLibrary,
+        revision: remote.revision, cloudSyncedAt: remote.cloudSyncedAt } };
+    return { conflict: true, remote };
+  }
 
   project = preserveProjectLibrary(project, ...(remote ? [remote] : []));
 

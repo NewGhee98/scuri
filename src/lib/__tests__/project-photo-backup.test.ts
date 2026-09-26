@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { backUpProjectPhotos } from "../project-photo-backup";
+import { DriveRequestError } from "../drive-request";
 import { reserveDriveFileId, uploadReservedDriveFile } from "../drive-resumable";
 import { downloadGoogleDrivePhoto, ensureProjectDriveFolders } from "../google-drive";
 import { savePhotoBlob } from "../storage";
@@ -27,6 +28,23 @@ function harness() {
     source: vi.fn(async (): Promise<Blob | null> => new Blob(["original"], { type: "image/jpeg" })), progress: vi.fn() }, project: () => p };
 }
 describe("backup independent of composition saves", () => {
+  it("reports expired access as incomplete and asks to reconnect instead of acknowledging success", async () => {
+    const h = harness();
+    expect(await backUpProjectPhotos({ ...h.options, token: () => null })).toBe(false);
+    expect(h.options.progress).toHaveBeenLastCalledWith(expect.objectContaining({ needsReconnect: true }));
+    expect(ensureProjectDriveFolders).not.toHaveBeenCalled();
+    expect(uploadReservedDriveFile).not.toHaveBeenCalled();
+  });
+  it("carries a Drive authentication failure into the recovery action", async () => {
+    const h = harness();
+    vi.mocked(uploadReservedDriveFile).mockRejectedValue(new DriveRequestError("Reconnect Drive", false, true));
+    expect(await backUpProjectPhotos(h.options)).toBe(false);
+    expect(h.options.progress).toHaveBeenLastCalledWith(expect.objectContaining({
+      needsReconnect: true, error: "Uploading original: Reconnect Drive",
+    }));
+    expect(h.project().photoLibrary![0].driveOriginalId).toBeUndefined();
+    expect(h.project().photoLibrary![0].pendingUpload?.originalId).toBe("reserved-1");
+  });
   it("reports missing originals as incomplete and leaves metadata and cloud files untouched", async () => {
     const h = harness(), before = structuredClone(h.project());
     h.options.source.mockResolvedValue(null);

@@ -1,4 +1,5 @@
 import { readPhotoJob, removePhotoJob, writePhotoJob } from "./photo-cache-storage";
+import { DriveRequestError, driveRequest, driveResponseError } from "./drive-request";
 
 const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
@@ -9,11 +10,12 @@ interface UploadOptions {
   metadata: { name: string; parents: string[]; appProperties: Record<string, string> };
   token: () => string | null; current: () => boolean; signal?: AbortSignal;
   progress?: (sent: number, total: number) => void;
+  retrying?: (attempt: number, delayMs: number) => void;
   journal?: { read: (key: string) => Promise<UploadJournal | null>; write: (key: string, value: UploadJournal) => Promise<void>; remove: (key: string) => Promise<void> };
 }
 export async function reserveDriveFileId(token: string): Promise<string> {
-  const response = await fetch(`${API}/files/generateIds?count=1&space=drive&type=files`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Drive could not reserve an upload (${response.status}). Reconnect or retry.`);
+  const response = await driveRequest(`${API}/files/generateIds?count=1&space=drive&type=files`, { headers: { Authorization: `Bearer ${token}` } }, "Reserving upload");
+  if (!response.ok) throw await driveResponseError(response, "Reserving upload");
   const data = await response.json() as { ids?: string[] };
   if (!data.ids?.[0]) throw new Error("Drive did not return a file identity.");
   return data.ids[0];
@@ -34,18 +36,39 @@ function received(response: Response, size: number): number {
  * through the project revision gate before calling this function. A retry can
  * never PATCH an existing original. The journal contains no OAuth token. */
 export async function uploadReservedDriveFile(options: UploadOptions): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await uploadAttempt(options); }
+    catch (error) {
+      if (!(error instanceof DriveRequestError) || !error.retryable || attempt >= 3 ||
+        !options.current() || options.signal?.aborted) throw error;
+      const delay = 1000 * 2 ** attempt;
+      options.retrying?.(attempt + 1, delay);
+      await new Promise<void>((resolve, reject) => {
+        const finish = () => { options.signal?.removeEventListener("abort", abort); resolve(); };
+        const timer = setTimeout(finish, delay);
+        const abort = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); reject(new Error("Upload paused because the workspace or project changed.")); };
+        options.signal?.addEventListener("abort", abort, { once: true });
+        if (options.signal?.aborted) abort();
+      });
+      // A fresh attempt verifies the reserved ID, then probes the saved session.
+      // Never guess whether an interrupted request's bytes reached Drive.
+    }
+  }
+}
+
+async function uploadAttempt(options: UploadOptions): Promise<string> {
   const { fileId, blob, metadata, journalKey, current, progress } = options;
   const journal = options.journal ?? { read: readPhotoJob<UploadJournal>, write: writePhotoJob, remove: removePhotoJob };
-  const request = async (url: string, init: RequestInit = {}) => {
+  const request = async (url: string, init: RequestInit = {}, operation = "Checking upload") => {
     if (!current() || options.signal?.aborted) throw new Error("Upload paused because the workspace or project changed.");
-    const token = options.token(); if (!token) throw new Error("Reconnect Drive to continue the backup.");
-    return fetch(url, { ...init, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
-      headers: { ...init.headers, Authorization: `Bearer ${token}` } });
+    const token = options.token(); if (!token) throw new DriveRequestError("Reconnect Drive to continue the backup.", false, true);
+    return driveRequest(url, { ...init, signal: options.signal,
+      headers: { ...init.headers, Authorization: `Bearer ${token}` } }, operation);
   };
   const verify = async (): Promise<boolean> => {
     const response = await request(`${API}/files/${encodeURIComponent(fileId)}?fields=id,size,mimeType,trashed,appProperties`);
     if (response.status === 404) return false;
-    if (!response.ok) throw new Error(`Drive could not check this upload (${response.status}).`);
+    if (!response.ok) throw await driveResponseError(response, "Checking upload");
     const file = await response.json() as { id: string; size?: string; mimeType?: string; trashed?: boolean; appProperties?: Record<string, string> };
     if (file.id !== fileId || file.trashed || Number(file.size) !== blob.size || (blob.type && file.mimeType !== blob.type) ||
       ["scuriProjectId", "scuriBlobKey", "scuriType"].some(key => file.appProperties?.[key] !== metadata.appProperties[key])) {
@@ -66,16 +89,16 @@ export async function uploadReservedDriveFile(options: UploadOptions): Promise<s
     if (status.status === 200 || status.status === 201) return complete();
     if (status.status === 308) offset = received(status, blob.size);
     else if ([404, 410].includes(status.status)) { if (await verify()) return complete(); session = undefined; }
-    else throw new Error(`Drive upload is paused (${status.status}). Reconnect or retry.`);
+    else throw await driveResponseError(status, "Resuming upload");
   }
   if (!session) {
     // Persist identity before network transmission; failures stop safely.
     await journal.write(journalKey, { fileId, size: blob.size });
     const started = await request(`${UPLOAD}?uploadType=resumable&fields=id`, { method: "POST", headers: {
       "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": blob.type || "application/octet-stream", "X-Upload-Content-Length": String(blob.size),
-    }, body: JSON.stringify({ ...metadata, id: fileId }) });
+    }, body: JSON.stringify({ ...metadata, id: fileId }) }, "Starting upload");
     if (started.status === 409) return complete();
-    if (!started.ok) throw new Error(`Drive could not start this upload (${started.status}). Reconnect or retry.`);
+    if (!started.ok) throw await driveResponseError(started, "Starting upload");
     session = started.headers.get("Location") ?? undefined;
     if (!session || !allowedSession(session)) throw new Error("Drive did not return a valid upload session.");
     await journal.write(journalKey, { fileId, size: blob.size, session });
@@ -84,9 +107,10 @@ export async function uploadReservedDriveFile(options: UploadOptions): Promise<s
   while (offset < blob.size) {
     const end = Math.min(offset + CHUNK, blob.size);
     const response = await request(session, { method: "PUT", headers: { "Content-Type": blob.type || "application/octet-stream",
-      "Content-Range": `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end, blob.type) });
+      "Content-Range": `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end, blob.type) }, "Uploading photo");
     if (response.status === 200 || response.status === 201) return complete();
-    if (response.status !== 308) throw new Error(`Drive upload paused (${response.status}). Your completed files are preserved; retry to resume.`);
+    if ([404, 410].includes(response.status)) throw new DriveRequestError("Drive upload session expired. Retrying the same photo.", true);
+    if (response.status !== 308) throw await driveResponseError(response, "Uploading photo");
     const next = received(response, blob.size);
     if (next <= offset || next > end) throw new Error("Drive did not confirm the next upload chunk. Retry to resume.");
     offset = next; progress?.(offset, blob.size);
