@@ -890,7 +890,7 @@ export function LayoutsApp() {
     const queue: ProjectSyncQueue = new ProjectSyncQueue(async id => {
       const project = () => activeProjectRef.current?.id === id ? activeProjectRef.current : projectsRef.current.find(item => item.id === id);
       const current = () => sameWorkspace() && !abort.signal.aborted && !queue.isBlocked(id) && Boolean(project());
-      if (!current() || !getValidDriveToken()) return true;
+      if (!current()) return true;
       return backUpProjectPhotos({ ownerId, project, current, token: getValidDriveToken, signal: abort.signal,
         source: async key => {
           try { return await loadPhotoBlob(key) ?? getVolatileBlob(key) ?? null; }
@@ -2484,7 +2484,12 @@ export function LayoutsApp() {
             onClose={closePhotoLibrary} targetLabel={photoPickerIntent ? `Page ${pages.findIndex(page => page.id === photoPickerIntent.pageId) + 1} · frame ${photoPickerIntent.frameId}` : undefined}
             onOverride={setPhotoColour} imports={importItems} onRetryImport={id => importQueueRef.current?.retry(id)} initiallyImport={initiallyImport}
             backupStatus={Object.entries(photoBackupStatus).filter(([key]) => key.startsWith(projectId + ":")).map(([, status]) => status)}
-            onRetryBackup={() => { if (driveConnected) { backupQueueRef.current?.enqueue(projectId, now(), true); } else void connectGoogleDrive(); }}
+            onRetryBackup={() => {
+              const rejectedToken = Object.entries(photoBackupStatus).some(([key, status]) => key.startsWith(projectId + ":") && status.needsReconnect);
+              if (!getValidDriveToken() || rejectedToken) void connectGoogleDrive();
+              else backupQueueRef.current?.enqueue(projectId, now(), true);
+            }}
+            onReconnectDrive={() => void connectGoogleDrive()}
             onChoose={photoPickerIntent ? chooseLibraryPhoto : undefined} />
         </div>
       ) : null}
