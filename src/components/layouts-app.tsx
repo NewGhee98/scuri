@@ -27,11 +27,12 @@ import {
   type DriveSyncProgress,
 } from "@/lib/google-drive";
 import { PhotoImportQueue, type PhotoImportSource, type PhotoImportItem } from "@/lib/photo-import-queue";
+import { saveImportedOriginal } from "@/lib/photo-original-storage";
 import { PhotoAnalysisClient } from "@/lib/photo-analysis-client";
 import { fingerprintOriginal } from "@/lib/photo-fingerprint";
 import { fingerprintCacheKey } from "@/lib/photo-duplicates";
 import { previewStorageKey } from "@/lib/photo-preview-cache";
-import { clearDerivedCache, listPhotoJobs, removePhotoJob, writePhotoJob, writeDerived } from "@/lib/photo-cache-storage";
+import { listPhotoJobs, removePhotoJob, writePhotoJob, writeDerived } from "@/lib/photo-cache-storage";
 import { openPhotoPicker, placeLibraryPhoto, type PhotoPickerIntent } from "@/lib/photo-picker";
 import { clearLibraryViews } from "@/lib/photo-library-view";
 import { photosImportConfigured } from "@/lib/google-photo-import";
@@ -891,7 +892,10 @@ export function LayoutsApp() {
       const current = () => sameWorkspace() && !abort.signal.aborted && !queue.isBlocked(id) && Boolean(project());
       if (!current() || !getValidDriveToken()) return true;
       return backUpProjectPhotos({ ownerId, project, current, token: getValidDriveToken, signal: abort.signal,
-        source: async key => await loadPhotoBlob(key).catch(() => null) ?? getVolatileBlob(key) ?? null,
+        source: async key => {
+          try { return await loadPhotoBlob(key) ?? getVolatileBlob(key) ?? null; }
+          catch (error) { const retained = getVolatileBlob(key); if (retained) return retained; throw error; }
+        },
         progress: status => { if (current()) setPhotoBackupStatus(previous => ({ ...previous, [id + ":" + status.blobKey]: status })); },
         checkpoint: async checkpoint => {
           if (!current()) throw new Error("The workspace or project changed.");
@@ -1030,10 +1034,7 @@ export function LayoutsApp() {
           return photo;
         } finally { URL.revokeObjectURL(preview.previewUrl); }
       },
-      saveOriginal: async (key, file) => {
-        try { await savePhotoBlob(key, file); }
-        catch { await clearDerivedCache(); await savePhotoBlob(key, file); }
-      }, commit,
+      saveOriginal: saveImportedOriginal, commit,
       checkpoint: (projectId, photo) => writePhotoJob(journalPrefix + photo.blobKey, { projectId, photo }),
       complete: photo => removePhotoJob(journalPrefix + photo.blobKey),
     });
