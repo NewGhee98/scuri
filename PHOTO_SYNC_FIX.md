@@ -1,6 +1,6 @@
 # Project-photo sync safety fix
 
-Historical first-patch record, reconciled 20 September 2026. Its safety invariant remains current, but the 85-test account and local-only statements below describe the original preparation stage. Production now includes subsequent client safety, photo library, export and editing releases through PR #28. See `PROJECT_CONTEXT.md`, `README.md` and `VERIFICATION.md` for current behaviour and checks; `CLIENT_RELEASE.md` is also historical. The pending scrolling fix changes no sync or deletion behaviour.
+Historical first-patch record. The safety invariant remains current; the 85-test and local-only statements below describe preparation on 13 September. These changes and the later scrolling fix are included in verified PR #29 production. Read [START_HERE](START_HERE.md) for current status, [PROJECT_CONTEXT](PROJECT_CONTEXT.md#photo-preservation-and-save-path) for current safety rules and [VERIFICATION](VERIFICATION.md) for evidence. No live recovery is implied.
 
 Prepared locally from the supplied archive. No live service access, credentials, recovery, schema change, seed operation or deployment.
 

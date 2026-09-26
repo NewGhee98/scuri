@@ -1,6 +1,6 @@
 # Scuri client safety, backups and undo
 
-Historical release notes for the 13 September 110-test package. Reconciled 20 September: current production includes these protections and subsequent library/editor/template work through PR #28. See [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md), [README.md](README.md) and [VERIFICATION.md](VERIFICATION.md) for current behaviour, release status and 512-test verification of the pending scrolling fix. The photo-library migration was subsequently reported applied by the user; do not rerun it based on this old package. Statements below describe the original preparation stage.
+Historical 13 September 110-test package, including original review-package instructions. Current behaviour and PR #29 production status are in [START_HERE](START_HERE.md) and [PROJECT_CONTEXT](PROJECT_CONTEXT.md); current check evidence is in [VERIFICATION](VERIFICATION.md). Later library work supersedes the original backup/resume limitations below. Do not apply the old patch or rerun SQL from this historical note. Original external packages are covered by the [evidence index](docs/evidence/README.md#legacy-local-artifacts).
 
 Prepared locally on 13 September 2026 after approval of the audit's recommended first stage. No live services, real credentials, browser sessions or deployment were used. This package includes the earlier photo-sync fix. The three existing SQL migrations and dependency manifest/lockfile are unchanged.
 
