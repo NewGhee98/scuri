@@ -1,4 +1,5 @@
 import { validateTemplate } from "./templates";
+import { isPhotoRank } from "./photo-metadata";
 import type { StoredProject, StoredPhotoAsset, StoredProjectPage, TemplateDefinition } from "./types";
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -23,6 +24,8 @@ export function isProjectPhoto(value: unknown): boolean {
     (value.importedAt === undefined || date(value.importedAt)) &&
     (value.importOrder === undefined || (finite(value.importOrder) && value.importOrder >= 0)) &&
     (value.colourOverride === undefined || value.colourOverride === null || value.colourOverride === "bw" || value.colourOverride === "colour") &&
+    (value.rank === undefined || value.rank === null || isPhotoRank(value.rank)) &&
+    (value.labels === undefined || (Array.isArray(value.labels) && value.labels.every(label => typeof label === "string"))) &&
     optionalText(value.driveThumbnailId) &&
     (value.pendingUpload === undefined || (record(value.pendingUpload) &&
       [value.pendingUpload.originalId, value.pendingUpload.previewId, value.pendingUpload.thumbnailId].every(optionalText))) &&

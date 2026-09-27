@@ -138,6 +138,8 @@ export interface StoredPhotoAsset {
   crop: CropState;
 }
 
+export type PhotoRank = "hero" | "good" | "other";
+
 /** Project-owned original, independent of any page/frame assignment. */
 export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "crop"> & {
   /** Explicit, exact-file library grouping only. Assignments/bytes keep their
@@ -148,6 +150,10 @@ export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "
   importedAt?: string;
   importOrder?: number;
   colourOverride?: "bw" | "colour" | null;
+  /** Absent on imports/legacy photos; null explicitly clears a saved rank. */
+  rank?: PhotoRank | null;
+  /** Project-specific, normalized labels. [] explicitly clears saved labels. */
+  labels?: string[];
   driveThumbnailId?: string;
   /** Reserved file IDs are not proof that the bytes were uploaded. */
   pendingUpload?: { originalId?: string; previewId?: string; thumbnailId?: string };

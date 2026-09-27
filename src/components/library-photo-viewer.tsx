@@ -10,10 +10,14 @@ import type { ProjectPhoto } from "@/lib/types";
 import { usePhotoPreviewSession } from "./photo-preview-context";
 import { ActionDialog } from "./action-dialog";
 import { inspectionGesture } from "@/lib/photo-inspection";
+import { PHOTO_RANKS, PHOTO_RANK_LABELS, type PhotoMetadataEdit } from "@/lib/photo-metadata";
+import { PhotoLabelInput } from "./photo-label-input";
+import type { PhotoRank } from "@/lib/types";
 
-export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevious, onNext, onUse, onOverride, controlsHidden, onToggleControls }: {
+export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevious, onNext, onUse, onOverride, onMetadata, labelSuggestions, controlsHidden, onToggleControls }: {
   row: LibraryRow; ownerId?: string | null; index: number; count: number; onBack: () => void; onPrevious: () => void; onNext: () => void;
   onUse?: () => void; onOverride: (value: ProjectPhoto["colourOverride"]) => void;
+  onMetadata: (edit: PhotoMetadataEdit) => void; labelSuggestions: string[];
   controlsHidden: boolean; onToggleControls: () => void;
 }) {
   const { session, snapshot } = usePhotoPreviewSession(), photo = row.photo;
@@ -87,7 +91,7 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
   return <section className="library-inspector" data-controls-hidden={controlsHidden} aria-label={`Inspect ${photo.sourceName ?? "photo"}`}>
     <div className="library-inspector-tools">
       <button type="button" className="secondary-button" onClick={onBack}>Back to photos</button>
-      <span className="library-inspector-count" aria-label={`Photo ${index + 1} of ${count}`}>{index + 1} / {count}</span>
+      <span className="library-inspector-count" aria-label={index < 0 ? undefined : `Photo ${index + 1} of ${count}`}>{index < 0 ? "Outside current filters" : `${index + 1} / ${count}`}</span>
       <button type="button" className="small-button" aria-haspopup="dialog" onClick={() => setInfo(true)}>Info</button>
       {onUse ? <button className="primary-button" type="button" onClick={onUse}>Use this photo</button> : null}
     </div>
@@ -121,8 +125,8 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
     </div>
     {controlsHidden ? <button className="library-show-controls small-button" type="button" onClick={onToggleControls}>Show controls</button> : null}
     <div className="library-inspector-navigation">
-      <button type="button" className="small-button" disabled={index === 0} onClick={onPrevious}>Previous</button>
-      <button type="button" className="small-button" disabled={index + 1 === count} onClick={onNext}>Next</button>
+      <button type="button" className="small-button" disabled={index <= 0} onClick={onPrevious}>Previous</button>
+      <button type="button" className="small-button" disabled={index < 0 || index + 1 >= count} onClick={onNext}>Next</button>
       <div className="library-inspector-scale"><button type="button" className="small-button" aria-pressed={!detail && zoom === 1} onClick={reset}>Fit</button>
         <button type="button" className="small-button" aria-pressed={detail && !!image?.original} onClick={() => { setWantOriginal(true); setDetail(true); setView({ zoom: 1, x: 0, y: 0 }); }}>100%</button></div>
       <button type="button" className="text-button" onClick={() => { onToggleControls(); area.current?.focus(); }}>Hide controls</button>
@@ -131,6 +135,18 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
       <header><h2>Photo info</h2><button type="button" className="small-button" onClick={() => setInfo(false)}>Close</button></header>
       <div><strong>{photo.sourceName ?? "Photo"}</strong><p>{photo.sourceWidth} × {photo.sourceHeight} · {row.uses ? `Used ${row.uses} times` : "Unused"}</p>
         <p>{row.pages.map(page => `Page ${page.pageNumber}${page.count > 1 ? ` (${page.count})` : ""}`).join(" · ")}</p></div>
+      <div className="photo-metadata-controls">
+        <label className="photo-rank-control">Rank <select value={photo.rank ?? ""}
+          onChange={event => onMetadata({ rank: (event.target.value || null) as PhotoRank | null })}>
+          <option value="">Unranked</option>
+          {PHOTO_RANKS.map(rank => <option key={rank} value={rank}>{PHOTO_RANK_LABELS[rank]}</option>)}
+        </select></label>
+        <PhotoLabelInput title="Labels" suggestions={labelSuggestions} applied={row.labels} onAdd={label => onMetadata({ addLabels: [label] })} />
+      </div>
+      {row.labels.length ? <div className="photo-label-chips" aria-label="Applied labels">{row.labels.map(label =>
+        <button key={label} type="button" className="photo-label-chip" aria-label={`Remove label ${label}`} onClick={() => onMetadata({ removeLabel: label })}>
+          <span>{label}</span><span aria-hidden="true">×</span>
+        </button>)}</div> : null}
       <label>Classification <select value={photo.colourOverride ?? "auto"} onChange={event => onOverride(event.target.value === "auto" ? null : event.target.value as "bw" | "colour")}>
         <option value="auto">Auto ({row.colour === "bw" ? "black & white" : row.colour})</option><option value="bw">Black & white</option><option value="colour">Colour</option>
       </select></label>
