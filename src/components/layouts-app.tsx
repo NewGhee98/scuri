@@ -88,10 +88,11 @@ import {
   softDeleteCloudProject,
 } from "@/lib/project-sync";
 import { applyHydratedPhotos, hydrateProjectPhotos, movePagePhoto, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "@/lib/project-photos";
-import { ProjectSyncQueue } from "@/lib/sync-queue";
+import { ProjectSyncQueue, type SyncJobContext } from "@/lib/sync-queue";
 import { clearProjectSaveAttempt } from "@/lib/project-save-attempt";
 import { applyPhotoBackupCheckpoint } from "@/lib/photo-backup";
 import { backUpProjectPhotos, type PhotoBackupStatus } from "@/lib/project-photo-backup";
+import { watchBackupResume } from "@/lib/backup-lifecycle";
 import { WorkspaceSession, workspaceKey } from "@/lib/workspace";
 import { ProjectHistory, projectContentKey } from "@/lib/project-history";
 import { nextProjectEditTime } from "@/lib/project-time";
@@ -294,6 +295,8 @@ export function LayoutsApp() {
   const syncQueueRef = useRef<ProjectSyncQueue | null>(null);
   const backupQueueRef = useRef<ProjectSyncQueue | null>(null);
   const [photoBackupStatus, setPhotoBackupStatus] = useState<Record<string, PhotoBackupStatus>>({});
+  const [backupFeedback, setBackupFeedback] = useState<Record<string, string>>({});
+  const [activeBackupProjectId, setActiveBackupProjectId] = useState<string | null>(null);
   const pendingPullRef = useRef(false);
   const workspaceRef = useRef(new WorkspaceSession());
   const initializedWorkspaceRef = useRef(false);
@@ -352,6 +355,12 @@ export function LayoutsApp() {
   // event handlers/effects); render only reflects whether a token was
   // obtained, to keep this component pure.
   const driveConnected = Boolean(driveAccessToken && driveExpiry > 0);
+  const allPhotosBackedUp = libraryPhotos.length > 0 && libraryPhotos.every(photo => photo.driveOriginalId && photo.drivePreviewId && (!photo.importedAt || photo.driveThumbnailId));
+  const backupActivity = allPhotosBackedUp ? "All photos backed up." : !templateUser ? "Sign in by email to back up this project." : !isOnline ? "Backup is paused while this device is offline."
+    : !driveConnected ? (busy === "drive" ? "Reconnecting to Google Drive…" : backupFeedback[projectId] ?? "Reconnect Google Drive to resume backup.")
+    : activeBackupProjectId && activeBackupProjectId !== projectId
+      ? `Backing up ${projects.find(project => project.id === activeBackupProjectId)?.name ?? "another project"}. Tap Retry backup to prioritise this project.`
+      : (backupFeedback[projectId] !== "All photos backed up." ? backupFeedback[projectId] : undefined) ?? "Backup is queued. Progress will appear here as each upload starts.";
   const driveRestorePreferenceKey = workspaceKey("scuri-google-drive-restore", templateUser?.id);
 
   const saveWorkspaceProjects = useCallback((next: StoredProject[], ownerId = workspaceRef.current.ownerId) => {
@@ -442,15 +451,19 @@ export function LayoutsApp() {
 
   const connectGoogleDrive = async () => {
     const isCurrent = workspaceRef.current.capture();
+    const feedback = (text: string) => { if (isCurrent()) setBackupFeedback(previous => ({ ...previous, [projectId]: text })); };
     if (!isGoogleDriveConfigured()) {
+      feedback("Google Drive has not been configured for backups.");
       setNotice({ kind: "error", text: "Add the Google Drive client ID before connecting Scuri." });
       return;
     }
     if (!googleScriptReady) {
+      feedback("Google sign-in is still loading. Try again in a moment.");
       setNotice({ kind: "info", text: "Google sign-in is still loading. Try again in a moment." });
       return;
     }
     setBusy("drive");
+    feedback("Reconnecting to Google Drive…");
     try {
       const token = await requestGoogleDriveAccessToken(driveAccessTokenRef.current ? "" : "consent");
       if (!isCurrent()) return;
@@ -459,11 +472,19 @@ export function LayoutsApp() {
       setDriveAccessToken(token.accessToken);
       setDriveExpiry(token.expiresAt);
       window.localStorage.setItem(driveRestorePreferenceKey, "true");
+      setPhotoBackupStatus(previous => Object.fromEntries(Object.entries(previous).map(([key, status]) => [key, { ...status, needsReconnect: false }])));
       setNotice({ kind: "success", text: templateUserRef.current ? "Google Drive connected. Original photos will back up automatically." : "Google Drive connected for loading local photos. Sign in to back up account projects automatically." });
       const current = persistActiveProject().find((item) => item.id === projectId);
-      if (current) { syncQueueRef.current?.enqueue(current.id, current.updatedAt, true); backupQueueRef.current?.enqueue(current.id, current.updatedAt, true); }
+      feedback(templateUserRef.current ? "Drive connected. Starting backup…" : "Sign in by email to back up this project.");
+      if (current) {
+        const enabled = Boolean(navigator.onLine && templateUserRef.current && isProjectCloudConfigured());
+        setIsOnline(navigator.onLine);
+        syncQueueRef.current?.setEnabled(enabled); backupQueueRef.current?.setEnabled(enabled);
+        syncQueueRef.current?.enqueue(current.id, current.updatedAt, true); backupQueueRef.current?.retry(current.id, current.updatedAt);
+      }
     } catch (error) {
       if (!isCurrent()) return;
+      feedback(error instanceof Error ? error.message : "Google Drive could not be connected.");
       setNotice({ kind: "error", text: error instanceof Error ? error.message : "Google Drive could not be connected." });
     } finally {
       if (isCurrent()) setBusy(null);
@@ -476,9 +497,32 @@ export function LayoutsApp() {
     driveTokenExpiresAtRef.current = 0;
     setDriveExpiry(0);
     setDriveAccessToken(null);
+    setBackupFeedback({});
     window.localStorage.removeItem(driveRestorePreferenceKey);
     if (token) await revokeGoogleDriveAccess(token);
     setNotice({ kind: "success", text: "Google Drive disconnected from this device. Existing backups are unchanged." });
+  };
+
+  const retryPhotoBackup = async () => {
+    const sameWorkspace = workspaceRef.current.capture();
+    const feedback = (text: string) => { if (sameWorkspace()) setBackupFeedback(previous => ({ ...previous, [projectId]: text })); };
+    if (!templateUserRef.current) { feedback("Sign in by email to back up this project."); return; }
+    if (!isProjectCloudConfigured()) { feedback("Project cloud storage has not been configured."); return; }
+    setIsOnline(navigator.onLine);
+    if (!navigator.onLine) { feedback("Backup is paused while this device is offline."); return; }
+    const rejectedToken = Object.entries(photoBackupStatus).some(([key, status]) => key.startsWith(projectId + ":") && status.needsReconnect);
+    if (!getValidDriveToken() || rejectedToken) { await connectGoogleDrive(); return; }
+    try {
+      const current = persistActiveProject().find(item => item.id === projectId);
+      if (!current) { feedback("Open the project again to resume backup."); return; }
+      const queue = backupQueueRef.current;
+      if (!queue) { feedback("Backup is starting up. Try again in a moment."); return; }
+      feedback("Restarting backup from the last saved upload…");
+      syncQueueRef.current?.setEnabled(true);
+      syncQueueRef.current?.enqueue(current.id, current.updatedAt, true);
+      queue.setEnabled(true);
+      queue.retry(current.id, current.updatedAt);
+    } catch (error) { feedback(error instanceof Error ? error.message : "Backup could not restart. Try again."); }
   };
 
   const syncCurrentProjectNow = async () => {
@@ -638,15 +682,30 @@ export function LayoutsApp() {
     }
   }, [adoptActiveProject, saveWorkspaceProjects]);
 
-  const pushProjectNow = useCallback(async (project: StoredProject): Promise<boolean> => {
+  const pushProjectNow = useCallback(async (project: StoredProject, context: SyncJobContext): Promise<boolean> => {
     const ownerId = workspaceRef.current.ownerId;
     if (!isProjectCloudConfigured() || !ownerId || !templateUserRef.current) return true;
     const sameWorkspace = workspaceRef.current.capture();
     const queue = syncQueueRef.current;
-    const isCurrent = () => sameWorkspace() && !queue?.isBlocked(project.id);
+    const isCurrent = () => sameWorkspace() && !context.signal.aborted && !queue?.isBlocked(project.id);
     if (!isCurrent()) return true;
     projectPushInFlightRef.current.add(project.id);
     setSyncingProjectIds(current => ({ ...current, [project.id]: true }));
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      context.signal.removeEventListener("abort", finish);
+      if (sameWorkspace()) {
+        projectPushInFlightRef.current.delete(project.id);
+        setSyncingProjectIds(current => { const next = { ...current }; delete next[project.id]; return next; });
+        if (!context.signal.aborted && pendingPullRef.current && !projectPushInFlightRef.current.size) {
+          pendingPullRef.current = false;
+          void syncProjectsFromCloud();
+        }
+      }
+    };
+    context.signal.addEventListener("abort", finish, { once: true });
     const working = project;
     try {
       // No need to bump a cloud revision solely because bytes remain unavailable.
@@ -654,7 +713,7 @@ export function LayoutsApp() {
         setProjectSyncErrors(current => ({ ...current, [project.id]: false }));
         return true;
       }
-      const result = await pushProjectToCloud(working, { ownerId, isCurrent });
+      const result = await pushProjectToCloud(working, { ownerId, isCurrent, ...context });
       if (!isCurrent()) return true;
       const latest = activeProjectRef.current?.id === working.id ? activeProjectRef.current : projectsRef.current.find(item => item.id === working.id);
       if (!latest) return true;
@@ -698,16 +757,7 @@ export function LayoutsApp() {
         if (error instanceof Error && (error.message.startsWith("Cloud photo library setup") || error.message.startsWith("Cloud save recovery"))) setNotice({ kind: "error", text: error.message });
       }
       return false;
-    } finally {
-      if (sameWorkspace()) {
-        projectPushInFlightRef.current.delete(project.id);
-        setSyncingProjectIds(current => { const next = { ...current }; delete next[project.id]; return next; });
-        if (pendingPullRef.current && !projectPushInFlightRef.current.size) {
-          pendingPullRef.current = false;
-          void syncProjectsFromCloud();
-        }
-      }
-    }
+    } finally { finish(); }
   }, [adoptActiveProject, saveWorkspaceProjects, syncProjectsFromCloud, retainVolatileForOwner]);
 
   const changeWorkspace = useCallback((user: User | null) => {
@@ -724,6 +774,7 @@ export function LayoutsApp() {
     initializedWorkspaceRef.current = true;
     backupQueueRef.current?.stop();
     setPhotoBackupStatus({});
+    setBackupFeedback({}); setActiveBackupProjectId(null);
     syncQueueRef.current?.stop();
     syncQueueRef.current = null;
     projectPushInFlightRef.current.clear();
@@ -798,7 +849,7 @@ export function LayoutsApp() {
 
   useEffect(() => {
     if (!driveExpiry) return;
-    const timer = window.setTimeout(() => setDriveExpiry(0), Math.max(0, driveExpiry - Date.now() - 30_000));
+    const timer = window.setTimeout(() => { setDriveExpiry(0); setBackupFeedback({}); }, Math.max(0, driveExpiry - Date.now() - 30_000));
     return () => window.clearTimeout(timer);
   }, [driveExpiry]);
 
@@ -880,9 +931,14 @@ export function LayoutsApp() {
 
   useEffect(() => {
     if (!ready) return;
-    const queue: ProjectSyncQueue = new ProjectSyncQueue(async id => {
+    const sameWorkspace = workspaceRef.current.capture();
+    const queue: ProjectSyncQueue = new ProjectSyncQueue(async (id, context) => {
       const latest = activeProjectRef.current?.id === id ? activeProjectRef.current : projectsRef.current.find(item => item.id === id);
-      return latest ? pushProjectNow(latest) : true;
+      return latest ? pushProjectNow(latest, context) : true;
+    }, 1800, id => {
+      if (!sameWorkspace()) return;
+      setProjectSyncErrors(previous => ({ ...previous, [id]: true }));
+      setBackupFeedback(previous => ({ ...previous, [id]: "Project save stopped responding. Retrying safely; completed uploads are preserved." }));
     });
     syncQueueRef.current = queue;
     return () => { queue.stop(); if (syncQueueRef.current === queue) syncQueueRef.current = null; };
@@ -890,17 +946,24 @@ export function LayoutsApp() {
 
   useEffect(() => {
     if (!ready || !templateUser?.id) return;
-    const ownerId = templateUser.id, sameWorkspace = workspaceRef.current.capture(), abort = new AbortController();
-    const queue: ProjectSyncQueue = new ProjectSyncQueue(async id => {
+    const ownerId = templateUser.id, sameWorkspace = workspaceRef.current.capture();
+    const queue: ProjectSyncQueue = new ProjectSyncQueue(async (id, { signal, heartbeat }) => {
       const project = () => activeProjectRef.current?.id === id ? activeProjectRef.current : projectsRef.current.find(item => item.id === id);
-      const current = () => sameWorkspace() && !abort.signal.aborted && !queue.isBlocked(id) && Boolean(project());
+      const current = () => sameWorkspace() && !signal.aborted && !queue.isBlocked(id) && Boolean(project());
       if (!current()) return true;
-      return backUpProjectPhotos({ ownerId, project, current, token: getValidDriveToken, signal: abort.signal,
+      setActiveBackupProjectId(id);
+      const finish = () => { signal.removeEventListener("abort", finish); if (sameWorkspace()) setActiveBackupProjectId(active => active === id ? null : active); };
+      signal.addEventListener("abort", finish, { once: true });
+      try { const complete = await backUpProjectPhotos({ ownerId, project, current, token: getValidDriveToken, signal,
         source: async key => {
           try { return await loadPhotoBlob(key) ?? getVolatileBlob(key) ?? null; }
           catch (error) { const retained = getVolatileBlob(key); if (retained) return retained; throw error; }
         },
-        progress: status => { if (current()) setPhotoBackupStatus(previous => ({ ...previous, [id + ":" + status.blobKey]: status })); },
+        progress: status => { if (current()) {
+          heartbeat();
+          setPhotoBackupStatus(previous => ({ ...previous, [id + ":" + status.blobKey]: status }));
+          setBackupFeedback(previous => ({ ...previous, [id]: status.error ?? (status.stage === "Backed up" ? "Continuing photo backup…" : status.stage) }));
+        } },
         checkpoint: async checkpoint => {
           if (!current()) throw new Error("The workspace or project changed.");
           const latest = project()!;
@@ -909,16 +972,21 @@ export function LayoutsApp() {
           saveWorkspaceProjects(next, ownerId);
           projectsRef.current = next; setProjects(next);
           if (activeProjectRef.current?.id === id) adoptActiveProject(saved, true);
-          const accepted = await syncQueueRef.current?.flush(id, saved.updatedAt);
+          const accepted = await syncQueueRef.current?.flush(id, saved.updatedAt, signal);
           if (!accepted || !current()) throw new Error("Backup checkpoint awaits cloud metadata. Reconnect or retry; completed files are preserved.");
           const photo = getProjectPhotos(project()!).find(photo => photo.blobKey === checkpoint.blobKey);
           if (!photo) throw new Error("This photo is no longer in the destination project.");
           return photo;
         },
       });
-    }, 2500);
+        if (current() && complete) setBackupFeedback(previous => ({ ...previous, [id]: "All photos backed up." }));
+        return complete;
+      } finally { if (!signal.aborted) finish(); }
+    }, 2500, id => {
+      if (sameWorkspace()) setBackupFeedback(previous => ({ ...previous, [id]: "Backup stopped responding for 90 seconds. Retrying from the last saved upload…" }));
+    });
     backupQueueRef.current = queue;
-    return () => { abort.abort(); queue.stop(); if (backupQueueRef.current === queue) backupQueueRef.current = null; };
+    return () => { queue.stop(); if (backupQueueRef.current === queue) backupQueueRef.current = null; };
   }, [ready, templateUser?.id, getValidDriveToken, getVolatileBlob, adoptActiveProject, saveWorkspaceProjects]);
 
   useEffect(() => {
@@ -933,6 +1001,29 @@ export function LayoutsApp() {
       if (driveConnected && projectHasUnbackedAssets(project)) backupQueueRef.current?.enqueue(project.id, JSON.stringify([getProjectPhotos(project), driveExpiry]));
     }
   }, [buildStoredProject, projects, isOnline, templateUser, driveExpiry, driveConnected, ready]);
+
+  useEffect(() => {
+    if (!ready || !templateUser?.id) return;
+    return watchBackupResume(() => {
+      const online = navigator.onLine;
+      setIsOnline(online);
+      if (!online || !isProjectCloudConfigured()) return;
+      const active = activeProjectRef.current;
+      const library = active ? [...projectsRef.current.filter(project => project.id !== active.id), active] : projectsRef.current;
+      syncQueueRef.current?.setEnabled(true);
+      for (const project of library) if (isProjectDirty(project)) syncQueueRef.current?.enqueue(project.id, project.updatedAt, true);
+      const pending = active && projectHasUnbackedAssets(active) ? active : library.find(projectHasUnbackedAssets);
+      if (!pending) return;
+      if (!getValidDriveToken()) {
+        setDriveExpiry(0);
+        setBackupFeedback(previous => ({ ...previous, [pending.id]: "Reconnect Google Drive to resume backup from the last saved upload." }));
+        return;
+      }
+      setBackupFeedback(previous => ({ ...previous, [pending.id]: "Resuming backup from the last saved upload…" }));
+      backupQueueRef.current?.setEnabled(true);
+      backupQueueRef.current?.retry(pending.id, pending.updatedAt);
+    }, document, window);
+  }, [ready, templateUser?.id, getValidDriveToken]);
 
   useEffect(() => {
     const refresh = () => { if (navigator.onLine) void syncProjectsFromCloud(); };
@@ -2362,6 +2453,8 @@ export function LayoutsApp() {
             <p>{projectName}</p>
             <p role="status">{storageError ? "Local save needs attention" : !templateUser ? "Saved on this device" : !isOnline ? "Offline · changes saved on this device" : projectSyncErrors[projectId!] ? "Project sync needs attention" : syncingProjectIds[projectId!] ? "Saving project…" : "Project changes save automatically"}</p>
             <p>Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length}</p>
+            <p role="status">{backupActivity}</p>
+            <button type="button" className="small-button" disabled={busy !== null} onClick={() => void retryPhotoBackup()}>Retry backup / reconnect Drive</button>
             <p>Original detail loads on demand ({assignedPhotos.length - unavailablePhotoCount} currently loaded). Originals without a Drive reference stay on this device until backup completes. Keep Scuri open while backing up.</p>
             {missingEditorPreviews > 0 ? <p role="status">{missingEditorPreviews} photo previews are awaiting availability. Their saved assignments and crops are preserved. Reconnect Drive or inspect the original in Project photos.</p> : null}
             {storageError ? <div role="alert"><p>{storageError}</p><button type="button" className="small-button" onClick={() => void retryLocalSave()}>Retry local save</button></div> : null}
@@ -2506,11 +2599,8 @@ export function LayoutsApp() {
             onClose={closePhotoLibrary} targetLabel={photoPickerIntent ? `Page ${pages.findIndex(page => page.id === photoPickerIntent.pageId) + 1} · frame ${photoPickerIntent.frameId}` : undefined}
             onOverride={setPhotoColour} onMetadata={setPhotoMetadata} imports={importItems} onRetryImport={id => importQueueRef.current?.retry(id)} initiallyImport={initiallyImport}
             backupStatus={Object.entries(photoBackupStatus).filter(([key]) => key.startsWith(projectId + ":")).map(([, status]) => status)}
-            onRetryBackup={() => {
-              const rejectedToken = Object.entries(photoBackupStatus).some(([key, status]) => key.startsWith(projectId + ":") && status.needsReconnect);
-              if (!getValidDriveToken() || rejectedToken) void connectGoogleDrive();
-              else backupQueueRef.current?.enqueue(projectId, now(), true);
-            }}
+            backupActivity={backupActivity}
+            onRetryBackup={() => void retryPhotoBackup()}
             onReconnectDrive={() => void connectGoogleDrive()}
             onChoose={photoPickerIntent ? chooseLibraryPhoto : undefined} />
         </div>
