@@ -1,10 +1,11 @@
 import { readPhotoJob, removePhotoJob, writePhotoJob } from "./photo-cache-storage";
 import { DriveRequestError, driveRequest, driveResponseError } from "./drive-request";
+import { fingerprintOriginal } from "./photo-fingerprint";
 
 const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
 const CHUNK = 4 * 256 * 1024;
-export interface UploadJournal { fileId: string; size: number; session?: string }
+export interface UploadJournal { fileId: string; size: number; session?: string; fingerprint?: string }
 interface UploadOptions {
   fileId: string; blob: Blob; journalKey: string;
   metadata: { name: string; parents: string[]; appProperties: Record<string, string> };
@@ -13,12 +14,12 @@ interface UploadOptions {
   retrying?: (attempt: number, delayMs: number) => void;
   journal?: { read: (key: string) => Promise<UploadJournal | null>; write: (key: string, value: UploadJournal) => Promise<void>; remove: (key: string) => Promise<void> };
 }
-export async function reserveDriveFileId(token: string): Promise<string> {
-  const response = await driveRequest(`${API}/files/generateIds?count=1&space=drive&type=files`, { headers: { Authorization: `Bearer ${token}` } }, "Reserving upload");
+export async function reserveDriveFileIds(token: string, count: number, signal?: AbortSignal): Promise<string[]> {
+  const response = await driveRequest(`${API}/files/generateIds?count=${count}&space=drive&type=files`, { headers: { Authorization: `Bearer ${token}` }, signal }, "Reserving upload");
   if (!response.ok) throw await driveResponseError(response, "Reserving upload");
   const data = await response.json() as { ids?: string[] };
-  if (!data.ids?.[0]) throw new Error("Drive did not return a file identity.");
-  return data.ids[0];
+  if (data.ids?.length !== count || data.ids.some(id => !id) || new Set(data.ids).size !== count) throw new Error("Drive did not return the requested file identities.");
+  return data.ids;
 }
 function allowedSession(url: string): boolean {
   try { const parsed = new URL(url); return parsed.protocol === "https:" && parsed.hostname === "www.googleapis.com" && parsed.pathname.startsWith("/upload/drive/"); }
@@ -59,49 +60,67 @@ export async function uploadReservedDriveFile(options: UploadOptions): Promise<s
 async function uploadAttempt(options: UploadOptions): Promise<string> {
   const { fileId, blob, metadata, journalKey, current, progress } = options;
   const journal = options.journal ?? { read: readPhotoJob<UploadJournal>, write: writePhotoJob, remove: removePhotoJob };
-  const request = async (url: string, init: RequestInit = {}, operation = "Checking upload") => {
+  const assertCurrent = () => {
     if (!current() || options.signal?.aborted) throw new Error("Upload paused because the workspace or project changed.");
+  };
+  const request = async (url: string, init: RequestInit = {}, operation = "Checking upload") => {
+    assertCurrent();
     const token = options.token(); if (!token) throw new DriveRequestError("Reconnect Drive to continue the backup.", false, true);
     return driveRequest(url, { ...init, signal: options.signal,
       headers: { ...init.headers, Authorization: `Bearer ${token}` } }, operation);
   };
-  const verify = async (): Promise<boolean> => {
+  const verify = async (existing = false): Promise<boolean> => {
     const response = await request(`${API}/files/${encodeURIComponent(fileId)}?fields=id,size,mimeType,trashed,appProperties`);
     if (response.status === 404) return false;
     if (!response.ok) throw await driveResponseError(response, "Checking upload");
     const file = await response.json() as { id: string; size?: string; mimeType?: string; trashed?: boolean; appProperties?: Record<string, string> };
-    if (file.id !== fileId || file.trashed || Number(file.size) !== blob.size || (blob.type && file.mimeType !== blob.type) ||
+    assertCurrent();
+    // A completed derived image belongs to the reserved project/photo/role,
+    // but canvas encoders (and older thumbnail pipelines) can produce different
+    // bytes after reopening. Reuse that image; never replace it to match a fresh
+    // render. Originals and confirmation of bytes just sent stay exact.
+    const reusableDerived = existing && ["preview", "thumbnail"].includes(metadata.appProperties.scuriType);
+    const representationMatches = reusableDerived
+      ? Number.isSafeInteger(Number(file.size)) && Number(file.size) > 0 && ["image/jpeg", "image/png", "image/webp"].includes(file.mimeType ?? "")
+      : Number(file.size) === blob.size && (!blob.type || file.mimeType === blob.type);
+    if (file.id !== fileId || file.trashed || !representationMatches ||
       ["scuriProjectId", "scuriBlobKey", "scuriType"].some(key => file.appProperties?.[key] !== metadata.appProperties[key])) {
       throw new Error("The reserved Drive file does not match this photo. Existing files were left untouched.");
     }
     return true;
   };
-  const complete = async () => { if (!await verify()) throw new Error("Upload completion could not be verified. Retry to check it again.");
+  const complete = async (existing = false) => { if (!await verify(existing)) throw new Error("Upload completion could not be verified. Retry to check it again.");
+    assertCurrent();
     await journal.remove(journalKey); progress?.(blob.size, blob.size); return fileId; };
   // Also handles a previous successful create whose final response was lost.
-  if (await verify()) { await journal.remove(journalKey); progress?.(blob.size, blob.size); return fileId; }
+  if (await verify(true)) { assertCurrent(); await journal.remove(journalKey); progress?.(blob.size, blob.size); return fileId; }
+  // A partial derived upload may only resume with the exact encoded bytes.
+  // Equal sizes do not make a fresh render byte-identical to the old render.
+  const fingerprint = ["preview", "thumbnail"].includes(metadata.appProperties.scuriType) ? await fingerprintOriginal(blob) : undefined;
   let saved = await journal.read(journalKey);
-  if (saved && (saved.fileId !== fileId || saved.size !== blob.size)) saved = null;
+  assertCurrent();
+  if (saved && (saved.fileId !== fileId || saved.size !== blob.size || (fingerprint && saved.fingerprint !== fingerprint))) saved = null;
   let session = saved?.session, offset = 0;
   if (session) {
     if (!allowedSession(session)) throw new Error("Invalid cached upload session. Existing Drive files were left untouched.");
     const status = await request(session, { method: "PUT", headers: { "Content-Range": `bytes */${blob.size}` } });
     if (status.status === 200 || status.status === 201) return complete();
     if (status.status === 308) offset = received(status, blob.size);
-    else if ([404, 410].includes(status.status)) { if (await verify()) return complete(); session = undefined; }
+    else if ([404, 410].includes(status.status)) { if (await verify(true)) return complete(true); session = undefined; }
     else throw await driveResponseError(status, "Resuming upload");
   }
   if (!session) {
     // Persist identity before network transmission; failures stop safely.
-    await journal.write(journalKey, { fileId, size: blob.size });
+    await journal.write(journalKey, { fileId, size: blob.size, ...(fingerprint ? { fingerprint } : {}) });
     const started = await request(`${UPLOAD}?uploadType=resumable&fields=id`, { method: "POST", headers: {
       "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": blob.type || "application/octet-stream", "X-Upload-Content-Length": String(blob.size),
     }, body: JSON.stringify({ ...metadata, id: fileId }) }, "Starting upload");
-    if (started.status === 409) return complete();
+    if (started.status === 409) return complete(true);
     if (!started.ok) throw await driveResponseError(started, "Starting upload");
     session = started.headers.get("Location") ?? undefined;
     if (!session || !allowedSession(session)) throw new Error("Drive did not return a valid upload session.");
-    await journal.write(journalKey, { fileId, size: blob.size, session });
+    assertCurrent();
+    await journal.write(journalKey, { fileId, size: blob.size, session, ...(fingerprint ? { fingerprint } : {}) });
   }
   progress?.(offset, blob.size);
   while (offset < blob.size) {
