@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { backUpProjectPhotos } from "../project-photo-backup";
 import { DriveRequestError } from "../drive-request";
-import { reserveDriveFileId, uploadReservedDriveFile } from "../drive-resumable";
+import { reserveDriveFileIds, uploadReservedDriveFile } from "../drive-resumable";
 import { downloadGoogleDrivePhoto, ensureProjectDriveFolders } from "../google-drive";
 import { savePhotoBlob } from "../storage";
 import { createPhotoPreview } from "../image";
@@ -9,17 +9,19 @@ import { applyPhotoBackupCheckpoint } from "../photo-backup";
 import { getProjectPhotos } from "../project-photo-library";
 import type { PhotoBackupCheckpoint } from "../photo-backup";
 import type { StoredProject } from "../types";
+import { ProjectSyncQueue } from "../sync-queue";
 vi.mock("../google-drive", () => ({ ensureProjectDriveFolders: vi.fn(), downloadGoogleDrivePhoto: vi.fn() }));
 vi.mock("../storage", () => ({ savePhotoBlob: vi.fn() }));
-vi.mock("../drive-resumable", () => ({ reserveDriveFileId: vi.fn(), uploadReservedDriveFile: vi.fn() }));
+vi.mock("../drive-resumable", () => ({ reserveDriveFileIds: vi.fn(), uploadReservedDriveFile: vi.fn() }));
 vi.mock("../image", () => ({ createPhotoPreview: vi.fn() }));
 beforeEach(() => {
   vi.resetAllMocks(); vi.mocked(ensureProjectDriveFolders).mockResolvedValue({ projectFolderId: "folder", originalsFolderId: "originals", previewsFolderId: "previews", exportsFolderId: "exports" });
-  let count = 0; vi.mocked(reserveDriveFileId).mockImplementation(async () => `reserved-${++count}`);
+  let count = 0; vi.mocked(reserveDriveFileIds).mockImplementation(async (_token, countNeeded) => Array.from({ length: countNeeded }, () => `reserved-${++count}`));
   vi.mocked(createPhotoPreview).mockResolvedValue({ blob: new Blob(["preview"], { type: "image/webp" }), width: 6400, height: 1440, previewUrl: "blob:synthetic" });
   vi.mocked(uploadReservedDriveFile).mockImplementation(async options => options.fileId);
   vi.mocked(savePhotoBlob).mockResolvedValue();
 });
+afterEach(() => vi.useRealTimers());
 function harness() {
   let p: StoredProject = { version: 3, id: "p", name: "Synthetic", formatId: "instagram-post", activePageId: null, pages: [], createdAt: "2026-09-19", updatedAt: "2026-09-19",
     photoLibrary: [{ blobKey: "photo", sourceWidth: 6400, sourceHeight: 1440, importedAt: "2026-09-19" }] };
@@ -28,6 +30,61 @@ function harness() {
     source: vi.fn(async (): Promise<Blob | null> => new Blob(["original"], { type: "image/jpeg" })), progress: vi.fn() }, project: () => p };
 }
 describe("backup independent of composition saves", () => {
+  it("reserves all three identities together and keeps each upload confirmation independent", async () => {
+    const h = harness();
+    vi.mocked(uploadReservedDriveFile).mockImplementation(async options => {
+      expect(h.project().photoLibrary![0].pendingUpload).toEqual({ originalId: "reserved-1", previewId: "reserved-2", thumbnailId: "reserved-3" });
+      return options.fileId;
+    });
+    expect(await backUpProjectPhotos(h.options)).toBe(true);
+    expect(reserveDriveFileIds).toHaveBeenCalledExactlyOnceWith("synthetic", 3, undefined);
+    expect(h.options.checkpoint).toHaveBeenCalledTimes(4); // previously six cloud saves
+    expect(h.options.checkpoint.mock.calls.slice(1).map(([checkpoint]) => Object.keys(checkpoint).filter(key => key.endsWith("Id"))))
+      .toEqual([["driveFolderId", "driveOriginalId"], ["driveFolderId", "drivePreviewId"], ["driveFolderId", "driveThumbnailId"]]);
+  });
+
+  it("reloads a 123-photo project at 6 backed up, reuses old reservations, and completes without touching completed originals", async () => {
+    const h = harness(), original = { ...h.project().photoLibrary![0] };
+    h.project().photoLibrary = Array.from({ length: 123 }, (_, i) => ({ ...original, blobKey: `photo-${i}`,
+      ...(i < 6 ? { driveOriginalId: `original-${i}`, drivePreviewId: `preview-${i}`, driveThumbnailId: `thumbnail-${i}` } : {}),
+      ...(i === 6 ? { pendingUpload: { originalId: "previously-reserved-original" } } : {}),
+    }));
+    // Equivalent to reopening the durable metadata with a fresh Drive token.
+    Object.assign(h.project(), JSON.parse(JSON.stringify(h.project())));
+    const save = h.options.checkpoint.getMockImplementation()!;
+    h.options.checkpoint.mockImplementation(async checkpoint => {
+      await save(checkpoint);
+      return getProjectPhotos(h.project()).find(photo => photo.blobKey === checkpoint.blobKey)!;
+    });
+    const completed = structuredClone(h.project().photoLibrary!.slice(0, 6));
+    expect(await backUpProjectPhotos(h.options)).toBe(true);
+    expect(h.project().id).toBe("p"); expect(h.project().photoLibrary).toHaveLength(123);
+    expect(h.project().photoLibrary!.slice(0, 6)).toEqual(completed);
+    expect(h.project().photoLibrary!.every(photo => photo.driveOriginalId && photo.drivePreviewId && photo.driveThumbnailId)).toBe(true);
+    expect(uploadReservedDriveFile).toHaveBeenCalledTimes(117 * 3);
+    expect(h.options.checkpoint).toHaveBeenCalledTimes(117 * 4);
+    expect(reserveDriveFileIds).toHaveBeenNthCalledWith(1, "synthetic", 2, undefined);
+    expect(vi.mocked(uploadReservedDriveFile).mock.calls[0][0].fileId).toBe("previously-reserved-original");
+    expect(vi.mocked(uploadReservedDriveFile).mock.calls.every(([options]) => !/^photo-[0-5]$/.test(options.metadata.appProperties.scuriBlobKey))).toBe(true);
+  });
+
+  it("shows early progress and ignores a stalled original read that returns after Retry", async () => {
+    vi.useFakeTimers();
+    const h = harness(); let lateRead!: (value: Blob) => void;
+    h.options.source.mockImplementationOnce(() => new Promise(resolve => { lateRead = resolve; }));
+    const queue = new ProjectSyncQueue(async (_id, context) => backUpProjectPhotos({ ...h.options, signal: context.signal,
+      current: () => !context.signal.aborted, progress: status => { context.heartbeat(); h.options.progress(status); } }), 0);
+    queue.setEnabled(true); queue.enqueue("p", "start");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.options.progress).toHaveBeenCalledWith({ blobKey: "photo", stage: "Preparing Drive folders" });
+    expect(h.options.progress).toHaveBeenLastCalledWith({ blobKey: "photo", stage: "Reading original" });
+    queue.retry("p", "retry"); await vi.advanceTimersByTimeAsync(1);
+    expect(h.project().photoLibrary![0].driveOriginalId).toBe("reserved-1");
+    const saved = structuredClone(h.project());
+    lateRead(new Blob(["original"])); await vi.advanceTimersByTimeAsync(1);
+    expect(h.project()).toEqual(saved); expect(uploadReservedDriveFile).toHaveBeenCalledTimes(3);
+    queue.stop();
+  });
   it("reports expired access as incomplete and asks to reconnect instead of acknowledging success", async () => {
     const h = harness();
     expect(await backUpProjectPhotos({ ...h.options, token: () => null })).toBe(false);
@@ -51,7 +108,7 @@ describe("backup independent of composition saves", () => {
     expect(await backUpProjectPhotos(h.options)).toBe(false);
     expect(h.options.progress).toHaveBeenLastCalledWith(expect.objectContaining({ needsOriginal: true }));
     expect(h.project()).toEqual(before);
-    expect(reserveDriveFileId).not.toHaveBeenCalled(); expect(uploadReservedDriveFile).not.toHaveBeenCalled();
+    expect(reserveDriveFileIds).not.toHaveBeenCalled(); expect(uploadReservedDriveFile).not.toHaveBeenCalled();
   });
   it("shows a storage-read failure rather than disguising it as a missing file", async () => {
     const h = harness(); h.options.source.mockRejectedValue(new Error("IndexedDB unavailable"));
@@ -104,7 +161,7 @@ describe("backup independent of composition saves", () => {
     const h = harness(); vi.mocked(ensureProjectDriveFolders).mockRejectedValueOnce(new Error("Drive folder access expired"));
     expect(await backUpProjectPhotos(h.options)).toBe(false);
     expect(h.options.progress).toHaveBeenLastCalledWith({ blobKey: "photo", stage: "Backup paused", error: "Drive folder access expired" });
-    expect(reserveDriveFileId).not.toHaveBeenCalled(); expect(uploadReservedDriveFile).not.toHaveBeenCalled();
+    expect(reserveDriveFileIds).not.toHaveBeenCalled(); expect(uploadReservedDriveFile).not.toHaveBeenCalled();
     expect(h.options.checkpoint).not.toHaveBeenCalled();
   });
   it("requires the cloud-accepted reservation before any byte upload", async () => {
