@@ -3,6 +3,7 @@ import * as React from "react";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as gallery from "../library-gallery";
+import * as metadata from "../photo-metadata";
 import { DEFAULT_LIBRARY_VIEW, type LibraryRow, type LibraryView } from "../photo-library-view";
 
 // Run the real component's effects and scroll handler. In particular, count DOM
@@ -32,7 +33,8 @@ function harness(initial: LibraryView = structuredClone(DEFAULT_LIBRARY_VIEW)) {
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText;
   const exports: Record<string, (props: object) => React.ReactElement> = {};
   const dependencies: Record<string, unknown> = { react: hooks, "next/image": { default: () => null },
-    "@/lib/library-gallery": gallery, "./photo-preview-context": { usePhotoPreviewSession: () => ({ session: null, snapshot: new Map() }) } };
+    "@/lib/library-gallery": gallery, "@/lib/photo-metadata": metadata,
+    "./photo-preview-context": { usePhotoPreviewSession: () => ({ session: null, snapshot: new Map() }) } };
   new Function("require", "exports", `const React = require('react'); ${compiled}`)((name: string) => {
     if (!(name in dependencies)) throw Error(`Missing dependency ${name}`); return dependencies[name];
   }, exports);

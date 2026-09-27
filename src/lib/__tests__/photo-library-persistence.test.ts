@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSupabaseClient } from "../supabase-client";
-import { acknowledgeProjectPush, getProjectBackupCounts, isProjectDirty, mergeCloudProjectLibrary, pushProjectToCloud, rowsToStoredProject } from "../project-sync";
-import { getProjectPhotos, getVisibleProjectPhotos, mergePhotoLibraries } from "../project-photo-library";
+import { acknowledgeProjectPush, getProjectBackupCounts, isProjectDirty, mergeCloudProjectLibrary, preserveProtectedLocalEdits, pushProjectToCloud, rowsToStoredProject } from "../project-sync";
+import { editProjectPhotoMetadata, getProjectPhotos, getVisibleProjectPhotos, mergePhotoLibraries } from "../project-photo-library";
 import { consolidateLibraryDuplicates, scanExactDuplicates } from "../photo-duplicates";
 import { reconcileProjectPages, serializePage } from "../project-photos";
 import { loadProjects, saveProjects } from "../storage";
@@ -59,6 +59,93 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("No real network in library tests"); }));
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) });
+});
+
+describe("rank and label persistence and sync", () => {
+  const metadata = (p: StoredProject) => getProjectPhotos(p).map(({ blobKey, rank, labels }) => ({ blobKey, rank, labels })).sort((a, b) => a.blobKey.localeCompare(b.blobKey));
+  function tagged() {
+    const ranked = editProjectPhotoMetadata(source(), [assigned.blobKey, loose.blobKey], { rank: "hero" }, edit);
+    return editProjectPhotoMetadata(ranked, [assigned.blobKey, loose.blobKey], { addLabels: [" Temple ", "Night"] }, edit);
+  }
+  it("saves and reloads metadata, then round-trips through cloud JSON without changing placements or backup counts", async () => {
+    const fixture = cloud(), original = tagged();
+    saveProjects([original], "synthetic-owner");
+    const [reloaded] = loadProjects("synthetic-owner");
+    expect(metadata(reloaded)).toEqual(metadata(original));
+    const result = await pushProjectToCloud(reloaded);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(metadata(fixture.stored())).toEqual(metadata(original));
+    expect(fixture.rows.project_assets[0]).toMatchObject({ id: "synthetic-row", blob_key: assigned.blobKey, crop: source().pages[0].photos["photo-1"].crop });
+    expect(getProjectBackupCounts(fixture.stored())).toEqual(getProjectBackupCounts(source()));
+    expect(fixture.writes.some(write => write.includes("delete"))).toBe(false);
+  });
+  it("persists explicit clears and accepts them from another device without resurrecting old metadata", async () => {
+    const original = tagged(), fixture = cloud(true, getProjectPhotos(original));
+    let cleared = editProjectPhotoMetadata(original, [assigned.blobKey, loose.blobKey], { rank: null }, edit);
+    for (const label of ["night", "temple"]) cleared = editProjectPhotoMetadata(cleared, [assigned.blobKey, loose.blobKey], { removeLabel: label }, edit);
+    const result = await pushProjectToCloud(cleared);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    const remote = fixture.stored();
+    expect(getProjectPhotos(remote).every(photo => photo.rank === null && photo.labels?.length === 0)).toBe(true);
+    const local = { ...original, updatedAt: timestamp };
+    const [pulled] = mergeCloudProjectLibrary([local], [remote], () => "unused").projects;
+    expect(metadata(pulled)).toEqual(metadata(cleared));
+    expect(isProjectDirty(pulled)).toBe(false);
+    saveProjects([pulled], "synthetic-owner");
+    expect(metadata(loadProjects("synthetic-owner")[0])).toEqual(metadata(cleared));
+  });
+  it("retains known ranks and labels if an older client omits the fields and queues their restoration", async () => {
+    const original = tagged(), fixture = cloud(true, getProjectPhotos(original));
+    await pushProjectToCloud(source());
+    expect(metadata(fixture.stored())).toEqual(metadata(original));
+    const local = { ...original, updatedAt: timestamp }, olderClient = { ...source(), updatedAt: ack, cloudSyncedAt: ack, revision: 2 };
+    const merged = mergeCloudProjectLibrary([local], [olderClient], () => "unused");
+    expect(metadata(merged.projects[0])).toEqual(metadata(original));
+    expect(isProjectDirty(merged.projects[0])).toBe(true);
+    expect(merged.metadataRecoveredIds).toEqual([original.id]);
+  });
+  it("preserves edits and clears made during an in-flight save alongside completed upload references", () => {
+    const sent = tagged();
+    let latest = editProjectPhotoMetadata(sent, [assigned.blobKey], { rank: null }, ack);
+    latest = editProjectPhotoMetadata(latest, [assigned.blobKey], { removeLabel: "temple" }, ack);
+    latest = editProjectPhotoMetadata(latest, [loose.blobKey], { addLabels: ["forest"] }, ack);
+    const checkpoint = applyPhotoBackupCheckpoint(sent, { blobKey: loose.blobKey, driveOriginalId: "backed-original",
+      drivePreviewId: "backed-preview", driveFolderId: "folder" }, ack);
+    const acknowledged = acknowledgeProjectPush(latest, sent, { conflict: false, partial: false,
+      project: { ...checkpoint, revision: 2, cloudSyncedAt: ack } });
+    expect(metadata(acknowledged)).toEqual(metadata(latest));
+    expect(getProjectPhotos(acknowledged)[1]).toMatchObject({ drivePreviewId: "backed-preview", labels: ["forest", "night", "temple"] });
+    expect(isProjectDirty(acknowledged)).toBe(true);
+    expect(acknowledged.pages[0].photos["photo-1"].crop).toEqual(sent.pages[0].photos["photo-1"].crop);
+  });
+  it("keeps unsynced metadata on a stale pull and preserves it when structural recovery protects remote placements", () => {
+    const edited = tagged(), old = source();
+    const [pulled] = mergeCloudProjectLibrary([edited], [old], () => "unused").projects;
+    expect(metadata(pulled)).toEqual(metadata(edited));
+    const missingPlacement = { ...edited, pages: edited.pages.map(page => ({ ...page, photos: {} })) };
+    const recovered = preserveProtectedLocalEdits(missingPlacement, old, "recovered")!;
+    expect(recovered.id).toBe("recovered");
+    expect(metadata(recovered)).toEqual(metadata(edited));
+    expect(recovered.revision).toBeUndefined();
+  });
+  it.each([{ rank: "good" as const }, { rank: null }, { labels: ["temple"] }, { labels: [] }])(
+    "never reports metadata as synced on a schema without photo_library: %j", async extra => {
+      const fixture = cloud(false), legacy = source();
+      legacy.photoLibrary = [{ ...assigned, ...extra }];
+      await expect(pushProjectToCloud(legacy)).rejects.toThrow("Cloud photo library setup is required");
+      expect(fixture.writes).toEqual([]);
+    });
+  it("includes metadata in portable backups and preserves it when restoring new project/original identities", async () => {
+    const original = tagged();
+    const backup = await createProjectBackup(original, async key => new Blob([`synthetic-${key}`], { type: "image/jpeg" }));
+    const inspected = await inspectProjectBackup(backup.blob);
+    expect(metadata(inspected.project)).toEqual(metadata(original));
+    let id = 0; const restored = materializeProjectBackup(inspected, () => `restored-${id++}`);
+    expect(restored.project.id).not.toBe(original.id);
+    expect(getProjectPhotos(restored.project).every(photo => photo.rank === "hero" && photo.labels?.join(",") === "night,temple")).toBe(true);
+    expect(restored.originals.size).toBe(2);
+    expect(restored.project.pages[0].photos["photo-1"].crop).toEqual(original.pages[0].photos["photo-1"].crop);
+  });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
