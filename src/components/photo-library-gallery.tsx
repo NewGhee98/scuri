@@ -4,9 +4,11 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { galleryGeometry, galleryRows, galleryScrollAnchor, visibleGalleryRange } from "@/lib/library-gallery";
 import type { LibraryRow, LibraryView } from "@/lib/photo-library-view";
 import { usePhotoPreviewSession } from "./photo-preview-context";
+import { PHOTO_RANK_LABELS } from "@/lib/photo-metadata";
 
-export function PhotoLibraryGallery({ rows, view, onView, onInspect, focusPhotoKey, header, empty }: { rows: LibraryRow[]; view: LibraryView;
-  onView: (value: LibraryView) => void; onInspect: (key: string) => void; focusPhotoKey?: string; header?: ReactNode; empty?: ReactNode }) {
+export function PhotoLibraryGallery({ rows, view, onView, onInspect, selectedKeys, onToggleSelected, focusPhotoKey, header, empty }: { rows: LibraryRow[]; view: LibraryView;
+  onView: (value: LibraryView) => void; onInspect: (key: string) => void; focusPhotoKey?: string; header?: ReactNode; empty?: ReactNode;
+  selectedKeys?: ReadonlySet<string>; onToggleSelected?: (key: string) => void }) {
   const container = useRef<HTMLDivElement>(null), { session, snapshot } = usePhotoPreviewSession();
   const heading = useRef<HTMLDivElement>(null);
   const [bounds, setBounds] = useState({ width: 0, height: 0, header: 0 });
@@ -21,7 +23,7 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, focusPhotoK
   const range = visibleGalleryRange(view.scrollTop, bounds.height, geometry.rowHeight, packed.length, bounds.header);
   const visible = packed.slice(range.start, range.end);
   const sourcesKey = JSON.stringify(visible.flatMap(row => row.map(item => item.row.photo)));
-  const filterKey = JSON.stringify([view.search, view.orientations, view.colours, view.usage, view.sort]);
+  const filterKey = JSON.stringify([view.search, view.orientations, view.colours, view.usage, view.ranks, view.labels, view.sort]);
   useEffect(() => {
     const element = container.current; if (!element) return;
     const resize = new ResizeObserver(() => {
@@ -76,9 +78,15 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, focusPhotoK
     <div style={{ height: range.start * geometry.rowHeight }} aria-hidden="true" />
     {visible.map((items, offset) => <div key={range.start + offset} className="library-gallery-row"
       style={{ height: geometry.rowHeight, gridTemplateColumns: `repeat(${geometry.columns}, minmax(0, 1fr))` }}>
-      {items.map(({ row, span }) => <button key={row.photo.blobKey} data-photo-key={row.photo.blobKey} type="button" className="library-photo-card" style={{ gridColumn: `span ${span}` }} onClick={() => onInspect(row.photo.blobKey)}>
+      {items.map(({ row, span }) => <button key={row.photo.blobKey} data-photo-key={row.photo.blobKey} type="button" className="library-photo-card" style={{ gridColumn: `span ${span}` }}
+        aria-pressed={onToggleSelected ? !!selectedKeys?.has(row.photo.blobKey) : undefined}
+        aria-label={onToggleSelected ? `Select ${row.photo.sourceName ?? "photo"}` : undefined}
+        onClick={() => (onToggleSelected ?? onInspect)(row.photo.blobKey)}>
         <span className="library-photo-image">{snapshot.get(row.photo.blobKey)?.previewUrl ? <Image unoptimized src={snapshot.get(row.photo.blobKey)!.previewUrl}
-          alt={row.photo.sourceName ?? "Project photo"} width={640} height={640} /> : <span>Awaiting preview</span>}</span>
+          alt={row.photo.sourceName ?? "Project photo"} width={640} height={640} /> : <span>Awaiting preview</span>}
+          {row.photo.rank ? <span className="library-photo-rank" data-rank={row.photo.rank}>{PHOTO_RANK_LABELS[row.photo.rank]}</span> : null}
+          {onToggleSelected ? <span className="library-photo-selection" aria-hidden="true">{selectedKeys?.has(row.photo.blobKey) ? "✓" : ""}</span> : null}
+        </span>
         <span className="library-photo-caption"><span className="library-photo-name" title={row.photo.sourceName}>{row.photo.sourceName ?? "Photo"}</span>
           <span className="library-photo-usage">{row.uses ? `Used ${row.uses}×` : "Unused"}</span></span>
       </button>)}

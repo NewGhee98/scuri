@@ -5,7 +5,10 @@ import "./photo-library.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ARRANGEMENT_LABELS, type ArrangementProposal } from "@/lib/arrangements";
 import { PhotoAnalysisClient } from "@/lib/photo-analysis-client";
-import { projectPhotoGroups, MAX_PROJECT_PHOTOS } from "@/lib/project-photo-library";
+import { projectPhotoGroups, getProjectPhotos, MAX_PROJECT_PHOTOS } from "@/lib/project-photo-library";
+import { PHOTO_RANKS, PHOTO_RANK_LABELS, projectPhotoLabels, type PhotoMetadataEdit } from "@/lib/photo-metadata";
+import type { PhotoRank } from "@/lib/types";
+import { PhotoLabelInput } from "./photo-label-input";
 import type { DuplicateGroup, DuplicateScan } from "@/lib/photo-duplicates";
 import { getFormat } from "@/lib/formats";
 import { DEFAULT_CROP } from "@/lib/crop";
@@ -29,6 +32,7 @@ interface Props {
   getVolatileBlob: (key: string) => Blob | undefined; getDriveToken: () => string | null;
   onImport: (sources: PhotoImportSource[]) => void; onApply: (proposal: ArrangementProposal) => void;
   onChoose?: (photo: ProjectPhoto) => void; onOverride: (key: string, value: ProjectPhoto["colourOverride"]) => void;
+  onMetadata: (keys: string[], edit: PhotoMetadataEdit) => void;
   onCombineDuplicates: (scan: DuplicateScan, groups: DuplicateGroup[]) => void;
   open: boolean; onOpen: () => void; onClose: () => void; targetLabel?: string;
   imports: readonly PhotoImportItem[]; onRetryImport: (id?: string) => void;
@@ -40,7 +44,7 @@ const toolLabels = { filters: "Filters", view: "View", actions: "Library actions
 async function idle() { await new Promise(resolve => setTimeout(resolve, 30)); }
 
 export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose,
-  onCombineDuplicates, onOverride, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, onRetryBackup, onReconnectDrive, initiallyImport }: Props) {
+  onCombineDuplicates, onOverride, onMetadata, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, onRetryBackup, onReconnectDrive, initiallyImport }: Props) {
   const { session: previewSession } = usePhotoPreviewSession(), previewCache = previewSession?.cache;
   const photos = projectPhotoGroups(project).map(group => group.photo);
   const projectImports = imports.filter(item => item.projectId === project.id);
@@ -55,6 +59,8 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   const [returnFocusKey, setReturnFocusKey] = useState<string>();
   const [tool, setTool] = useState<keyof typeof toolLabels | null>(null);
   const [viewerControlsHidden, setViewerControlsHidden] = useState(false);
+  const [selecting, setSelecting] = useState(false), [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [editMessage, setEditMessage] = useState("");
   const restoreFiles = useRef<HTMLInputElement>(null);
   const viewKey = workspaceKey(`scuri.library-view.${project.id}`, ownerId);
   const [view, setView] = useState<LibraryView>(() => readLibraryView(viewKey));
@@ -62,10 +68,24 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   const suggestionClient = useRef<PhotoAnalysisClient | null>(null);
   const analysedRef = useRef(analysed), photosRef = useRef(photos), dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { photosRef.current = photos; analysedRef.current = analysed; });
-  const changeView = (value: LibraryView) => { setView(value); rememberLibraryView(viewKey, value); };
+  const changeView = (value: LibraryView) => {
+    const filters = (item: LibraryView) => JSON.stringify([item.search, item.orientations, item.colours, item.usage, item.ranks, item.labels]);
+    if (filters(value) !== filters(view)) setSelectedKeys([]);
+    setView(value); rememberLibraryView(viewKey, value);
+  };
   const analyses = useMemo(() => new Map(Object.entries(analysed).map(([key, item]) => [key, item.analysis])), [analysed]);
   const rows = libraryRows(project, analyses), filtered = filterLibraryRows(rows, view);
-  const inspectIndex = filtered.findIndex(row => row.photo.blobKey === inspected), inspectedRow = filtered[inspectIndex];
+  const inspectIndex = filtered.findIndex(row => row.photo.blobKey === inspected), inspectedRow = rows.find(row => row.photo.blobKey === inspected);
+  const labelSuggestions = projectPhotoLabels(getProjectPhotos(project));
+  const selection = filtered.filter(row => selectedKeys.includes(row.photo.blobKey)).map(row => row.photo.blobKey);
+  const close = () => { setSelecting(false); setSelectedKeys([]); setEditMessage(""); onClose(); };
+  const editSelected = (edit: PhotoMetadataEdit) => {
+    if (!selection.length) return;
+    onMetadata(selection, edit);
+    setEditMessage("rank" in edit ? `Rank updated for ${selection.length} photos.` : `Labels added to ${selection.length} photos.`);
+    // Keep matching photos selected for further edits. Only visible matches
+    // participate in the next action, and changing filters clears selection.
+  };
   const choose = (photo: ProjectPhoto) => { onChoose?.(photo); };
   useEffect(() => {
     if (open && !dialog.current?.open) dialog.current?.showModal();
@@ -141,7 +161,11 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
   });
   const toggleOrientation = (value: Orientation) => changeView({ ...view, scrollTop: 0, anchor: undefined, orientations: view.orientations.includes(value) ? view.orientations.filter(item => item !== value) : [...view.orientations, value] });
   const toggleColour = (value: ColourClass) => changeView({ ...view, scrollTop: 0, anchor: undefined, colours: view.colours.includes(value) ? view.colours.filter(item => item !== value) : [...view.colours, value] });
-  const filterCount = view.orientations.length + view.colours.length + (view.usage === "all" ? 0 : 1);
+  const toggleRank = (rank: LibraryView["ranks"][number]) => changeView({ ...view, scrollTop: 0, anchor: undefined,
+    ranks: view.ranks.includes(rank) ? view.ranks.filter(item => item !== rank) : [...view.ranks, rank] });
+  const toggleLabel = (label: string) => changeView({ ...view, scrollTop: 0, anchor: undefined,
+    labels: view.labels.includes(label) ? view.labels.filter(item => item !== label) : [...view.labels, label] });
+  const filterCount = view.orientations.length + view.colours.length + view.ranks.length + view.labels.length + (view.usage === "all" ? 0 : 1);
   const clearFilters = () => changeView({ ...DEFAULT_LIBRARY_VIEW, size: view.size, sort: view.sort });
   const backedUp = photos.filter(photo => photo.driveOriginalId).length;
   const currentBackupStatus = backupStatus.filter(status => photos.some(photo => photo.blobKey === status.blobKey));
@@ -159,15 +183,34 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       <input type="search" aria-label="Search photo filenames" placeholder="Search filenames" value={view.search} onChange={event => changeView({ ...view, search: event.target.value, scrollTop: 0, anchor: undefined })} />
       <button className="small-button" type="button" aria-haspopup="dialog" onClick={() => setTool("view")}>View</button>
       <button className="small-button" type="button" aria-haspopup="dialog" onClick={() => setTool("actions")}>Actions</button>
+      {!onChoose ? <button className="small-button" type="button" aria-pressed={selecting} disabled={!photos.length} onClick={() => {
+        setSelecting(value => !value); setSelectedKeys([]); setEditMessage("");
+      }}>{selecting ? "Finish selecting" : "Select photos"}</button> : null}
     </div>
     <div className="library-active-filters" aria-label="Active filters">
       <span>{filtered.length} / {rows.length} photos</span>
       {view.orientations.map(key => <button key={key} type="button" className="library-filter" aria-label={`Remove ${labels[key]} filter`} onClick={() => toggleOrientation(key)}>{labels[key]} ×</button>)}
       {view.colours.map(key => <button key={key} type="button" className="library-filter" aria-label={`Remove ${colourLabels[key]} filter`} onClick={() => toggleColour(key)}>{colourLabels[key]} ×</button>)}
       {view.usage !== "all" ? <button type="button" className="library-filter" aria-label="Remove usage filter" onClick={() => changeView({ ...view, usage: "all", scrollTop: 0, anchor: undefined })}>{view.usage === "used" ? "Used" : "Unused"} ×</button> : null}
+      {view.ranks.map(rank => <button key={rank} type="button" className="library-filter" aria-label={`Remove ${PHOTO_RANK_LABELS[rank]} filter`} onClick={() => toggleRank(rank)}>{PHOTO_RANK_LABELS[rank]} ×</button>)}
+      {view.labels.map(label => <button key={label} type="button" className="library-filter" aria-label={`Remove label filter ${label}`} onClick={() => toggleLabel(label)}>{label} ×</button>)}
       {filterCount || view.search ? <button className="text-button" type="button" onClick={clearFilters}>Clear filters</button> : null}
       {projectImports.length && importFinished < projectImports.length ? <button className="text-button" type="button" onClick={() => setTool("activity")}>Import progress: {importFinished}/{projectImports.length} finished</button> : null}
     </div>
+    {selecting ? <section className="library-bulk-edit" aria-label="Edit selected photos">
+      <div className="library-selection-summary"><strong>{selection.length} selected</strong>
+        <button className="text-button" type="button" disabled={!filtered.length} onClick={() => setSelectedKeys(filtered.map(row => row.photo.blobKey))}>Select all shown</button>
+        <button className="text-button" type="button" disabled={!selection.length} onClick={() => setSelectedKeys([])}>Clear selection</button>
+      </div>
+      <div className="photo-metadata-controls">
+        <label className="photo-rank-control">Rank selected <select value="" disabled={!selection.length} onChange={event => {
+          if (event.target.value) editSelected({ rank: event.target.value === "unranked" ? null : event.target.value as PhotoRank });
+        }}><option value="" disabled>Set rank…</option>{PHOTO_RANKS.map(rank => <option key={rank} value={rank}>{PHOTO_RANK_LABELS[rank]}</option>)}<option value="unranked">Clear rank</option></select></label>
+        <PhotoLabelInput title="Add labels to selected photos" suggestions={labelSuggestions} disabled={!selection.length} onAdd={label => editSelected({ addLabels: [label] })} />
+      </div>
+      <p>Labels are added to each photo’s existing labels. Changing filters clears selection.</p>
+    </section> : null}
+    {editMessage ? <p className="library-edit-message" role="status">{editMessage}</p> : null}
   </>;
   return <section className="photo-library-panel" aria-label="Project photo library">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Project photos</h2>
@@ -175,18 +218,23 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       <button type="button" className="primary-button" onClick={onOpen}>Open Project photos</button></div>
     <dialog ref={dialog} data-open={String(open)} className="photo-library-dialog" onCancel={event => {
       event.preventDefault(); if (event.target !== event.currentTarget) return;
-      if (inspectedRow) backToPhotos(); else onClose();
+      if (inspectedRow) backToPhotos(); else close();
     }} aria-label={inspectedRow ? "Photo viewer" : onChoose ? "Choose a photo" : "Project photos"}>
       <div className="photo-library-shell">
         {!inspectedRow ? <header className="library-heading"><div className="library-heading-context"><h2>{onChoose ? "Choose a photo" : "Project photos"}</h2><p title={`${project.name}${targetLabel ? ` · ${targetLabel}` : ""}`}>{project.name}{targetLabel ? ` · ${targetLabel}` : ""}</p></div>
           <button className="small-button" type="button" aria-haspopup="dialog" onClick={() => setTool("filters")}>Filters{filterCount ? ` (${filterCount})` : ""}</button>
           <button className={`library-backup-status${needsAttention ? " needs-attention" : ""}`} type="button" aria-haspopup="dialog" onClick={() => setTool("activity")}>
             <span>Photos backed up: {backedUp}/{photos.length}</span>{needsAttention ? <strong role="status">Needs attention</strong> : null}</button>
-          <button className="secondary-button" type="button" onClick={onClose}>{onChoose ? "Cancel" : !photos.length ? "Skip for now" : "Done"}</button></header> : null}
+          <button className="secondary-button" type="button" onClick={close}>{onChoose ? "Cancel" : !photos.length ? "Skip for now" : "Done"}</button></header> : null}
         {open ? <>
         {tool ? <ActionDialog title={toolLabels[tool]} onClose={() => setTool(null)}><div className="library-tool-content">
           <header><h2>{toolLabels[tool]}</h2><button type="button" className="small-button" onClick={() => setTool(null)}>Close</button></header>
           {tool === "filters" ? <div className="library-filters">
+            <fieldset><legend>Rank</legend><div>{[...PHOTO_RANKS, "unranked" as const].map(rank =>
+              <button key={rank} type="button" className="library-filter" aria-pressed={view.ranks.includes(rank)} onClick={() => toggleRank(rank)}>{PHOTO_RANK_LABELS[rank]}</button>)}</div></fieldset>
+            <fieldset><legend>Labels · match all selected</legend><div>{[...new Set([...labelSuggestions, ...view.labels])].map(label =>
+              <button key={label} type="button" className="library-filter" aria-pressed={view.labels.includes(label)} onClick={() => toggleLabel(label)}>{label}</button>)}</div>
+              {!labelSuggestions.length && !view.labels.length ? <p>Add labels in Photo info or select photos to label them together.</p> : null}</fieldset>
             <fieldset><legend>Photo proportions</legend><div>{(Object.keys(labels) as Orientation[]).map(key => <button key={key} type="button" className="library-filter" aria-pressed={view.orientations.includes(key)} onClick={() => toggleOrientation(key)}>{labels[key]}</button>)}</div></fieldset>
             <fieldset><legend>Photo colour</legend><div>{(Object.keys(colourLabels) as ColourClass[]).map(key => <button key={key} type="button" className="library-filter" aria-pressed={view.colours.includes(key)} onClick={() => toggleColour(key)}>{colourLabels[key]}</button>)}</div></fieldset>
             <label>Usage <select value={view.usage} onChange={event => changeView({ ...view, usage: event.target.value as LibraryView["usage"], scrollTop: 0, anchor: undefined })}><option value="all">All</option><option value="unused">Unused</option><option value="used">Used</option></select></label>
@@ -240,9 +288,12 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
           </div> : inspectedRow ? <LibraryPhotoViewer key={inspectedRow.photo.blobKey} row={inspectedRow} ownerId={ownerId} index={inspectIndex} count={filtered.length}
             controlsHidden={viewerControlsHidden} onToggleControls={() => setViewerControlsHidden(value => !value)}
             onBack={backToPhotos} onPrevious={() => { if (inspectIndex > 0) setInspected(filtered[inspectIndex - 1].photo.blobKey); }}
-            onNext={() => { if (inspectIndex + 1 < filtered.length) setInspected(filtered[inspectIndex + 1].photo.blobKey); }}
+            onNext={() => { if (inspectIndex >= 0 && inspectIndex + 1 < filtered.length) setInspected(filtered[inspectIndex + 1].photo.blobKey); }}
+            labelSuggestions={labelSuggestions} onMetadata={edit => onMetadata([inspectedRow.photo.blobKey], edit)}
             onUse={onChoose ? () => choose(inspectedRow.photo) : undefined} onOverride={value => onOverride(inspectedRow.photo.blobKey, value)} /> :
           <PhotoLibraryGallery rows={filtered} view={view} onView={value => { setReturnFocusKey(undefined); changeView(value); }} focusPhotoKey={returnFocusKey}
+            selectedKeys={selecting ? new Set(selection) : undefined}
+            onToggleSelected={selecting ? key => setSelectedKeys(current => current.includes(key) ? current.filter(item => item !== key) : [...current, key]) : undefined}
             header={toolbar} empty={!photos.length ? <div className="library-empty"><h3>Add your candidate photos once</h3><p>Choose Photos, Files or a connected source above. You can choose layouts later.</p></div> : undefined}
             onInspect={key => { setInspected(key); setShowSuggestions(false); setViewerControlsHidden(false); }} />}
         {reviewDuplicates ? <DuplicatePhotoReview project={project} ownerId={ownerId} thumbnails={analysed}
