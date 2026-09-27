@@ -34,7 +34,7 @@ interface Props {
   onChoose?: (photo: ProjectPhoto) => void; onOverride: (key: string, value: ProjectPhoto["colourOverride"]) => void;
   onMetadata: (keys: string[], edit: PhotoMetadataEdit) => void;
   onCombineDuplicates: (scan: DuplicateScan, groups: DuplicateGroup[]) => void;
-  open: boolean; onOpen: () => void; onClose: () => void; targetLabel?: string;
+  open: boolean; onOpen: () => void; onClose: () => void; targetLabel?: string; compact?: boolean;
   imports: readonly PhotoImportItem[]; onRetryImport: (id?: string) => void;
   backupStatus: PhotoBackupStatus[]; onRetryBackup: () => void; onReconnectDrive?: () => void; initiallyImport?: boolean;
 }
@@ -44,7 +44,7 @@ const toolLabels = { filters: "Filters", view: "View", actions: "Library actions
 async function idle() { await new Promise(resolve => setTimeout(resolve, 30)); }
 
 export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose,
-  onCombineDuplicates, onOverride, onMetadata, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, onRetryBackup, onReconnectDrive, initiallyImport }: Props) {
+  onCombineDuplicates, onOverride, onMetadata, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, onRetryBackup, onReconnectDrive, initiallyImport, compact = false }: Props) {
   const { session: previewSession } = usePhotoPreviewSession(), previewCache = previewSession?.cache;
   const photos = projectPhotoGroups(project).map(group => group.photo);
   const projectImports = imports.filter(item => item.projectId === project.id);
@@ -212,10 +212,10 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
     </section> : null}
     {editMessage ? <p className="library-edit-message" role="status">{editMessage}</p> : null}
   </>;
-  return <section className="photo-library-panel" aria-label="Project photo library">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Project photos</h2>
+  return <section className={compact ? "photo-library-dialog-host" : "photo-library-panel"} aria-label="Project photo library">
+    {!compact ? <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Project photos</h2>
       <p className="text-sm text-neutral-600">{photos.length} photos · capacity {MAX_PROJECT_PHOTOS} · reusable across all pages</p></div>
-      <button type="button" className="primary-button" onClick={onOpen}>Open Project photos</button></div>
+      <button type="button" className="primary-button" onClick={onOpen}>Open Project photos</button></div> : null}
     <dialog ref={dialog} data-open={String(open)} className="photo-library-dialog" onCancel={event => {
       event.preventDefault(); if (event.target !== event.currentTarget) return;
       if (inspectedRow) backToPhotos(); else close();
