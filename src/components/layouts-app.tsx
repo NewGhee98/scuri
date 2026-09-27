@@ -11,6 +11,7 @@ import { PhotoZoomControl } from "./photo-zoom-control";
 import { TextTools } from "./text-tools";
 import { useTextEditing } from "./text-layer";
 import { PagePreview } from "./page-preview";
+import { EditorWorkspace } from "./editor-workspace";
 import { PhotoPreviewContext } from "./photo-preview-context";
 import { displayPagePhotos, EMPTY_PHOTO_PREVIEWS, PhotoPreviewCache } from "@/lib/photo-preview-cache";
 import { createExportFilename, createExportZip, renderComposition } from "@/lib/export";
@@ -1882,7 +1883,7 @@ export function LayoutsApp() {
 
   return (
     <PhotoPreviewContext.Provider value={previewSession}>
-    <div className="min-h-dvh bg-[#f5f5f2] text-[#11110f]">
+    <div className={`min-h-dvh bg-[#f5f5f2] text-[#11110f]${screen === "editor" ? " editor-app-shell" : ""}`}>
       {isGoogleDriveConfigured() || photosImportConfigured() ? (
         <Script
           src="https://accounts.google.com/gsi/client"
@@ -1890,7 +1891,7 @@ export function LayoutsApp() {
           onLoad={() => setGoogleScriptReady(true)}
         />
       ) : null}
-      <Header
+      {screen !== "editor" ? <Header
         screen={screen}
         pageCount={pages.length}
         projectCount={projects.length}
@@ -1899,8 +1900,8 @@ export function LayoutsApp() {
         onTemplates={openTemplates}
         onNew={screen === "templates" ? beginNewTemplate : beginNewProject}
         templatesSynced={templateLibrarySynced}
-      />
-      {storageError ? (
+      /> : null}
+      {storageError && screen !== "editor" ? (
         <aside role="alert" className="mx-auto mt-4 max-w-[1120px] rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
           <p>{storageError}</p>
           <div className="mt-3 flex flex-wrap gap-3">
@@ -1909,7 +1910,7 @@ export function LayoutsApp() {
           </div>
         </aside>
       ) : null}
-      {projectId && ["project", "editor", "template"].includes(screen) ? (
+      {projectId && ["project", "template"].includes(screen) ? (
         <section className="mx-auto mt-4 flex max-w-[1120px] flex-wrap items-center gap-3 px-4" aria-label="Project history and backup">
           <button type="button" className="small-button" disabled={!historyState.undo || busy !== null} onClick={() => travelProjectHistory("undo")}>Undo</button>
           <button type="button" className="small-button" disabled={!historyState.redo || busy !== null} onClick={() => travelProjectHistory("redo")}>Redo</button>
@@ -1917,11 +1918,6 @@ export function LayoutsApp() {
           {pages.length > 0 ? <button type="button" className="small-button" disabled={busy !== null} onClick={() => { setExportReviewIds(null); setShowPagePreview(true); }}>Preview</button> : null}
           <p className="w-full text-xs leading-5 text-neutral-600">Undo history resets when you open another project, reload or change accounts. Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length} · Original detail loads on demand ({assignedPhotos.length - unavailablePhotoCount} currently loaded).</p>
         </section>
-      ) : null}
-      {missingEditorPreviews > 0 && screen === "editor" ? (
-        <p role="status" className="mx-auto mt-4 max-w-[1240px] px-4 text-sm text-neutral-600 sm:px-6">
-          {missingEditorPreviews} photo previews are awaiting availability. Their saved assignments and crops are preserved. Reconnect Drive or inspect the original in Project photos.
-        </p>
       ) : null}
 
       <input ref={backupInputRef} className="hidden" type="file" accept=".zip,.scuri" aria-label="Choose a Scuri project backup"
@@ -2348,41 +2344,37 @@ export function LayoutsApp() {
       ) : null}
 
       {screen === "editor" && format && template && activePage ? (
-        <main className="editor-shell">
-          <section className="min-w-0 rounded-[20px] bg-[#e8e8e4] p-3 sm:p-6 lg:min-h-[calc(100dvh-104px)] lg:p-8">
-            <EditorCanvas key={activePage.id}
-              format={format}
-              template={textMode ? { ...template, textLayers: textEdit.boxes } : template}
-              background={activePage.background}
-              gutter={activePage.gutter}
-              photos={displayedPhotos}
-              unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
-              selectedFrameId={textMode ? null : selectedFrameId}
-              textEditing={textMode} selectedTextId={selectedTextId} onSelectText={setSelectedTextId} onTextChange={textEdit.commit}
-              rearrangeMode={rearrangeMode}
-              moveFrameMode={moveFrameMode} snapEnabled={snapEnabled} guides={alignmentGuides}
-              compositionGuides={compositionGuides}
-              onZoomChange={updatePhotoZoom} onFrameMove={updateFramePosition}
-              onGuidesChange={setAlignmentGuides} onViewWidthChange={setEditorWidth}
-              onSelectFrame={selectEditorFrame}
-              onRequestPhoto={requestPhoto}
-              onCropChange={updateCrop}
-              onMovePhoto={movePhoto}
-            />
-          </section>
-          <aside className="control-panel" aria-label="Editing controls">
+        <EditorWorkspace title={`Edit page ${pages.findIndex(page => page.id === activePage.id) + 1}`}
+          statusLabel={storageError || (projectSyncErrors[projectId!] ? "Sync needs attention" : `Originals backed up: ${backedUpOriginalCount}/${libraryPhotos.length}`)}
+          needsAttention={Boolean(storageError || projectSyncErrors[projectId!] || missingEditorPreviews)}
+          toolbar={<>
+            <button type="button" className="small-button" onClick={goBack}>← Pages</button>
+            <span className="editor-page-number">Page {pages.findIndex(page => page.id === activePage.id) + 1}</span>
+            <div className="editor-history" role="group" aria-label="Project history">
+              <button type="button" className="small-button" disabled={!historyState.undo || busy !== null} onClick={() => travelProjectHistory("undo")}>Undo</button>
+              <button type="button" className="small-button" disabled={!historyState.redo || busy !== null} onClick={() => travelProjectHistory("redo")}>Redo</button>
+            </div>
+            <button type="button" className="small-button" onClick={() => { photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(true); }}>Project photos</button>
+            <button type="button" className="small-button" disabled={busy !== null} onClick={() => { setExportReviewIds(null); setShowPagePreview(true); }}>Preview</button>
+            <button type="button" className="small-button" disabled={!isPageAssigned(activePage, template) || busy !== null} onClick={() => reviewExportPages([activePage.id])}>Export</button>
+          </>}
+          status={<>
+            <p>{projectName}</p>
+            <p role="status">{storageError ? "Local save needs attention" : !templateUser ? "Saved on this device" : !isOnline ? "Offline · changes saved on this device" : projectSyncErrors[projectId!] ? "Project sync needs attention" : syncingProjectIds[projectId!] ? "Saving project…" : "Project changes save automatically"}</p>
+            <p>Originals backed up: {backedUpOriginalCount}/{libraryPhotos.length} · Previews: {backedUpPreviewCount}/{libraryPhotos.length}</p>
+            <p>Original detail loads on demand ({assignedPhotos.length - unavailablePhotoCount} currently loaded). Originals without a Drive reference stay on this device until backup completes. Keep Scuri open while backing up.</p>
+            {missingEditorPreviews > 0 ? <p role="status">{missingEditorPreviews} photo previews are awaiting availability. Their saved assignments and crops are preserved. Reconnect Drive or inspect the original in Project photos.</p> : null}
+            {storageError ? <div role="alert"><p>{storageError}</p><button type="button" className="small-button" onClick={() => void retryLocalSave()}>Retry local save</button></div> : null}
+            {templateUser ? <button type="button" className="small-button" disabled={Boolean(syncingProjectIds[projectId!]) || busy !== null} onClick={() => void syncCurrentProjectNow()}>Sync now</button> : null}
+            <button type="button" className="small-button" disabled={busy !== null} onClick={() => void downloadProjectBackup()}>Download project backup</button>
+            <p className="text-xs text-neutral-600">ZIP · up to 256 MB. Project photos has individual backup progress and retry controls.</p>
+          </>}
+          panel={<div className="control-panel">
             <div>
               <div className="flex items-center justify-between gap-3">
                 <p className="eyebrow">Page {pages.findIndex((page) => page.id === activePage.id) + 1} · {template.name}</p>
-                <button className="text-button min-h-0" type="button" onClick={changePageLayout}>Change layout</button>
+                <button className="text-button" type="button" onClick={changePageLayout}>Change layout</button>
               </div>
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <h1 className="text-2xl font-medium tracking-[-0.035em]">Edit page</h1>
-                <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-600">{template.frames.length - missingPhotoCount}/{template.frames.length}</span>
-              </div>
-              <p className="mt-2 text-sm leading-5 text-neutral-600">
-                {textMode ? "Add text, then drag its box anywhere on the page. Choose Photos to edit the images beneath it." : moveFrameMode ? "Drag a frame with its photo. Edges snap gently; keep dragging to move past. Changes apply to this page." : rearrangeMode ? "Drag a filled tile onto another tile to swap or move it. Changes autosave." : "Tap a frame, then drag the photo or pinch to zoom. Add or replace photos from your project library."}
-              </p>
             </div>
 
             <div className="control-section">
@@ -2402,10 +2394,9 @@ export function LayoutsApp() {
                   else updatePhotoZoom(selectedPhoto.frameId, zoom, -1);
                 }} onGestureEnd={() => setAlignmentGuides([])} /> :
                 <p className="control-label">Selected photo · {selectedStoredPhoto ? "Photo unavailable" : "Empty frame"}</p>}
-              <p id="photo-zoom-help" className="mt-2 text-xs text-neutral-500">0% is the fill-frame size. Drag at any zoom to position your photo; exposed space shows the page background. Type a percentage for an exact size.</p>
+              <p id="photo-zoom-help" className="sr-only">0% is the fill-frame size. Drag at any zoom to position your photo; exposed space shows the page background. Type a percentage for an exact size.</p>
               <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={snapEnabled} onChange={event => { setSnapEnabled(event.target.checked); setAlignmentGuides([]); }} /> Snap to edges and centre</label>
               <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={compositionGuides} onChange={event => setCompositionGuides(event.target.checked)} /> Guides</label>
-              <p className="text-xs text-neutral-500">Thirds and centre of the selected frame. Hidden in previews and exports.</p>
               {selectedPhoto && selectedFrameId && activePage.unavailablePhotos?.[selectedFrameId] ? <p role="status" className="mt-2 text-xs text-neutral-500">Editing a lightweight preview. Page previews and exports load the full-resolution original.</p> : null}
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button className="small-button" type="button" disabled={!selectedFrameId} onClick={() => selectedFrameId && requestPhoto(selectedFrameId)}>
@@ -2439,12 +2430,7 @@ export function LayoutsApp() {
                   <button type="button" className="small-button" disabled={!selectedFrameId || template.frames[0]?.id === selectedFrameId} onClick={() => changeFrameLayer(-1)}>Send backward</button>
                   <button type="button" className="small-button" disabled={!selectedFrameId || template.frames.at(-1)?.id === selectedFrameId} onClick={() => changeFrameLayer(1)}>Bring forward</button>
                 </div>
-                <p className="text-xs text-neutral-500">Frames can overlap. Select a covered frame above. Arrow keys move by 1px; Shift moves by 10px. Hold Alt while dragging to bypass snapping.</p>
-                <p className="text-xs text-neutral-500">Moving keeps the current spacing. The gutter slider then adds extra space around frames.</p>
               </div> : null}
-              <p className="mt-2 text-[11px] leading-4 text-neutral-500">
-                Import multiple photos to the library, then choose which photo to use in each frame.
-              </p>
               </div>
             </div>
 
@@ -2485,17 +2471,35 @@ export function LayoutsApp() {
                 {missingPhotoCount ? "Save draft" : "Save page"}
               </button>
               <button className="secondary-button w-full" type="button" disabled={!isPageAssigned(activePage, template!) || busy !== null} onClick={() => reviewExportPages([activePage.id])}>Export this page</button>
-              <p className="mt-1 text-center text-[11px] leading-4 text-neutral-500">Signed-in projects save automatically. Original photos back up when Drive is connected.</p>
             </div>
-          </aside>
-        </main>
+          </div>}>
+            <EditorCanvas key={activePage.id}
+              format={format}
+              template={textMode ? { ...template, textLayers: textEdit.boxes } : template}
+              background={activePage.background}
+              gutter={activePage.gutter}
+              photos={displayedPhotos}
+              unavailableFrameIds={Object.keys(activePage.unavailablePhotos ?? {})}
+              selectedFrameId={textMode ? null : selectedFrameId}
+              textEditing={textMode} selectedTextId={selectedTextId} onSelectText={setSelectedTextId} onTextChange={textEdit.commit}
+              rearrangeMode={rearrangeMode}
+              moveFrameMode={moveFrameMode} snapEnabled={snapEnabled} guides={alignmentGuides}
+              compositionGuides={compositionGuides}
+              onZoomChange={updatePhotoZoom} onFrameMove={updateFramePosition}
+              onGuidesChange={setAlignmentGuides} onViewWidthChange={setEditorWidth}
+              onSelectFrame={selectEditorFrame}
+              onRequestPhoto={requestPhoto}
+              onCropChange={updateCrop}
+              onMovePhoto={movePhoto}
+            />
+        </EditorWorkspace>
       ) : null}
 
       {format && projectId && (screen === "project" || screen === "editor") ? (
-        <div className="screen-shell max-w-[1120px] pb-8">
+        <div className={screen === "editor" ? "photo-library-dialog-host" : "screen-shell max-w-[1120px] pb-8"}>
           <ProjectPhotoPanel key={`${templateUser?.id ?? "local"}:${projectId}`} project={{ version: 3, id: projectId, name: projectName, formatId: format.id,
             activePageId, pages: pages.map(serializePage), photoLibrary: projectPhotoLibrary, createdAt: projectCreatedAt, updatedAt: projectUpdatedAt }}
-            templates={templates} ownerId={templateUser?.id} accessRevision={driveExpiry} busy={busy !== null}
+            templates={templates} compact={screen === "editor"} ownerId={templateUser?.id} accessRevision={driveExpiry} busy={busy !== null}
             getVolatileBlob={getVolatileBlob} getDriveToken={getValidDriveToken}
             onImport={sources => importLibraryPhotos(sources, projectId, templateUser?.id ?? null)} onApply={applySuggestedArrangement} onCombineDuplicates={combineLibraryDuplicates}
             open={showPhotoLibrary} onOpen={() => { photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(true); }}

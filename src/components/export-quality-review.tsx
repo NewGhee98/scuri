@@ -6,11 +6,11 @@ export interface PageQualityReview {
   photos: PhotoExportQuality[];
 }
 
-export function ExportQualityReview({ pages, onSelectPage }: { pages: PageQualityReview[]; onSelectPage: (id: string) => void }) {
+export function ExportQualityReview({ pages, onSelectPage, onCollapse }: { pages: PageQualityReview[]; onSelectPage: (id: string) => void; onCollapse?: () => void }) {
   const checks = pages.flatMap(page => page.photos.map(photo => ({ ...photo, pageId: page.pageId, pageNumber: page.pageNumber })));
   const issues = checks.filter(photo => photo.status !== "sufficient");
   const soft = checks.filter(photo => photo.status === "soft").length;
-  return <details className="export-quality-review" open>
+  return <details className="export-quality-review" open onToggle={event => { if (!event.currentTarget.open) onCollapse?.(); }}>
     <summary className="font-semibold">Photo quality check{soft ? ` · ${soft} may look soft` : ""}</summary>
     <div className="mt-3 text-xs leading-5 text-neutral-600">
       <p>{issues.length ? "Review these placements at the chosen output size." : checks.length ? "Enough source pixels for every placed photo at this size." : "Add photos to check their resolution."}</p>

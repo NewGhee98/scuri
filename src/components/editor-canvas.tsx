@@ -402,7 +402,7 @@ export function EditorCanvas({
   };
 
   return (
-    <CanvasViewport width={format.width} height={format.height} label="Page canvas" editable
+    <CanvasViewport width={format.width} height={format.height} label="Page canvas" editable compact padding={12}
       onScaleChange={changeViewScale} onInteractionCancel={cancelInteraction}>
       <div className="relative" style={{ width: format.width, height: format.height }}>
       <canvas

@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { CanvasNavigationGesture, MAX_VIEW_SCALE, fitCanvas, panCanvas, resizeViewport, zoomCanvas, type CanvasView } from "@/lib/canvas-viewport";
+import { CanvasNavigationGesture, MAX_VIEW_SCALE, VIEW_PADDING, fitCanvas, panCanvas, resizeViewport, zoomCanvas, type CanvasView } from "@/lib/canvas-viewport";
 
 interface CanvasViewportProps {
   width: number; height: number; label: string; children: ReactNode;
   editable?: boolean; className?: string;
+  compact?: boolean; padding?: number;
+  immersive?: boolean; overlayActions?: ReactNode;
   onScaleChange?: (scale: number) => void;
   onInteractionCancel?: () => void;
 }
@@ -17,10 +19,14 @@ function cancelNavigation(gesture: CanvasNavigationGesture, stage: HTMLDivElemen
 }
 
 /** Owns only the view: children retain their original design coordinates. */
-export function CanvasViewport({ width, height, label, children, editable = false, className = "", onScaleChange, onInteractionCancel }: CanvasViewportProps) {
+export function CanvasViewport({ width, height, label, children, editable = false, className = "", compact = false, padding = VIEW_PADDING,
+  immersive = false, overlayActions, onScaleChange, onInteractionCancel }: CanvasViewportProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const metrics = useRef({ width: 1, height: 1 });
   const gesture = useRef(new CanvasNavigationGesture());
+  const tap = useRef<{ id: number; x: number; y: number } | null>(null);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  const [controlsVisible, setControlsVisible] = useState(false);
   const [view, setView] = useState<CanvasView>({ scale: 1, x: 0, y: 0, fit: true });
   const viewRef = useRef(view);
   const [minimumScale, setMinimumScale] = useState(.1);
@@ -32,7 +38,7 @@ export function CanvasViewport({ width, height, label, children, editable = fals
   useEffect(() => { callbacks.current = { onScaleChange, onInteractionCancel }; }, [onScaleChange, onInteractionCancel]);
 
   const updateView = (next: CanvasView) => { viewRef.current = next; setView(next); };
-  const cancelGesture = () => cancelNavigation(gesture.current, stageRef.current);
+  const cancelGesture = () => { tap.current = null; cancelNavigation(gesture.current, stageRef.current); };
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -41,18 +47,19 @@ export function CanvasViewport({ width, height, label, children, editable = fals
     const resize = () => {
       const next = { width: stage.clientWidth, height: stage.clientHeight };
       if (!next.width || !next.height) return;
+      tap.current = null;
       cancelNavigation(navigationGesture, stage);
       callbacks.current.onInteractionCancel?.();
-      const value = resizeViewport(viewRef.current, metrics.current, next, { width, height });
+      const value = resizeViewport(viewRef.current, metrics.current, next, { width, height }, padding);
       metrics.current = next; viewRef.current = value; setView(value);
-      setMinimumScale(Math.min(.1, fitCanvas(next, { width, height }).scale));
+      setMinimumScale(Math.min(.1, fitCanvas(next, { width, height }, padding).scale));
     };
     resize();
     const observer = new ResizeObserver(resize); observer.observe(stage);
     const blur = () => { cancelNavigation(navigationGesture, stage); callbacks.current.onInteractionCancel?.(); };
     window.addEventListener("blur", blur);
     return () => { observer.disconnect(); window.removeEventListener("blur", blur); cancelNavigation(navigationGesture, stage); };
-  }, [width, height]);
+  }, [width, height, padding]);
 
   useEffect(() => { onScaleChange?.(view.scale); }, [view.scale, onScaleChange]);
 
@@ -67,19 +74,19 @@ export function CanvasViewport({ width, height, label, children, editable = fals
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? metrics.current.height : 1);
       const next = event.ctrlKey || event.metaKey
         ? zoomCanvas(viewRef.current, viewRef.current.scale * Math.exp(-Math.max(-100, Math.min(100, delta)) * .01),
-          { x: event.clientX - rect.left, y: event.clientY - rect.top }, metrics.current, { width, height })
-        : panCanvas(viewRef.current, -event.deltaX, -delta, metrics.current, { width, height });
+          { x: event.clientX - rect.left, y: event.clientY - rect.top }, metrics.current, { width, height }, undefined, padding)
+        : panCanvas(viewRef.current, -event.deltaX, -delta, metrics.current, { width, height }, padding);
       viewRef.current = next; setView(next);
     };
     stage.addEventListener("wheel", wheel, { passive: false, capture: true });
     return () => stage.removeEventListener("wheel", wheel, { capture: true });
-  }, [navigation, width, height]);
+  }, [navigation, width, height, padding]);
 
   const changeZoom = (scale: number) => {
     cancelGesture(); onInteractionCancel?.(); setPercent(null);
-    updateView(zoomCanvas(viewRef.current, scale, { x: metrics.current.width / 2, y: metrics.current.height / 2 }, metrics.current, content));
+    updateView(zoomCanvas(viewRef.current, scale, { x: metrics.current.width / 2, y: metrics.current.height / 2 }, metrics.current, content, undefined, padding));
   };
-  const fit = () => { cancelGesture(); onInteractionCancel?.(); setPercent(null); updateView(fitCanvas(metrics.current, content)); };
+  const fit = () => { cancelGesture(); onInteractionCancel?.(); setPercent(null); updateView(fitCanvas(metrics.current, content, padding)); };
   const commitPercent = () => { if (percent !== null && percent.trim() && Number(percent) > 0) changeZoom(Number(percent) / 100); else setPercent(null); };
   const localPoint = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -87,14 +94,26 @@ export function CanvasViewport({ width, height, label, children, editable = fals
   };
   const stop = (event: React.PointerEvent<HTMLDivElement>) => { event.preventDefault(); event.stopPropagation(); };
 
-  return <div className={`canvas-viewport ${className}`}>
-    <div className="canvas-view-tools" role="group" aria-label={`${label} view controls`}>
+  const hideControls = () => { setControlsVisible(false); stageRef.current?.focus({ preventScroll: true }); };
+  return <div className={`canvas-viewport${compact ? " compact" : ""}${immersive ? " immersive" : ""} ${className}`}
+    onKeyDown={event => {
+      if (!immersive || (event.key.toLowerCase() !== "h" && event.key !== "Tab")) return;
+      if (event.key === "Tab" && controlsVisible) return;
+      event.preventDefault(); event.stopPropagation();
+      if (controlsVisible) hideControls();
+      else {
+        setControlsVisible(true);
+        requestAnimationFrame(() => toolsRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus());
+      }
+    }}>
+    <div ref={toolsRef} className="canvas-view-tools" hidden={immersive && !controlsVisible} role="group" aria-label={`${label} view controls`}>
+      {immersive ? overlayActions : null}
       {editable ? <div className="canvas-view-modes" role="group" aria-label="Canvas interaction">
         {[false, true].map(value => <button key={String(value)} type="button" aria-pressed={navigation === value} onClick={() => {
           cancelGesture(); onInteractionCancel?.(); setNavigation(value);
         }}>{value ? "Navigate" : "Edit"}</button>)}
       </div> : null}
-      <button type="button" aria-label="Zoom canvas out" disabled={view.scale <= minimumScale} onClick={() => changeZoom(view.scale / 1.25)}>−</button>
+      {!immersive ? <><button type="button" aria-label="Zoom canvas out" disabled={view.scale <= minimumScale} onClick={() => changeZoom(view.scale / 1.25)}>−</button>
       <label className="canvas-view-percent"><span className="sr-only">Canvas zoom percentage</span>
         <input type="number" inputMode="decimal" min={minimumScale * 100} max={400} step="any" value={percent ?? Math.round(view.scale * 1000) / 10}
           onChange={event => setPercent(event.target.value)} onBlur={commitPercent} onKeyDown={event => {
@@ -102,20 +121,39 @@ export function CanvasViewport({ width, height, label, children, editable = fals
             if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPercent(null); }
           }} /><span aria-hidden="true">%</span>
       </label>
-      <button type="button" aria-label="Zoom canvas in" disabled={view.scale >= MAX_VIEW_SCALE} onClick={() => changeZoom(view.scale * 1.25)}>+</button>
+      <button type="button" aria-label="Zoom canvas in" disabled={view.scale >= MAX_VIEW_SCALE} onClick={() => changeZoom(view.scale * 1.25)}>+</button></> : null}
       <button type="button" aria-pressed={view.fit} onClick={fit}>Fit</button>
       <button type="button" aria-label={editable ? "Canvas at 100%" : "100% detail"} onClick={() => changeZoom(1)}>100%</button>
+      {immersive ? <button type="button" onClick={hideControls}>Hide controls</button> : null}
     </div>
-    <p id={helpId} className="canvas-view-help">{navigation ? "Drag to pan · Pinch to zoom the canvas" : "Edit photos, frames or text · Choose Navigate to pan or zoom the canvas"}</p>
+    <p id={helpId} className={`canvas-view-help${compact || immersive ? " sr-only" : ""}`}>{immersive
+      ? "Tap or press H to show or hide controls. Pinch to zoom; drag to pan. Press 0 for Fit or Escape to close."
+      : navigation ? "Drag to pan · Pinch to zoom the canvas" : "Edit photos, frames or text · Choose Navigate to pan or zoom the canvas"}</p>
     <div ref={stageRef} className={`canvas-viewport-stage${navigation ? " navigating" : ""}`} aria-label={`${label} viewport`} aria-describedby={helpId}
       role="region" tabIndex={navigation ? 0 : -1}
       onPointerDownCapture={event => {
         if (!navigation) return;
         stop(event); event.currentTarget.focus({ preventScroll: true });
+        tap.current = immersive && !gesture.current.pointers.size ? { id: event.pointerId, ...localPoint(event) } : null;
         event.currentTarget.setPointerCapture(event.pointerId); gesture.current.down(event.pointerId, localPoint(event));
       }}
-      onPointerMoveCapture={event => { if (navigation) { stop(event); updateView(gesture.current.move(event.pointerId, localPoint(event), viewRef.current, metrics.current, content)); } }}
-      onPointerUpCapture={event => { if (navigation) { stop(event); gesture.current.end(event.pointerId); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } }}
+      onPointerMoveCapture={event => { if (navigation) {
+        stop(event);
+        const point = localPoint(event);
+        if (tap.current) {
+          if (Math.hypot(point.x - tap.current.x, point.y - tap.current.y) < 6) return;
+          tap.current = null;
+        }
+        updateView(gesture.current.move(event.pointerId, point, viewRef.current, metrics.current, content, padding));
+      } }}
+      onPointerUpCapture={event => { if (navigation) {
+        stop(event);
+        const point = localPoint(event);
+        if (tap.current?.id === event.pointerId && gesture.current.pointers.has(event.pointerId)
+          && Math.hypot(point.x - tap.current.x, point.y - tap.current.y) < 6) setControlsVisible(value => !value);
+        tap.current = null; gesture.current.end(event.pointerId);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      } }}
       onPointerCancelCapture={event => { if (navigation) { stop(event); cancelGesture(); } }}
       onLostPointerCaptureCapture={event => { if (navigation && gesture.current.pointers.has(event.pointerId)) cancelGesture(); }}
       onKeyDownCapture={event => {
@@ -131,7 +169,7 @@ export function CanvasViewport({ width, height, label, children, editable = fals
         else if (key === "Escape") cancelGesture();
         else { const step = event.shiftKey ? 120 : 40; updateView(panCanvas(viewRef.current,
           key === "ArrowLeft" ? step : key === "ArrowRight" ? -step : 0,
-          key === "ArrowUp" ? step : key === "ArrowDown" ? -step : 0, metrics.current, content)); }
+          key === "ArrowUp" ? step : key === "ArrowDown" ? -step : 0, metrics.current, content, padding)); }
       }}>
       <div className="canvas-viewport-content" inert={navigation} style={{ width, height,
         transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, "--canvas-view-scale": view.scale } as CSSProperties}>
