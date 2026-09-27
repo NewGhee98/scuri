@@ -88,6 +88,7 @@ import {
 } from "@/lib/project-sync";
 import { applyHydratedPhotos, hydrateProjectPhotos, movePagePhoto, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "@/lib/project-photos";
 import { ProjectSyncQueue } from "@/lib/sync-queue";
+import { clearProjectSaveAttempt } from "@/lib/project-save-attempt";
 import { applyPhotoBackupCheckpoint } from "@/lib/photo-backup";
 import { backUpProjectPhotos, type PhotoBackupStatus } from "@/lib/project-photo-backup";
 import { WorkspaceSession, workspaceKey } from "@/lib/workspace";
@@ -686,12 +687,13 @@ export function LayoutsApp() {
       setProjects(next);
       if (activeProjectRef.current?.id === acknowledged.id) adoptActiveProject(acknowledged, true);
       saveWorkspaceProjects(next, ownerId);
+      clearProjectSaveAttempt(ownerId, acknowledged.id);
       setProjectSyncErrors(current => ({ ...current, [working.id]: result.partial }));
       return !result.partial;
     } catch (error) {
       if (isCurrent()) {
         setProjectSyncErrors(current => ({ ...current, [project.id]: true }));
-        if (error instanceof Error && error.message.startsWith("Cloud photo library setup")) setNotice({ kind: "error", text: error.message });
+        if (error instanceof Error && (error.message.startsWith("Cloud photo library setup") || error.message.startsWith("Cloud save recovery"))) setNotice({ kind: "error", text: error.message });
       }
       return false;
     } finally {
