@@ -129,24 +129,26 @@ function escapeDriveQuery(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-async function listDriveFiles(accessToken: string, query: string): Promise<DriveFile[]> {
+async function listDriveFiles(accessToken: string, query: string, signal?: AbortSignal): Promise<DriveFile[]> {
   const params = new URLSearchParams({
     q: `${query} and trashed = false`,
     spaces: "drive",
     pageSize: "1000",
     fields: "files(id,name,mimeType,modifiedTime,parents,appProperties)",
   });
-  const data = await driveFetch<DriveListResponse>(accessToken, `/files?${params.toString()}`);
+  const data = await driveFetch<DriveListResponse>(accessToken, `/files?${params.toString()}`, { signal });
   return data.files ?? [];
 }
 
 async function createDriveFile(
   accessToken: string,
   metadata: { name: string; mimeType?: string; parents?: string[]; appProperties?: Record<string, string> },
+  signal?: AbortSignal,
 ): Promise<DriveFile> {
   return driveFetch<DriveFile>(accessToken, "/files?fields=id,name,mimeType,modifiedTime,parents,appProperties", {
     method: "POST",
     body: JSON.stringify(metadata),
+    signal,
   });
 }
 
@@ -155,19 +157,20 @@ async function ensureFolder(
   name: string,
   appProperties: Record<string, string>,
   parentId?: string,
+  signal?: AbortSignal,
 ): Promise<DriveFile> {
   const clauses = Object.entries(appProperties).map(([key, value]) => (
     `appProperties has { key='${escapeDriveQuery(key)}' and value='${escapeDriveQuery(value)}' }`
   ));
   if (parentId) clauses.push(`'${escapeDriveQuery(parentId)}' in parents`);
-  const existing = await listDriveFiles(accessToken, `${clauses.join(" and ")} and mimeType = '${FOLDER_MIME_TYPE}'`);
+  const existing = await listDriveFiles(accessToken, `${clauses.join(" and ")} and mimeType = '${FOLDER_MIME_TYPE}'`, signal);
   if (existing[0]) return existing[0];
   return createDriveFile(accessToken, {
     name,
     mimeType: FOLDER_MIME_TYPE,
     parents: parentId ? [parentId] : undefined,
     appProperties,
-  });
+  }, signal);
 }
 
 async function startResumableUpload(
@@ -250,21 +253,24 @@ export async function ensureProjectDriveFolders(
   projectId: string,
   projectName: string,
   existingFolderId?: string,
+  signal?: AbortSignal,
 ): Promise<ProjectDriveFolders> {
   let projectFolder: DriveFile;
   if (existingFolderId) {
     projectFolder = await driveFetch<DriveFile>(
       accessToken,
       `/files/${encodeURIComponent(existingFolderId)}?fields=id,name,mimeType,modifiedTime,parents,appProperties`,
+      { signal },
     );
   } else {
-    const root = await ensureFolder(accessToken, "Scuri", { scuriType: "root", scuriVersion: "1" });
-    const projectsFolder = await ensureFolder(accessToken, "Projects", { scuriType: "projects", scuriVersion: "1" }, root.id);
+    const root = await ensureFolder(accessToken, "Scuri", { scuriType: "root", scuriVersion: "1" }, undefined, signal);
+    const projectsFolder = await ensureFolder(accessToken, "Projects", { scuriType: "projects", scuriVersion: "1" }, root.id, signal);
     projectFolder = await ensureFolder(
       accessToken,
       safeFilename(projectName),
       { scuriType: "project", scuriProjectId: projectId },
       projectsFolder.id,
+      signal,
     );
   }
   const projectFolderName = safeFilename(projectName);
@@ -272,12 +278,13 @@ export async function ensureProjectDriveFolders(
     projectFolder = await driveFetch<DriveFile>(accessToken, `/files/${encodeURIComponent(projectFolder.id)}?fields=id,name,mimeType,modifiedTime,parents,appProperties`, {
       method: "PATCH",
       body: JSON.stringify({ name: projectFolderName }),
+      signal,
     });
   }
   const [originalsFolder, previewsFolder, exportsFolder] = await Promise.all([
-    ensureFolder(accessToken, "Originals", { scuriType: "originals", scuriProjectId: projectId }, projectFolder.id),
-    ensureFolder(accessToken, "Previews", { scuriType: "previews", scuriProjectId: projectId }, projectFolder.id),
-    ensureFolder(accessToken, "Exports", { scuriType: "exports", scuriProjectId: projectId }, projectFolder.id),
+    ensureFolder(accessToken, "Originals", { scuriType: "originals", scuriProjectId: projectId }, projectFolder.id, signal),
+    ensureFolder(accessToken, "Previews", { scuriType: "previews", scuriProjectId: projectId }, projectFolder.id, signal),
+    ensureFolder(accessToken, "Exports", { scuriType: "exports", scuriProjectId: projectId }, projectFolder.id, signal),
   ]);
   return {
     projectFolderId: projectFolder.id,

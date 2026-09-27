@@ -45,6 +45,7 @@ function fakeCloud() {
   const initial = rowsToStoredProject(project, [page], assets);
   const rows: Record<Table, Row[]> = structuredClone({ projects: [project], project_pages: [page], project_assets: assets });
   const mutations: Mutation[] = [];
+  const signals: AbortSignal[] = [];
   let failure: { table: Table; operation: string } | undefined;
   let raceOnUpdate = false;
   let loseUpdateResponse = false;
@@ -105,6 +106,7 @@ function fakeCloud() {
       return { data: structuredClone(single ? data[0] ?? null : data), error: null };
     };
     const query = {
+      abortSignal: (signal: AbortSignal) => { signals.push(signal); return query; },
       select: () => query,
       eq: (key: string, value: unknown) => { filters.push([key, value]); return query; },
       is: (key: string, value: unknown) => { filters.push([key, value]); return query; },
@@ -122,7 +124,7 @@ function fakeCloud() {
   };
   const client = { from, auth: { getUser: async () => ({ data: { user: { id: "test-owner" } }, error: null }) } };
   vi.mocked(getSupabaseClient).mockReturnValue(client as unknown as NonNullable<ReturnType<typeof getSupabaseClient>>);
-  return { initial, rows, mutations,
+  return { initial, rows, mutations, signals,
     loseNextUpdateResponse: () => { loseUpdateResponse = true; },
     failNext: (table: Table, operation: string) => { failure = { table, operation }; },
     raceNextUpdate: () => { raceOnUpdate = true; } };
@@ -154,6 +156,36 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  it("cancels expired metadata attempts and prevents a late sign-in response from writing over their retry", async () => {
+    vi.useFakeTimers();
+    const cloud = fakeCloud(), client = getSupabaseClient()!;
+    const getUser = client.auth.getUser.bind(client.auth);
+    let lateAuth!: (value: Awaited<ReturnType<typeof getUser>>) => void;
+    vi.spyOn(client.auth, "getUser").mockImplementationOnce(() => new Promise(resolve => { lateAuth = resolve; }));
+    let latest = { ...cloud.initial, name: "Latest local edits", updatedAt: edited };
+    const queue = new ProjectSyncQueue(async (_id, context) => {
+      const sent = latest;
+      const result = await pushProjectToCloud(sent, { ownerId: "test-owner", isCurrent: () => !context.signal.aborted, ...context });
+      if (context.signal.aborted || "assetProtection" in result || result.conflict) return false;
+      latest = acknowledgeProjectPush(latest, sent, result);
+      return !result.partial;
+    }, 0);
+    try {
+      queue.setEnabled(true);
+      const pending = queue.flush(latest.id, latest.updatedAt);
+      await vi.advanceTimersByTimeAsync(90_000); expect(await pending).toBe(false);
+      expect(cloud.mutations).toEqual([]);
+      const retried = queue.flush(latest.id, latest.updatedAt);
+      await vi.advanceTimersByTimeAsync(1); expect(await retried).toBe(true);
+      const saved = structuredClone(latest), writes = cloud.mutations.length;
+      lateAuth(await getUser()); await vi.advanceTimersByTimeAsync(1);
+      expect(latest).toEqual(saved); expect(cloud.mutations).toHaveLength(writes);
+      expect(cloud.rows.projects).toHaveLength(1);
+      expect(cloud.rows.projects[0].name).toBe("Latest local edits");
+      expect(cloud.signals.length).toBeGreaterThanOrEqual(4);
+      expect(new Set(cloud.signals).size).toBe(1);
+    } finally { queue.stop(); vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
   it("finishes a 100-file intake in one project while its first cloud confirmation is interrupted", async () => {
     const cloud = fakeCloud();
     cloud.rows.projects = []; cloud.rows.project_pages = []; cloud.rows.project_assets = [];

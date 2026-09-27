@@ -36,7 +36,7 @@ interface Props {
   onCombineDuplicates: (scan: DuplicateScan, groups: DuplicateGroup[]) => void;
   open: boolean; onOpen: () => void; onClose: () => void; targetLabel?: string; compact?: boolean;
   imports: readonly PhotoImportItem[]; onRetryImport: (id?: string) => void;
-  backupStatus: PhotoBackupStatus[]; onRetryBackup: () => void; onReconnectDrive?: () => void; initiallyImport?: boolean;
+  backupStatus: PhotoBackupStatus[]; backupActivity?: string; onRetryBackup: () => void; onReconnectDrive?: () => void; initiallyImport?: boolean;
 }
 const labels = { portrait: "Portrait", square: "Square", landscape: "Landscape", panorama: "Panorama", awaiting: "Awaiting dimensions" };
 const colourLabels = { bw: "Black & white", colour: "Colour", uncertain: "Uncertain", awaiting: "Awaiting analysis" };
@@ -44,7 +44,7 @@ const toolLabels = { filters: "Filters", view: "View", actions: "Library actions
 async function idle() { await new Promise(resolve => setTimeout(resolve, 30)); }
 
 export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose,
-  onCombineDuplicates, onOverride, onMetadata, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, onRetryBackup, onReconnectDrive, initiallyImport, compact = false }: Props) {
+  onCombineDuplicates, onOverride, onMetadata, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, backupActivity, onRetryBackup, onReconnectDrive, initiallyImport, compact = false }: Props) {
   const { session: previewSession } = usePhotoPreviewSession(), previewCache = previewSession?.cache;
   const photos = projectPhotoGroups(project).map(group => group.photo);
   const projectImports = imports.filter(item => item.projectId === project.id);
@@ -254,11 +254,14 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
           {processing ? <button type="button" className="text-button" onClick={() => cancelRef.current?.()}>Pause analysis</button> :
             <button type="button" className="text-button" onClick={() => setRetry(value => value + 1)}>Retry analysis</button>}
           <span>Originals backed up: {backedUp}/{photos.length} · Previews: {photos.filter(photo => photo.drivePreviewId).length}/{photos.length}</span>
+          {backupActivity ? <p role="status">{backupActivity}</p> : null}
           <div><p>Project metadata saves independently. Originals without a Drive reference are only on this device until backup completes. Keep Scuri open; iPadOS may suspend background work.</p>
             <div className="library-import-list" aria-live="polite">{pendingBackupStatus.map(status => <p key={status.blobKey}>{photos.find(photo => photo.blobKey === status.blobKey)?.sourceName ?? "Photo"} · {status.stage}
               {status.total !== undefined ? ` · ${((status.sent ?? 0) / 1048576).toFixed(1)} / ${(status.total / 1048576).toFixed(1)} MB` : ""}{status.error ? ` · ${status.error}` : ""}</p>)}</div>
-            <button type="button" className="text-button" disabled={busy} onClick={onRetryBackup}>Retry backup / reconnect Drive</button>
-            {onReconnectDrive ? <button type="button" className="text-button" disabled={busy} onClick={onReconnectDrive}>Reconnect Drive</button> : null}</div>
+            <div className="library-view-options">
+              <button type="button" className="small-button" disabled={busy} onClick={onRetryBackup}>Retry backup / reconnect Drive</button>
+              {onReconnectDrive ? <button type="button" className="small-button" disabled={busy} onClick={onReconnectDrive}>Reconnect Drive</button> : null}
+            </div></div>
           <div>
             <p>If originals are unavailable, choose the same files from Photos or Files. Exact matches restore the existing photos without changing placements or crops. Other files are left unchanged.</p>
             <input ref={restoreFiles} hidden type="file" accept="image/jpeg,image/png,image/webp" multiple aria-label="Reselect original photos"

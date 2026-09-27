@@ -257,18 +257,22 @@ export function hasUnexplainedPhotoLoss(local: StoredProject, remote: StoredProj
   });
 }
 
-async function fetchCloudProject(client: SupabaseClient, projectId: string): Promise<StoredProject | null> {
-  const { data: projectRow, error: projectError } = await client
+function cancellable<T extends { abortSignal: (signal: AbortSignal) => unknown }>(query: T, signal?: AbortSignal): T {
+  if (signal) query.abortSignal(signal);
+  return query;
+}
+
+async function fetchCloudProject(client: SupabaseClient, projectId: string, signal?: AbortSignal): Promise<StoredProject | null> {
+  const { data: projectRow, error: projectError } = await cancellable(client
     .from("projects")
     .select(PROJECT_COLUMNS)
     .eq("id", projectId)
-    .is("deleted_at", null)
-    .maybeSingle();
+    .is("deleted_at", null), signal).maybeSingle();
   if (projectError) throw projectError;
   if (!projectRow) return null;
   const [{ data: pageRows, error: pageError }, { data: assetRows, error: assetError }] = await Promise.all([
-    client.from("project_pages").select(PAGE_COLUMNS).eq("project_id", projectId),
-    client.from("project_assets").select(ASSET_COLUMNS).eq("project_id", projectId),
+    cancellable(client.from("project_pages").select(PAGE_COLUMNS).eq("project_id", projectId), signal),
+    cancellable(client.from("project_assets").select(ASSET_COLUMNS).eq("project_id", projectId), signal),
   ]);
   if (pageError) throw pageError;
   if (assetError) throw assetError;
@@ -319,9 +323,12 @@ export async function pullProjectsFromCloud(): Promise<StoredProject[]> {
  * retains deletion intent and the committed revision for a checked retry.
  * See CloudConflict / resolveProjectConflict for what happens next.
  */
-export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean; signal?: AbortSignal; heartbeat?: () => void }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
   const requestedRevision = project.revision;
-  const assertCurrent = () => { if (options && !options.isCurrent()) throw new Error("The workspace changed; this save was stopped."); };
+  const assertCurrent = () => {
+    if (options && (!options.isCurrent() || options.signal?.aborted)) throw new Error("The workspace or save attempt changed; this save was stopped.");
+    options?.heartbeat?.();
+  };
   assertCurrent();
   const client = getProjectCloudClient();
   if (!client) throw new Error("Project cloud storage has not been connected yet.");
@@ -333,7 +340,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
 
   // Read before ANY writes (including page deletes which cascade to assets).
   // Fail closed on read errors. Covers empty and partially hydrated old caches.
-  const remote = await fetchCloudProject(client, project.id);
+  const remote = await fetchCloudProject(client, project.id, options?.signal);
   assertCurrent();
   if (remote && hasUnexplainedPhotoLoss(project, remote)) return { assetProtection: true, remote };
   if (remote && remote.revision !== project.revision) {
@@ -374,9 +381,9 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   };
 
   const writeParent = (input: Omit<typeof projectRowInput, "photo_library"> & { photo_library?: ProjectPhoto[] }) => project.revision === undefined
-    ? client.from("projects").insert(input).select(PROJECT_COLUMNS).single()
-    : client.from("projects").update(input).eq("id", project.id).eq("owner_id", ownerId)
-      .eq("revision", project.revision).is("deleted_at", null).select(PROJECT_COLUMNS).maybeSingle();
+    ? cancellable(client.from("projects").insert(input).select(PROJECT_COLUMNS), options?.signal).single()
+    : cancellable(client.from("projects").update(input).eq("id", project.id).eq("owner_id", ownerId)
+      .eq("revision", project.revision).is("deleted_at", null).select(PROJECT_COLUMNS), options?.signal).maybeSingle();
   let parentResult = await writeParent(projectRowInput);
   if (parentResult.error && ["42703", "PGRST204"].includes(parentResult.error.code) && parentResult.error.message.includes("photo_library")) {
     // A missing-column error commits nothing. Existing assigned-only projects
@@ -394,7 +401,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
       // by another device, or resurrected after a soft delete this device
       // does not know about yet). Either way, do not clobber it.
       if (error.code === "23505") {
-        const remote = await fetchCloudProject(client, project.id);
+        const remote = await fetchCloudProject(client, project.id, options?.signal);
         if (remote) return { conflict: true, remote };
       }
       throw error;
@@ -402,7 +409,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   } else {
     if (error) throw error;
     if (!data) {
-      const remote = await fetchCloudProject(client, project.id);
+      const remote = await fetchCloudProject(client, project.id, options?.signal);
       if (remote) return { conflict: true, remote };
       // The row vanished (deleted elsewhere) rather than being edited elsewhere.
       throw new Error("This project was deleted from another device.");
@@ -432,12 +439,12 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
     }
 
     if (pages.length) {
-      const { error } = await client.from("project_pages").upsert(pages, { onConflict: "id" });
+      const { error } = await cancellable(client.from("project_pages").upsert(pages, { onConflict: "id" }), options?.signal);
       if (error) throw error;
     }
     if (assets.length) {
       assertCurrent();
-      const { error } = await client.from("project_assets").upsert(assets, { onConflict: "id" });
+      const { error } = await cancellable(client.from("project_assets").upsert(assets, { onConflict: "id" }), options?.signal);
       if (error) throw error;
     }
     // Only exact, previously observed and explicitly removed assignments.
@@ -448,21 +455,21 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
       for (const photo of Object.values(page.photos)) {
         assertCurrent();
         if (incoming?.photos[photo.frameId]) continue; // updated in place above
-        const { error } = await client.from("project_assets").delete()
+        const { error } = await cancellable(client.from("project_assets").delete()
           .eq("project_id", project.id).eq("owner_id", ownerId)
           .eq("id", photo.cloudAssetId ?? photo.blobKey).eq("page_id", page.id)
-          .eq("frame_id", photo.frameId).eq("blob_key", photo.blobKey);
+          .eq("frame_id", photo.frameId).eq("blob_key", photo.blobKey), options?.signal);
         if (error) throw error;
       }
       if (!incoming) {
         // Never use the page FK cascade to remove unseen photo assignments.
-        const { data: remaining, error: readError } = await client.from("project_assets")
-          .select("id").eq("page_id", page.id);
+        const { data: remaining, error: readError } = await cancellable(client.from("project_assets")
+          .select("id").eq("page_id", page.id), options?.signal);
         if (readError) throw readError;
         if (remaining?.length) throw new Error("This page still has cloud photos; reload before deleting it.");
         assertCurrent();
-        const { error } = await client.from("project_pages").delete()
-          .eq("project_id", project.id).eq("owner_id", ownerId).eq("id", page.id);
+        const { error } = await cancellable(client.from("project_pages").delete()
+          .eq("project_id", project.id).eq("owner_id", ownerId).eq("id", page.id), options?.signal);
         if (error) throw error;
       }
     }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { uploadReservedDriveFile, type UploadJournal } from "../drive-resumable";
+import { reserveDriveFileIds, uploadReservedDriveFile, type UploadJournal } from "../drive-resumable";
 import { ProjectSyncQueue } from "../sync-queue";
+import { fingerprintOriginal } from "../photo-fingerprint";
 const session = "https://www.googleapis.com/upload/drive/v3/files?upload_id=synthetic-session";
 const metadata = { name: "synthetic.jpg", parents: ["folder"], appProperties: { scuriProjectId: "project", scuriBlobKey: "photo", scuriType: "original" } };
 function harness(size = 1_300_000) {
@@ -25,6 +26,74 @@ function harness(size = 1_300_000) {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("immutable resumable original uploads", () => {
+  it.each(["preview", "thumbnail"])("reuses a completed %s after reopening even if regenerating it produces different bytes", async kind => {
+    const h = harness(100);
+    h.options.metadata = { ...metadata, appProperties: { ...metadata.appProperties, scuriType: kind } };
+    h.options.blob = new Blob(["new browser rendering"], { type: "image/webp" });
+    h.fetcher.mockResolvedValue(Response.json({ id: "reserved", size: "15372", mimeType: "image/png", appProperties: h.options.metadata.appProperties }));
+    h.journalEntries.set(h.options.journalKey, { fileId: "reserved", size: 15372, session });
+    expect(await uploadReservedDriveFile(h.options)).toBe("reserved");
+    expect(h.fetcher).toHaveBeenCalledOnce();
+    expect(h.options.journal.write).not.toHaveBeenCalled(); expect(h.journalEntries.size).toBe(0);
+  });
+
+  it.each(["scuriProjectId", "scuriBlobKey", "scuriType"])("still rejects an existing thumbnail with the wrong %s", async key => {
+    const h = harness(100);
+    h.options.metadata = { ...metadata, appProperties: { ...metadata.appProperties, scuriType: "thumbnail" } };
+    h.fetcher.mockResolvedValue(Response.json({ id: "reserved", size: "15372", mimeType: "image/webp",
+      appProperties: { ...h.options.metadata.appProperties, [key]: "different" } }));
+    await expect(uploadReservedDriveFile(h.options)).rejects.toThrow("does not match");
+    expect(h.fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each([{ size: "0" }, { mimeType: "text/html" }, { trashed: true }])("rejects invalid completed derived files (%j)", async invalid => {
+    const h = harness(100);
+    h.options.metadata = { ...metadata, appProperties: { ...metadata.appProperties, scuriType: "thumbnail" } };
+    h.fetcher.mockResolvedValue(Response.json({ id: "reserved", size: "100", mimeType: "image/webp", appProperties: h.options.metadata.appProperties, ...invalid }));
+    await expect(uploadReservedDriveFile(h.options)).rejects.toThrow("does not match");
+  });
+
+  it("restarts a partial thumbnail with the same ID instead of combining old and newly encoded bytes", async () => {
+    const h = harness(100);
+    h.options.metadata = { ...metadata, appProperties: { ...metadata.appProperties, scuriType: "thumbnail" } };
+    h.journalEntries.set(h.options.journalKey, { fileId: "reserved", size: 100, session,
+      fingerprint: await fingerprintOriginal(new Blob([new Uint8Array(100).fill(1)])) });
+    let complete = false;
+    h.fetcher.mockImplementation(async (url, init) => {
+      if (String(url).includes("fields=id,size")) return complete ? Response.json({ id: "reserved", size: "100", mimeType: "image/jpeg", appProperties: h.options.metadata.appProperties }) : new Response(null, { status: 404 });
+      if (init?.method === "POST") return new Response(null, { headers: { Location: session } });
+      complete = true; return Response.json({ id: "reserved" });
+    });
+    expect(await uploadReservedDriveFile(h.options)).toBe("reserved");
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(h.fetcher.mock.calls.filter(([, init]) => init?.method === "PUT").map(([, init]) => (init!.headers as Record<string, string>)["Content-Range"]))
+      .toEqual(["bytes 0-99/100"]);
+    expect(h.options.journal.write.mock.calls[0][1].fingerprint).toBe(await fingerprintOriginal(h.options.blob));
+  });
+
+  it("still rejects an original with a different size and a newly uploaded thumbnail with a wrong confirmation", async () => {
+    const original = harness(100);
+    original.fetcher.mockResolvedValue(Response.json({ id: "reserved", size: "99", mimeType: "image/jpeg", appProperties: metadata.appProperties }));
+    await expect(uploadReservedDriveFile(original.options)).rejects.toThrow("does not match");
+    const thumbnail = harness(100), normal = thumbnail.fetcher.getMockImplementation()!;
+    thumbnail.options.metadata = { ...metadata, appProperties: { ...metadata.appProperties, scuriType: "thumbnail" } };
+    let checks = 0;
+    thumbnail.fetcher.mockImplementation(async (url, init) => {
+      if (String(url).includes("fields=id,size") && ++checks > 1) return Response.json({ id: "reserved", size: "99", mimeType: "image/jpeg", appProperties: thumbnail.options.metadata.appProperties });
+      return normal(url, init);
+    });
+    await expect(uploadReservedDriveFile(thumbnail.options)).rejects.toThrow("does not match");
+    expect(thumbnail.journalEntries.size).toBe(1);
+  });
+
+  it("reserves a photo's three file IDs in one request and rejects duplicate reservations", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ ids: ["original", "preview", "thumbnail"] }))
+      .mockResolvedValueOnce(Response.json({ ids: ["original", "original", "thumbnail"] }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await reserveDriveFileIds("synthetic", 3)).toEqual(["original", "preview", "thumbnail"]);
+    expect(String(fetcher.mock.calls[0][0])).toContain("count=3");
+    await expect(reserveDriveFileIds("synthetic", 3)).rejects.toThrow("requested file identities");
+  });
   it("automatically checks the accepted offset after Safari loses a chunk response", async () => {
     vi.useFakeTimers();
     const h = harness(), normal = h.fetcher.getMockImplementation()!;
