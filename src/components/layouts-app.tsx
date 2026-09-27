@@ -263,7 +263,7 @@ export function LayoutsApp() {
   const [templateCloudBusy, setTemplateCloudBusy] = useState(false);
   const [showTemplateSignIn, setShowTemplateSignIn] = useState(false);
   const [showPasswordSetup, setShowPasswordSetup] = useState(false);
-  const [signInMethod, setSignInMethod] = useState<"magic-link" | "password">("magic-link");
+  const [signInMethod, setSignInMethod] = useState<"magic-link" | "password">("password");
   const [signInEmail, setSignInEmail] = useState("");
   const [signInPassword, setSignInPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -1385,6 +1385,11 @@ export function LayoutsApp() {
     setScreen("template-editor");
   };
 
+  const openTemplateSignIn = () => {
+    setSignInMethod("password");
+    setShowTemplateSignIn(true);
+  };
+
   const saveDesignedTemplate = async (draft: CustomTemplate) => {
     const isCurrent = workspaceRef.current.capture();
     const ownerId = workspaceRef.current.ownerId;
@@ -1395,7 +1400,7 @@ export function LayoutsApp() {
       return;
     }
     if (!templateUser) {
-      setShowTemplateSignIn(true);
+      openTemplateSignIn();
       setNotice({ kind: "info", text: "Your template is ready locally. Sign in to save it permanently across devices." });
       return;
     }
@@ -1422,7 +1427,7 @@ export function LayoutsApp() {
     const target = customTemplatesRef.current.find((item) => item.id === templateId);
     if (!target || !window.confirm(`Delete “${target.name}” permanently? Existing project pages will keep their saved layout.`)) return;
     if (templateCloudConfigured && !templateUser && target.syncState !== "local") {
-      setShowTemplateSignIn(true);
+      openTemplateSignIn();
       setNotice({ kind: "info", text: "Sign in first so deletion is applied permanently to every device." });
       return;
     }
@@ -1463,7 +1468,7 @@ export function LayoutsApp() {
 
   const signInWithTemplatePassword = async () => {
     const email = signInEmail.trim();
-    if (!email || !signInPassword) return;
+    if (!email || !signInPassword || templateCloudBusy) return;
     setTemplateCloudBusy(true);
     try {
       await signInTemplateWithPassword(email, signInPassword);
@@ -1955,7 +1960,7 @@ export function LayoutsApp() {
                   <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => setShowPasswordSetup(true)}>Set password</button>
                   <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => void signOutTemplates()}>Sign out</button>
                 </div>
-              ) : <button className="secondary-button" type="button" onClick={() => setShowTemplateSignIn(true)}>Sign in by email</button>
+              ) : <button className="secondary-button" type="button" onClick={openTemplateSignIn}>Sign in by email</button>
             ) : <span className="template-status pending">Setup pending</span>}
           </section>
 
@@ -2106,7 +2111,7 @@ export function LayoutsApp() {
             {projectCloudConfigured ? (
               !templateAuthReady ? <span className="template-status pending">Checking…</span> : templateUser ? (
                 <button className="text-button" type="button" disabled={templateCloudBusy} onClick={() => void signOutTemplates()}>Sign out</button>
-              ) : <button className="secondary-button" type="button" onClick={() => setShowTemplateSignIn(true)}>Sign in by email</button>
+              ) : <button className="secondary-button" type="button" onClick={openTemplateSignIn}>Sign in by email</button>
             ) : <span className="template-status pending">Setup pending</span>}
           </section>
 
@@ -2574,17 +2579,19 @@ export function LayoutsApp() {
               className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3"
               type="email"
               inputMode="email"
-              autoComplete="email"
+              autoComplete="username"
               value={signInEmail}
               onChange={(event) => setSignInEmail(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void (signInMethod === "password" ? signInWithTemplatePassword() : requestTemplateMagicLink());
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                if (signInMethod === "password") void signInWithTemplatePassword();
               }}
             />
             {signInMethod === "password" ? (
               <>
                 <label className="control-label mt-4 block" htmlFor="template-password">Password</label>
-                <input id="template-password" className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3" type="password" autoComplete="current-password" value={signInPassword} onChange={(event) => setSignInPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void signInWithTemplatePassword(); }} />
+                <input id="template-password" className="mt-2 min-h-[48px] w-full rounded-xl border border-black/15 bg-white px-3" type="password" autoComplete="current-password" value={signInPassword} onChange={(event) => setSignInPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void signInWithTemplatePassword(); } }} />
               </>
             ) : <p className="mt-2 text-xs leading-5 text-neutral-500">We’ll email a secure one-time link. Once you set a password, you won’t need an email for future devices.</p>}
             <button className="primary-button mt-4 w-full" type="button" disabled={!signInEmail.trim() || (signInMethod === "password" && !signInPassword) || templateCloudBusy} onClick={() => void (signInMethod === "password" ? signInWithTemplatePassword() : requestTemplateMagicLink())}>
