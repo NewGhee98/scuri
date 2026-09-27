@@ -6,6 +6,10 @@ import { loadPhotoBlob, loadProjects, savePhotoBlob, saveProjects } from "../sto
 import { acknowledgeProjectPush, isProjectDirty, mergeCloudProjectLibrary, pullProjectsFromCloud, pushProjectToCloud, reconcileProtectedProject, resolveProjectConflict, rowsToStoredProject } from "../project-sync";
 import { applyPhotoBackupCheckpoint } from "../photo-backup";
 import { getProjectPhotos } from "../project-photo-library";
+import { PhotoImportQueue, fileImportSources } from "../photo-import-queue";
+import { ProjectSyncQueue } from "../sync-queue";
+import { fingerprintOriginal } from "../photo-fingerprint";
+import { clearProjectSaveAttempt, readProjectSaveAttempt } from "../project-save-attempt";
 import { applyHydratedPhotos, hydrateProjectPhotos, isPhotoReferencedByAnotherProject, reconcileProjectPages, recordPhotoDeletions, removePagePhoto, serializePage, updatePagePhotoCrop } from "../project-photos";
 import { centreCrop, coverPlacement, moveCrop } from "../crop";
 import { displayPagePhotos } from "../photo-preview-cache";
@@ -65,6 +69,10 @@ function fakeCloud() {
         if (rows[table].some((row) => row.id === payload[0].id)) return { data: null, error: { code: "23505" } };
         data = payload.map((row) => ({ ...row, revision: 1, created_at: created, updated_at: committed, deleted_at: null }));
         rows[table].push(...data);
+        if (table === "projects" && loseUpdateResponse) {
+          loseUpdateResponse = false;
+          return { data: null, error: new TypeError("Load failed") };
+        }
       }
       if (operation === "update") {
         data = rows[table].filter(matches);
@@ -133,6 +141,9 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Network forbidden in sync safety tests"); }));
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) });
+  const sessionValues = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", { getItem: (key: string) => sessionValues.get(key) ?? null,
+    setItem: (key: string, value: string) => sessionValues.set(key, value), removeItem: (key: string) => sessionValues.delete(key) });
   vi.mocked(loadPhotoBlob).mockResolvedValue(null);
   vi.mocked(savePhotoBlob).mockResolvedValue();
   vi.mocked(downloadGoogleDrivePhoto).mockRejectedValue(new Error("Drive unavailable"));
@@ -143,6 +154,162 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  it("finishes a 100-file intake in one project while its first cloud confirmation is interrupted", async () => {
+    const cloud = fakeCloud();
+    cloud.rows.projects = []; cloud.rows.project_pages = []; cloud.rows.project_assets = [];
+    let latest: StoredProject = { ...cloud.initial, revision: undefined, cloudSyncedAt: undefined,
+      activePageId: null, pages: [], photoLibrary: [], updatedAt: edited };
+    const originals = new Map<string, File>(), conflicts: StoredProject[] = [];
+    let resume!: () => void;
+    const interrupted = new Promise<void>(resolve => { resume = resolve; });
+    const sync = new ProjectSyncQueue(async () => {
+      const sent = latest;
+      try {
+        const result = await pushProjectToCloud(sent);
+        if ("assetProtection" in result) throw new Error("Unexpected asset protection");
+        if (result.conflict) { conflicts.push(resolveProjectConflict(latest, result.remote, "unexpected-copy").duplicate); return true; }
+        latest = acknowledgeProjectPush(latest, sent, result);
+        return !result.partial;
+      } catch { await interrupted; return false; }
+    }, 0);
+    const intake = new PhotoImportQueue({ current: () => true, project: () => latest, validate: () => {},
+      fingerprint: fingerprintOriginal,
+      prepare: async (file, blobKey) => ({ blobKey, sourceName: file.name, sourceWidth: 1200, sourceHeight: 800 }),
+      saveOriginal: async (key, file) => { originals.set(key, file); },
+      commit: value => { latest = value; sync.enqueue(latest.id, latest.updatedAt, true); } });
+    cloud.loseNextUpdateResponse(); sync.setEnabled(true);
+    try {
+      intake.add(latest.id, fileImportSources(Array.from({ length: 100 }, (_, i) => new File([`synthetic original ${i}`], `${i}.jpg`, { type: "image/jpeg" }))));
+      await vi.waitFor(() => expect(intake.getSnapshot().filter(item => item.state === "imported")).toHaveLength(100), { timeout: 10000 });
+      // A backup checkpoint and crop-independent new imports supersede the
+      // first save while the metadata queue is still waiting for its result.
+      latest = applyPhotoBackupCheckpoint(latest, { blobKey: latest.photoLibrary![0].blobKey,
+        driveFolderId: "test-folder", pendingUpload: { originalId: "reserved-original" } }, committed);
+      resume();
+      expect(await sync.flush(latest.id, latest.updatedAt)).toBe(false); // first interrupted request
+      expect(await sync.flush(latest.id, latest.updatedAt)).toBe(true);
+      expect(conflicts).toEqual([]);
+      expect(cloud.rows.projects).toHaveLength(1);
+      expect(cloud.rows.projects[0].photo_library).toHaveLength(100);
+      expect(getProjectPhotos(latest)[0].pendingUpload?.originalId).toBe("reserved-original");
+      expect(originals.size).toBe(100);
+      for (const photo of getProjectPhotos(latest)) expect(await fingerprintOriginal(originals.get(photo.blobKey)!)).toBe(photo.fingerprint);
+    } finally { resume(); intake.stop(); sync.stop(); }
+  });
+
+  it("recovers consecutive lost responses even before the caller has acknowledged either revision", async () => {
+    const cloud = fakeCloud();
+    let latest = { ...cloud.initial, name: "First edit", updatedAt: edited };
+    for (const name of ["First edit", "Second edit"]) {
+      latest = { ...latest, name };
+      cloud.loseNextUpdateResponse();
+      await expect(pushProjectToCloud(latest)).rejects.toThrow("Load failed");
+    }
+    latest = { ...latest, name: "Third edit" };
+    expect(await pushProjectToCloud(latest)).toMatchObject({ conflict: false, partial: false, project: { name: "Third edit", revision: 10 } });
+  });
+
+  it("does not recover a pending save over a different remote library edit", async () => {
+    const cloud = fakeCloud();
+    const sent = { ...cloud.initial, name: "Local rename", updatedAt: edited };
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(sent)).rejects.toThrow("Load failed");
+    cloud.rows.projects[0].photo_library = getProjectPhotos(sent).concat({ blobKey: "another-device", sourceWidth: 1, sourceHeight: 1 });
+    const result = await pushProjectToCloud({ ...sent, name: "Newer local rename" });
+    expect(result).toMatchObject({ conflict: true });
+    expect(cloud.mutations).toHaveLength(1);
+  });
+
+  it("does not adopt an unexpected later revision even when an earlier pending snapshot matches", async () => {
+    const cloud = fakeCloud();
+    const sent = { ...cloud.initial, name: "Local rename", updatedAt: edited };
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(sent)).rejects.toThrow("Load failed");
+    cloud.rows.projects[0].revision = 9;
+    expect(await pushProjectToCloud({ ...sent, name: "Newer local rename" })).toMatchObject({ conflict: true });
+    expect(cloud.mutations).toHaveLength(1);
+  });
+
+  it("keeps the retry record until the caller durably saves the acknowledged revision", async () => {
+    const cloud = fakeCloud();
+    const sent = { ...cloud.initial, name: "Local rename", updatedAt: edited };
+    const result = await pushProjectToCloud(sent);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(readProjectSaveAttempt("test-owner", sent.id)?.sent.name).toBe("Local rename");
+    expect(readProjectSaveAttempt("another-owner", sent.id)).toBeNull();
+    // Simulate a reload before the local acknowledgement, using the JSON
+    // project cache and persisted session storage rather than sent references.
+    const reloaded = JSON.parse(JSON.stringify({ ...sent, name: "Edit retained in local cache" }));
+    expect(await pushProjectToCloud(reloaded)).toMatchObject({ conflict: false, partial: false });
+    clearProjectSaveAttempt("test-owner", sent.id);
+    expect(readProjectSaveAttempt("test-owner", sent.id)).toBeNull();
+  });
+
+  it("fails before any cloud mutation if the retry record cannot be stored", async () => {
+    const cloud = fakeCloud();
+    vi.spyOn(sessionStorage, "setItem").mockImplementation(() => { throw new Error("Storage full"); });
+    await expect(pushProjectToCloud({ ...cloud.initial, updatedAt: edited })).rejects.toThrow("Cloud save recovery");
+    expect(cloud.mutations).toEqual([]);
+  });
+
+  it("does not use another tab's save attempt", async () => {
+    const cloud = fakeCloud();
+    const sent = { ...cloud.initial, name: "First tab", updatedAt: edited };
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(sent)).rejects.toThrow("Load failed");
+    vi.stubGlobal("sessionStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+    expect(await pushProjectToCloud({ ...sent, name: "Other tab edits" })).toMatchObject({ conflict: true });
+    expect(cloud.mutations).toHaveLength(1);
+  });
+
+  it("keeps one project when 100 imports advance after a committed save loses its response", async () => {
+    const cloud = fakeCloud();
+    const photos = Array.from({ length: 100 }, (_, i) => ({ blobKey: `import-${i}`, sourceName: `${i}.jpg`, sourceWidth: 1200, sourceHeight: 800 }));
+    const sent = { ...cloud.initial, photoLibrary: getProjectPhotos(cloud.initial).concat(photos.slice(0, 1)), updatedAt: edited };
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(sent)).rejects.toThrow("Load failed");
+    const latest = { ...sent, photoLibrary: getProjectPhotos(sent).concat(photos.slice(1)), updatedAt: "2026-01-01T00:01:01.000Z" };
+    const result = await pushProjectToCloud(latest);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(cloud.rows.projects).toHaveLength(1);
+    expect(cloud.rows.projects[0].photo_library).toHaveLength(102);
+    expect(cloud.rows.project_assets).toHaveLength(2);
+    expect(cloud.mutations.filter(m => m.operation === "delete")).toEqual([]);
+  });
+
+  it("resumes a new project's lost insert before its initial page was written", async () => {
+    const cloud = fakeCloud();
+    cloud.rows.projects = []; cloud.rows.project_pages = []; cloud.rows.project_assets = [];
+    const sent: StoredProject = { ...cloud.initial, revision: undefined, cloudSyncedAt: undefined,
+      pages: [{ ...cloud.initial.pages[0], photos: {} }], photoLibrary: [], updatedAt: edited };
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(sent)).rejects.toThrow("Load failed");
+    const latest = { ...sent, photoLibrary: [{ blobKey: "first-import", sourceWidth: 1200, sourceHeight: 800 }],
+      updatedAt: "2026-01-01T00:01:01.000Z" };
+    const result = await pushProjectToCloud(latest);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(cloud.rows.projects).toHaveLength(1);
+    expect(cloud.rows.project_pages).toHaveLength(1);
+    expect(cloud.rows.projects[0].photo_library).toEqual(latest.photoLibrary);
+  });
+
+  it("preserves newer imports and a crop while recovering a lost parent response before child writes", async () => {
+    const cloud = fakeCloud();
+    const sent = structuredClone(cloud.initial);
+    sent.pages[0].photos["frame-1"].crop.zoom = 2;
+    sent.updatedAt = edited;
+    cloud.loseNextUpdateResponse();
+    await expect(pushProjectToCloud(sent)).rejects.toThrow("Load failed");
+    const latest = structuredClone(sent);
+    latest.pages[0].photos["frame-1"].crop.zoom = 3;
+    latest.photoLibrary = getProjectPhotos(latest).concat({ blobKey: "later-import", sourceWidth: 1200, sourceHeight: 800 });
+    latest.updatedAt = "2026-01-01T00:01:01.000Z";
+    const result = await pushProjectToCloud(latest);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(cloud.rows.project_assets[0].crop).toEqual(latest.pages[0].photos["frame-1"].crop);
+    expect(cloud.rows.projects[0].photo_library).toHaveLength(3);
+  });
+
   it("acknowledges an already committed backup checkpoint after its response is lost", async () => {
     const cloud = fakeCloud(), before = structuredClone(cloud.rows.project_assets);
     const local = applyPhotoBackupCheckpoint(cloud.initial, {

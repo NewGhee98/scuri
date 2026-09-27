@@ -4,6 +4,7 @@ import { getProjectPhotos, hasUnassignedPhotos, mergePhotoLibraries, preservePro
 import { isProjectPhoto } from "./project-validation";
 import { isTextLayers } from "./text";
 import { nextProjectEditTime } from "./project-time";
+import { readProjectSaveAttempt, rememberProjectSaveAttempt } from "./project-save-attempt";
 import type {
   CropState,
   FormatId,
@@ -319,6 +320,7 @@ export async function pullProjectsFromCloud(): Promise<StoredProject[]> {
  * See CloudConflict / resolveProjectConflict for what happens next.
  */
 export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+  const requestedRevision = project.revision;
   const assertCurrent = () => { if (options && !options.isCurrent()) throw new Error("The workspace changed; this save was stopped."); };
   assertCurrent();
   const client = getProjectCloudClient();
@@ -341,10 +343,25 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
     if (samePersistedContent(project, remote, ownerId)) return { conflict: false, partial: false,
       project: { ...project, pages: remote.pages, photoLibrary: remote.photoLibrary,
         revision: remote.revision, cloudSyncedAt: remote.cloudSyncedAt } };
-    return { conflict: true, remote };
+    const attempt = readProjectSaveAttempt(ownerId, project.id);
+    // Imports and backup checkpoints keep advancing while a response is lost.
+    // Compare cloud with the exact earlier request, not those newer edits. A
+    // failed parent response also means its child writes never started.
+    // Accept only the single revision that request could have produced, with
+    // either all its intended content or its parent plus untouched old children.
+    const ownSave = attempt && attempt.requestedRevision === requestedRevision &&
+      remote.revision === (attempt.sent.revision ?? 0) + 1 &&
+      (samePersistedContent(attempt.sent, remote, ownerId) ||
+        samePersistedContent({ ...attempt.sent, pages: attempt.before?.pages ?? [] }, remote, ownerId));
+    if (!ownSave) return { conflict: true, remote };
+    project = { ...project, revision: remote.revision };
   }
 
   project = preserveProjectLibrary(project, ...(remote ? [remote] : []));
+
+  // Persist before any mutation, and retain through errors/reloads until the
+  // caller durably acknowledges the result. Do not write if this fails.
+  rememberProjectSaveAttempt(ownerId, { version: 1, requestedRevision, sent: project, before: remote });
 
   const projectRowInput = {
     id: project.id,
