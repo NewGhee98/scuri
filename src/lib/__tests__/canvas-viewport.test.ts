@@ -126,7 +126,7 @@ describe.each([.25, 1, 3])("editing at %sx canvas scale", scale => {
 
 // Render the real viewport with a tiny hook host, so mode, pointer capture,
 // cancellation and toolbar callbacks are tested without a browser dependency.
-function viewHarness(editable = true) {
+function viewHarness(editable = true, options: { immersive?: boolean; padding?: number } = {}) {
   const slots: { value?: unknown; deps?: unknown[]; cleanup?: () => void }[] = [];
   let cursor = 0;
   let effects: (() => void)[] = [];
@@ -134,13 +134,14 @@ function viewHarness(editable = true) {
   const element = { clientWidth: 800, clientHeight: 650, getBoundingClientRect: () => ({ left: 20, top: 30 }),
     focus: vi.fn(), setPointerCapture: (id: number) => captures.add(id), hasPointerCapture: (id: number) => captures.has(id), releasePointerCapture: (id: number) => captures.delete(id),
     addEventListener: vi.fn(), removeEventListener: vi.fn() };
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  let resize = () => {};
+  vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
   vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   const hooks = { ...React, useId: () => "view-help", useRef: (value: unknown) => {
     const slot = slots[cursor++] ??= {}; if (!slot.value) slot.value = { current: value }; return slot.value;
   }, useState: (value: unknown) => {
     const slot = slots[cursor++] ??= {}; if (!("value" in slot)) slot.value = value;
-    return [slot.value, (next: unknown) => { slot.value = next; }];
+    return [slot.value, (next: unknown) => { slot.value = typeof next === "function" ? next(slot.value) : next; }];
   }, useEffect: (effect: () => (() => void) | void, deps: unknown[]) => {
     const slot = slots[cursor++] ??= {};
     if (!slot.deps || deps.some((dep, i) => !Object.is(dep, slot.deps![i]))) {
@@ -157,7 +158,7 @@ function viewHarness(editable = true) {
   const walk = (node: React.ReactNode) => { if (React.isValidElement(node)) { const item = node as Node; nodes.push(item); React.Children.forEach(item.props.children as React.ReactNode, walk); } };
   const render = () => {
     cursor = 0; effects = []; nodes = [];
-    walk(exports.CanvasViewport({ ...content, label: "Test", editable, onInteractionCancel, onScaleChange, children: React.createElement("canvas") }));
+    walk(exports.CanvasViewport({ ...content, ...options, label: "Test", editable, onInteractionCancel, onScaleChange, children: React.createElement("canvas") }));
     const stageNode = nodes.find(node => node.props["aria-label"] === "Test viewport")!;
     (stageNode.props.ref as { current: unknown }).current = element;
     effects.forEach(effect => effect());
@@ -167,8 +168,56 @@ function viewHarness(editable = true) {
   const transform = () => (nodes.find(node => node.props.className === "canvas-viewport-content")!.props.style as React.CSSProperties).transform;
   const pointer = (id: number, x: number, y: number) => ({ pointerId: id, clientX: x + 20, clientY: y + 30, currentTarget: element, preventDefault: vi.fn(), stopPropagation: vi.fn() });
   render(); render(); onInteractionCancel.mockClear(); onScaleChange.mockClear();
-  return { call, find, transform, pointer, captures, onInteractionCancel, onScaleChange };
+  return { call, find, transform, pointer, captures, onInteractionCancel, onScaleChange,
+    resize: (width: number, height: number) => { element.clientWidth = width; element.clientHeight = height; resize(); render(); },
+    controlsHidden: () => find("Test view controls").props.hidden };
 }
+
+describe("expanded and immersive viewports", () => {
+  it("fills the available area at Fit after panel collapse and orientation changes", () => {
+    const h = viewHarness(false, { immersive: true, padding: 0 });
+    for (const [width, height] of [[500, 900], [820, 1180], [1180, 820]]) {
+      h.resize(width, height);
+      const expected = Math.min(width / content.width, height / content.height);
+      expect(h.onScaleChange).toHaveBeenLastCalledWith(expected);
+      expect(h.transform()).toBe(`translate(${(width - content.width * expected) / 2}px, ${(height - content.height * expected) / 2}px) scale(${expected})`);
+      expect(h.controlsHidden()).toBe(true);
+    }
+  });
+  it("starts without controls, toggles on taps, and keeps drag/pinch distinct from a tap", () => {
+    const h = viewHarness(false, { immersive: true, padding: 0 });
+    const tap = () => { h.call("Test viewport", "onPointerDownCapture", h.pointer(1, 200, 200)); h.call("Test viewport", "onPointerUpCapture", h.pointer(1, 201, 202)); };
+    expect(h.controlsHidden()).toBe(true);
+    tap(); expect(h.controlsHidden()).toBe(false);
+    tap(); expect(h.controlsHidden()).toBe(true);
+    h.call("100% detail", "onClick");
+    const before = h.transform();
+    h.call("Test viewport", "onPointerDownCapture", h.pointer(1, 200, 200));
+    h.call("Test viewport", "onPointerMoveCapture", h.pointer(1, 150, 150));
+    h.call("Test viewport", "onPointerUpCapture", h.pointer(1, 150, 150));
+    expect(h.transform()).not.toBe(before); expect(h.controlsHidden()).toBe(true);
+    h.call("Test viewport", "onPointerDownCapture", h.pointer(1, 200, 200));
+    h.call("Test viewport", "onPointerDownCapture", h.pointer(2, 400, 200));
+    h.call("Test viewport", "onPointerMoveCapture", h.pointer(2, 500, 200));
+    h.call("Test viewport", "onPointerUpCapture", h.pointer(2, 500, 200));
+    h.call("Test viewport", "onPointerUpCapture", h.pointer(1, 200, 200));
+    expect(h.transform()).toContain("scale(1.5)"); expect(h.controlsHidden()).toBe(true);
+    h.call("Fit", "onClick"); expect(h.find("Fit").props["aria-pressed"]).toBe(true);
+    tap(); h.call("Hide controls", "onClick"); expect(h.controlsHidden()).toBe(true);
+  });
+  it("cancels all fingers on resize, refits when requested and never turns a cancelled tap into controls", () => {
+    const h = viewHarness(false, { immersive: true, padding: 0 });
+    h.call("100% detail", "onClick");
+    h.call("Test viewport", "onPointerDownCapture", h.pointer(1, 200, 200));
+    h.resize(820, 1180);
+    expect(h.captures.size).toBe(0); expect(h.transform()).toContain("scale(1)");
+    h.call("Test viewport", "onPointerUpCapture", h.pointer(1, 200, 200)); expect(h.controlsHidden()).toBe(true);
+    h.call("Test viewport", "onPointerDownCapture", h.pointer(1, 200, 200));
+    h.call("Test viewport", "onPointerCancelCapture", h.pointer(1, 200, 200));
+    h.call("Test viewport", "onPointerUpCapture", h.pointer(1, 200, 200)); expect(h.controlsHidden()).toBe(true);
+    h.call("Fit", "onClick"); expect(h.onScaleChange).toHaveBeenLastCalledWith(820 / 1080);
+  });
+});
 
 describe("viewport gesture ownership", () => {
   it("preserves modal Escape while idle and cancels a live navigation gesture", () => {
