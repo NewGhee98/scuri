@@ -1,4 +1,6 @@
 import type { ProjectPhoto, StoredPhotoAsset, StoredProject } from "./types";
+import { normalizePhotoLabel, normalizePhotoLabels, type PhotoMetadataEdit } from "./photo-metadata";
+import { nextProjectEditTime } from "./project-time";
 
 export const MAX_PROJECT_PHOTOS = 250;
 
@@ -11,6 +13,8 @@ export function libraryPhoto(photo: ProjectPhoto | StoredPhotoAsset): ProjectPho
     ...("importedAt" in photo && photo.importedAt !== undefined ? { importedAt: photo.importedAt } : {}),
     ...("importOrder" in photo && photo.importOrder !== undefined ? { importOrder: photo.importOrder } : {}),
     ...("colourOverride" in photo && photo.colourOverride !== undefined ? { colourOverride: photo.colourOverride } : {}),
+    ...("rank" in photo && photo.rank !== undefined ? { rank: photo.rank } : {}),
+    ...("labels" in photo && photo.labels !== undefined ? { labels: normalizePhotoLabels(photo.labels) } : {}),
     ...("driveThumbnailId" in photo && photo.driveThumbnailId !== undefined ? { driveThumbnailId: photo.driveThumbnailId } : {}),
     ...("pendingUpload" in photo && photo.pendingUpload !== undefined ? { pendingUpload: photo.pendingUpload } : {}) };
 }
@@ -73,4 +77,25 @@ export function hasUnassignedPhotos(project: StoredProject): boolean {
 
 export function preserveProjectLibrary(project: StoredProject, ...others: StoredProject[]): StoredProject {
   return { ...project, photoLibrary: mergePhotoLibraries(...others.map(getProjectPhotos), getProjectPhotos(project)) };
+}
+
+/** Explicit metadata edits affect only this project's selected library groups.
+ * Placements, crops, original identities and byte-backup checkpoints stay intact. */
+export function editProjectPhotoMetadata(project: StoredProject, selectedKeys: readonly string[], edit: PhotoMetadataEdit, timestamp?: string): StoredProject {
+  const selected = new Set(selectedKeys);
+  const keys = new Set(projectPhotoGroups(project).filter(group => group.members.some(photo => selected.has(photo.blobKey)))
+    .flatMap(group => group.members.map(photo => photo.blobKey)));
+  let changed = false;
+  const photoLibrary = getProjectPhotos(project).map(photo => {
+    if (!keys.has(photo.blobKey)) return photo;
+    if ("rank" in edit) {
+      if ((photo.rank ?? null) === edit.rank) return photo;
+      changed = true; return { ...photo, rank: edit.rank };
+    }
+    const labels = "addLabels" in edit ? normalizePhotoLabels([...(photo.labels ?? []), ...edit.addLabels]) :
+      (photo.labels ?? []).filter(label => label !== normalizePhotoLabel(edit.removeLabel));
+    if (JSON.stringify(labels) === JSON.stringify(photo.labels ?? [])) return photo;
+    changed = true; return { ...photo, labels };
+  });
+  return changed ? { ...project, photoLibrary, updatedAt: nextProjectEditTime(project, timestamp) } : project;
 }

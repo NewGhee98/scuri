@@ -7,7 +7,8 @@ import { getProjectPhotos } from "./project-photo-library";
 export function projectContentKey(project: StoredProject): string {
   return JSON.stringify([project.name, project.formatId, project.pages.map(page => [page.id, page.templateId,
     page.templateSnapshot, page.background, page.gutter, Object.entries(page.photos).map(([id, photo]) => [id, photo.blobKey, photo.crop])]),
-    getProjectPhotos(project).filter(photo => photo.duplicateOf || photo.colourOverride).map(photo => [photo.blobKey, photo.duplicateOf ?? null, photo.colourOverride ?? null]).sort()]);
+    getProjectPhotos(project).filter(photo => photo.duplicateOf || photo.colourOverride || photo.rank || photo.labels?.length)
+      .map(photo => [photo.blobKey, photo.duplicateOf ?? null, photo.colourOverride ?? null, photo.rank ?? null, photo.labels ?? []]).sort()]);
 }
 
 export function restoreProjectContent(latest: StoredProject, target: StoredProject, knownPhotos: Map<string, StoredPhotoAsset>, timestamp: string): StoredProject {
@@ -35,7 +36,9 @@ export function restoreProjectContent(latest: StoredProject, target: StoredProje
     if (!target) return photo;
     return { ...photo,
       ...(photo.duplicateOf !== undefined || target.duplicateOf !== undefined ? { duplicateOf: target.duplicateOf ?? null } : {}),
-      ...(photo.colourOverride !== undefined || target.colourOverride !== undefined ? { colourOverride: target.colourOverride ?? null } : {}) };
+      ...(photo.colourOverride !== undefined || target.colourOverride !== undefined ? { colourOverride: target.colourOverride ?? null } : {}),
+      ...(photo.rank !== undefined || target.rank !== undefined ? { rank: target.rank ?? null } : {}),
+      ...(photo.labels !== undefined || target.labels !== undefined ? { labels: [...(target.labels ?? [])] } : {}) };
   });
   return { ...latest, name: target.name, formatId: target.formatId, activePageId: target.activePageId, photoLibrary,
     pages, updatedAt: timestamp, pendingDeletions: pending?.photos.length || pending?.pageIds.length ? pending : undefined };
