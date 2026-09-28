@@ -8,10 +8,10 @@ export type ColourClass = "bw" | "colour" | "uncertain" | "awaiting";
 export interface LibraryView {
   search: string; sort: "import" | "filename" | "custom"; size: "small" | "medium" | "large";
   orientations: Orientation[]; colours: ColourClass[]; usage: "all" | "used" | "unused";
-  ranks: Array<PhotoRank | "unranked">; labels: string[];
+  ranks: Array<PhotoRank | "unranked">; labels: string[]; untagged: boolean;
   scrollTop: number; anchor?: string; anchorOffset?: number;
 }
-export const DEFAULT_LIBRARY_VIEW: LibraryView = { search: "", sort: "import", size: "medium", orientations: [], colours: [], usage: "all", ranks: [], labels: [], scrollTop: 0 };
+export const DEFAULT_LIBRARY_VIEW: LibraryView = { search: "", sort: "import", size: "medium", orientations: [], colours: [], usage: "all", ranks: [], labels: [], untagged: false, scrollTop: 0 };
 export function photoOrientation(photo: Pick<ProjectPhoto, "sourceWidth" | "sourceHeight">): Orientation {
   const { sourceWidth: w, sourceHeight: h } = photo;
   if (!(w > 0 && h > 0 && Number.isFinite(w) && Number.isFinite(h))) return "awaiting";
@@ -41,7 +41,7 @@ export function filterLibraryRows(rows: LibraryRow[], view: LibraryView): Librar
   return rows.filter(row => (!search || row.members.some(photo => (photo.sourceName ?? "").toLocaleLowerCase().includes(search))) &&
     (!view.orientations.length || view.orientations.includes(row.orientation)) && (!view.colours.length || view.colours.includes(row.colour)) &&
     (!view.ranks.length || view.ranks.includes(row.photo.rank ?? "unranked")) &&
-    view.labels.every(label => row.labels.includes(normalizePhotoLabel(label))) &&
+    (view.untagged ? row.labels.length === 0 : view.labels.every(label => row.labels.includes(normalizePhotoLabel(label)))) &&
     (view.usage === "all" || (view.usage === "used" ? row.uses > 0 : row.uses === 0)))
     .sort((a, b) => (view.sort === "custom" ? a.customPosition - b.customPosition : view.sort === "filename" ? collator.compare(a.photo.sourceName ?? "", b.photo.sourceName ?? "") :
       (a.photo.importOrder ?? a.index) - (b.photo.importOrder ?? b.index)) || a.index - b.index || a.photo.blobKey.localeCompare(b.photo.blobKey));
