@@ -10,7 +10,7 @@ import { nextProjectEditTime } from "../project-time";
 import { getBackScreen, MAX_PROJECT_PAGES, sortProjectsByLastEdited } from "../project";
 import { DEFAULT_TEMPLATE_FILTERS, filterTemplates, getTemplatesForFormat, TEMPLATES } from "../templates";
 import { getFormat } from "../formats";
-import { openPhotoPicker, placeLibraryPhoto } from "../photo-picker";
+import { openPhotoPicker, placeLibraryPhoto, placeLibraryPhotos } from "../photo-picker";
 import { WorkspaceSession } from "../workspace";
 import { loadProjects, saveProjects } from "../storage";
 import { createBlankCustomTemplate } from "../custom-templates";
@@ -70,7 +70,7 @@ function harness({ loaded = false, confirm = true, project = fixture(), custom =
     setExportWidth: vi.fn(), setExportReviewIds: vi.fn(), getFormat,
     photoPickerRef: { current: null }, setPhotoPickerIntent: vi.fn(), setShowPhotoLibrary: vi.fn(), setChoosePhotoSource: vi.fn(), setSelectExportPages: vi.fn(), setSelectedExportIds: vi.fn(),
     saveWorkspaceProjects: vi.fn(), setProjects: vi.fn(), clearExportItems: vi.fn(), setDraggingPageId: vi.fn(),
-    openPhotoPicker, placeLibraryPhoto, photoPickerWorkspaceRef: { current: null }, workspaceRef: { current: new WorkspaceSession() },
+    openPhotoPicker, placeLibraryPhoto, placeLibraryPhotos, photoPickerWorkspaceRef: { current: null }, workspaceRef: { current: new WorkspaceSession() },
     resolvePageTemplate: (page: ProjectPage) => page.templateSnapshot ?? single,
     importQueueRef: { current: { add: vi.fn() } }, navigator: { storage: {} },
   };
@@ -86,7 +86,7 @@ function harness({ loaded = false, confirm = true, project = fixture(), custom =
   Object.defineProperty(scope, "template", { get: () => state.pages.find(page => page.id === state.activePageId)?.templateSnapshot ?? null });
   for (const name of ["setTemplatePicker", "setScreen", "retainPagePhotos", "updatePage", "buildStoredProject", "persistActiveProject",
     "adoptActiveProject", "addPage", "duplicatePage", "changePageLayout", "selectTemplate", "editPage", "goBack", "openProjects",
-    "requestPhoto", "closePhotoLibrary", "chooseLibraryPhoto", "importLibraryPhotos",
+    "requestPhoto", "closePhotoLibrary", "chooseLibraryPhotos", "chooseLibraryPhoto", "importLibraryPhotos",
     "filteredPageTemplates", "filteredCustomTemplates", "filteredBuiltInTemplates", "selectEditorFrame"]) {
     const js = callbacks.get(name);
     if (js) scope[name] = new Function("scope", `with (scope) { ${js}; return callback; }`)(scope);
@@ -166,6 +166,32 @@ describe("production photo picker handlers", () => {
     const p = fixture(); p.photoLibrary = [...getProjectPhotos(p), candidate];
     return harness({ project: p });
   }
+  it("saves the whole batch once and undoes it as one edit while preserving library originals", () => {
+    const p = fixture();
+    p.pages[0] = { ...p.pages[0], templateId: pair.id, templateSnapshot: pair, photos: {}, selectedFrameId: pair.frames[0].id };
+    const second = { ...candidate, blobKey: "third-original" };
+    p.photoLibrary = [candidate, second];
+    const h = harness({ project: p }), before = h.run<StoredProject>("buildStoredProject");
+    h.run("requestPhoto", pair.frames[0].id); h.run("chooseLibraryPhotos", [candidate, second]); h.settle();
+    const current = h.run<StoredProject>("buildStoredProject");
+    expect(h.scope.saveWorkspaceProjects).toHaveBeenCalledOnce();
+    expect(Object.values(current.pages[0].photos).map(photo => photo.blobKey)).toEqual([candidate.blobKey, second.blobKey]);
+    const undone = h.refs.historyRef.current.travel("undo", current, "2026-09-28T12:00:00.000Z")!;
+    expect(undone.pages[0].photos).toEqual(before.pages[0].photos);
+    expect(undone.photoLibrary).toEqual(current.photoLibrary);
+    h.run("chooseLibraryPhotos", [candidate, second]);
+    expect(h.scope.saveWorkspaceProjects).toHaveBeenCalledOnce();
+  });
+  it("does not adopt part of a batch if validation or durable saving fails", () => {
+    const p = fixture(); p.pages[0] = { ...p.pages[0], templateId: pair.id, templateSnapshot: pair, photos: {} };
+    const second = { ...candidate, blobKey: "third-original" }; p.photoLibrary = [candidate, second];
+    const h = harness({ project: p }), before = h.state.pages.map(serializePage);
+    h.run("requestPhoto", pair.frames[0].id); h.run("chooseLibraryPhotos", [candidate, { ...second, blobKey: "missing" }]);
+    expect(h.scope.saveWorkspaceProjects).not.toHaveBeenCalled(); expect(h.state.pages.map(serializePage)).toEqual(before);
+    vi.mocked(h.scope.saveWorkspaceProjects as () => void).mockImplementation(() => { throw new Error("Quota exceeded"); });
+    h.run("requestPhoto", pair.frames[0].id); h.run("chooseLibraryPhotos", [candidate, second]);
+    expect(h.state.pages.map(serializePage)).toEqual(before);
+  });
   it("cancels without placing and consumes a Use intent once even when clicked twice", () => {
     const h = pickerHarness(), before = h.state.pages.map(serializePage);
     h.run("requestPhoto", single.frames[0].id); h.run("closePhotoLibrary"); h.run("chooseLibraryPhoto", candidate);
