@@ -12,6 +12,7 @@ export function libraryPhoto(photo: ProjectPhoto | StoredPhotoAsset): ProjectPho
     ...("fingerprint" in photo && photo.fingerprint !== undefined ? { fingerprint: photo.fingerprint } : {}),
     ...("importedAt" in photo && photo.importedAt !== undefined ? { importedAt: photo.importedAt } : {}),
     ...("importOrder" in photo && photo.importOrder !== undefined ? { importOrder: photo.importOrder } : {}),
+    ...("customOrder" in photo && photo.customOrder !== undefined ? { customOrder: photo.customOrder } : {}),
     ...("colourOverride" in photo && photo.colourOverride !== undefined ? { colourOverride: photo.colourOverride } : {}),
     ...("rank" in photo && photo.rank !== undefined ? { rank: photo.rank } : {}),
     ...("labels" in photo && photo.labels !== undefined ? { labels: normalizePhotoLabels(photo.labels) } : {}),
@@ -68,6 +69,30 @@ export function projectPhotoGroups(project: Pick<StoredProject, "pages" | "photo
 
 export function getVisibleProjectPhotos(project: Pick<StoredProject, "pages" | "photoLibrary">): ProjectPhoto[] {
   return projectPhotoGroups(project).map(group => group.photo);
+}
+
+/** Explicitly ordered groups come first; untouched/new imports append in their
+ * original import order. A consolidated group keeps its earliest saved position. */
+export function customOrderedPhotoGroups(project: Pick<StoredProject, "pages" | "photoLibrary">) {
+  const groups = projectPhotoGroups(project).map((group, index) => ({ ...group, index,
+    order: Math.min(...group.members.map(photo => photo.customOrder ?? Infinity)) }));
+  return groups.sort((a, b) => a.order - b.order ||
+    (a.photo.importOrder ?? a.index) - (b.photo.importOrder ?? b.index) || a.index - b.index);
+}
+
+/** Positions refer to the whole unique-photo library, even while it is filtered.
+ * Original identities, placements/crops and import order remain untouched. */
+export function reorderProjectPhotos(project: StoredProject, key: string, position: number, timestamp?: string): StoredProject {
+  if (!Number.isSafeInteger(position)) return project;
+  const groups = customOrderedPhotoGroups(project);
+  const from = groups.findIndex(group => group.members.some(photo => photo.blobKey === key));
+  const to = Math.max(0, Math.min(groups.length - 1, position - 1));
+  if (from < 0 || from === to) return project;
+  const [moved] = groups.splice(from, 1);
+  groups.splice(to, 0, moved);
+  const positions = new Map(groups.flatMap((group, index) => group.members.map(photo => [photo.blobKey, index + 1] as const)));
+  const photoLibrary = getProjectPhotos(project).map(photo => ({ ...photo, customOrder: positions.get(photo.blobKey)! }));
+  return { ...project, photoLibrary, updatedAt: nextProjectEditTime(project, timestamp) };
 }
 
 export function hasUnassignedPhotos(project: StoredProject): boolean {

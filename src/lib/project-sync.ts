@@ -390,7 +390,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
   if (parentResult.error && ["42703", "PGRST204"].includes(parentResult.error.code) && parentResult.error.message.includes("photo_library")) {
     // A missing-column error commits nothing. Existing assigned-only projects
     // can still save; never acknowledge independent library metadata as synced.
-    if (hasUnassignedPhotos(project) || getProjectPhotos(project).some(photo => photo.duplicateOf !== undefined || photo.pendingUpload || photo.fingerprint || photo.colourOverride !== undefined || photo.rank !== undefined || photo.labels !== undefined)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
+    if (hasUnassignedPhotos(project) || getProjectPhotos(project).some(photo => photo.duplicateOf !== undefined || photo.pendingUpload || photo.fingerprint || photo.colourOverride !== undefined || photo.rank !== undefined || photo.labels !== undefined || photo.customOrder !== undefined)) throw new Error("Cloud photo library setup is required. Your photos remain in this workspace; download a backup until the reviewed migration is installed.");
     const legacyInput = { ...projectRowInput } as Partial<typeof projectRowInput>;
     delete legacyInput.photo_library;
     assertCurrent();
@@ -550,6 +550,7 @@ export function preserveProtectedLocalEdits(local: StoredProject, remote: Stored
     (photo.duplicateOf !== undefined && photo.duplicateOf !== remotePhotos.get(photo.blobKey)?.duplicateOf) ||
     (photo.colourOverride !== undefined && photo.colourOverride !== remotePhotos.get(photo.blobKey)?.colourOverride) ||
     (photo.rank !== undefined && photo.rank !== remotePhotos.get(photo.blobKey)?.rank) ||
+    (photo.customOrder !== undefined && photo.customOrder !== remotePhotos.get(photo.blobKey)?.customOrder) ||
     (photo.labels !== undefined && JSON.stringify(photo.labels) !== JSON.stringify(remotePhotos.get(photo.blobKey)?.labels))) || local.name !== remote.name || local.pages.some(page => {
     const other = remote.pages.find(item => item.id === page.id);
     return !other || page.templateId !== other.templateId || page.background !== other.background || page.gutter !== other.gutter ||
@@ -703,7 +704,7 @@ export function mergeCloudProjectLibrary(local: StoredProject[], remote: StoredP
       const combined = preserveProjectLibrary(chosen, project, cloud);
       // Old clients omit the new column; never let that hide unassigned photos.
       const missingLibrary = getProjectPhotos(project).some(photo => !getProjectPhotos(cloud).some(item => item.blobKey === photo.blobKey &&
-        (["duplicateOf", "colourOverride", "rank", "labels", "fingerprint", "importOrder", "importedAt", "driveThumbnailId", "pendingUpload"] as const).every(key => photo[key] === undefined || item[key] !== undefined)));
+        (["duplicateOf", "colourOverride", "rank", "labels", "customOrder", "fingerprint", "importOrder", "importedAt", "driveThumbnailId", "pendingUpload"] as const).every(key => photo[key] === undefined || item[key] !== undefined)));
       if (missingLibrary && !isProjectDirty(combined)) combined.updatedAt = new Date(Math.max(Date.now(), Date.parse(combined.cloudSyncedAt ?? combined.updatedAt) + 1)).toISOString();
       if (missingLibrary && !isProjectDirty(project) && !olderCloud) metadataRecoveredIds.push(project.id);
       merged.set(project.id, combined);

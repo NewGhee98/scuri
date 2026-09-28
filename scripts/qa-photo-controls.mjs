@@ -1,0 +1,150 @@
+// Local-only synthetic acceptance. External origins are blocked.
+// SCURI_BROWSER_RUNTIME must contain playwright and sharp.
+import { createRequire } from "node:module";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import assert from "node:assert/strict";
+const require = createRequire(process.env.SCURI_BROWSER_RUNTIME ? path.join(process.env.SCURI_BROWSER_RUNTIME, "package.json") : import.meta.url);
+const { chromium } = require("playwright"), sharp = require("sharp");
+const output = path.resolve(process.argv[2] ?? "artifacts/photo-controls");
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({ channel: "chrome", headless: true });
+const context = await browser.newContext({ viewport: { width: 1180, height: 820 }, hasTouch: true });
+const page = await context.newPage(), errors = [], external = [];
+page.on("pageerror", error => errors.push(error.message));
+await context.route("**/*", route => {
+  const url = new URL(route.request().url());
+  if (["localhost", "127.0.0.1"].includes(url.hostname) || ["blob:", "data:"].includes(url.protocol)) return route.continue();
+  external.push(url.origin); return route.abort();
+});
+const report = { browser: "Isolated desktop Chrome with touch input", physicalIPad: false, checks: [] };
+const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("layouts.projects.v1") ?? '{"projects":[]}').projects[0]);
+const card = name => page.locator(".library-photo-card").filter({ has: page.locator(".library-photo-name", { hasText: name }) });
+const inspect = async name => { await card(name).locator("button").first().click(); await page.getByRole("complementary", { name: "Photo categories" }).waitFor(); };
+const names = () => page.locator(".library-photo-name").allTextContents();
+const waitSaved = async predicate => {
+  for (let i = 0; i < 50; i++) { const p = await saved(); if (p && predicate(p)) return p; await page.waitForTimeout(100); }
+  throw Error("Saved project did not reach expected state");
+};
+try {
+  await page.goto("http://localhost:3005");
+  await page.getByRole("button", { name: "+ New project", exact: true }).click();
+  await page.getByRole("button", { name: /Instagram Post/ }).click();
+  await page.getByRole("dialog", { name: "Project photos", exact: true }).waitFor();
+  const photos = [];
+  for (let i = 0; i < 12; i++) photos.push({ name: `Order-${String(i).padStart(2, "0")}.jpg`, mimeType: "image/jpeg",
+    buffer: await sharp({ create: { width: 600, height: 800, channels: 3, background: { r: 20 + i * 18, g: 90, b: 170 - i * 10 } } }).jpeg().toBuffer() });
+  await page.locator("dialog input[type=file]").first().setInputFiles(photos);
+  const initial = await waitSaved(p => p.photoLibrary?.length === 12);
+  await page.waitForFunction(() => document.querySelectorAll(".library-photo-card img").length >= 4);
+  await page.getByRole("button", { name: "Custom order", exact: true }).click();
+  const number = card("Order-03.jpg").getByRole("textbox");
+  await number.fill("1"); await number.press("Enter");
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-03.jpg").customOrder === 1);
+  assert.equal((await names())[0], "Order-03.jpg");
+  report.checks.push("Numeric custom order commits and reorders the gallery");
+  const firstHandle = card("Order-03.jpg").getByRole("button", { name: /Drag/ });
+  const from = await firstHandle.boundingBox(), to = await card("Order-01.jpg").boundingBox();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2); await page.mouse.down();
+  await page.mouse.move(to.x + to.width * .8, to.y + to.height / 2, { steps: 12 }); await page.mouse.up();
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-03.jpg").customOrder !== 1);
+  assert.equal((await names())[0], "Order-00.jpg");
+  report.checks.push("Pointer drag handle changes custom order");
+  const orderBeforeFilter = (await saved()).photoLibrary.map(photo => [photo.blobKey, photo.customOrder]);
+  const search = page.getByRole("searchbox", { name: "Search photo filenames" });
+  await search.fill("Order-11");
+  await card("Order-11.jpg").getByRole("textbox").fill("1"); await card("Order-11.jpg").getByRole("textbox").press("Enter");
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").customOrder === 1);
+  await search.fill(""); assert.equal((await names())[0], "Order-11.jpg");
+  assert.equal((await saved()).photoLibrary.length, orderBeforeFilter.length);
+  report.checks.push("Numeric positions use the whole library while filtered");
+  // Clicking a handle can blur/commit a position draft before the drag starts.
+  await card("Order-11.jpg").getByRole("textbox").fill("5");
+  const draftHandle = await card("Order-11.jpg").getByRole("button", { name: /Drag/ }).boundingBox();
+  await page.mouse.move(draftHandle.x + 22, draftHandle.y + 22); await page.mouse.down();
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").customOrder === 5);
+  const draftTarget = await card("Order-01.jpg").boundingBox();
+  await page.mouse.move(draftTarget.x + draftTarget.width * .8, draftTarget.y + draftTarget.height / 2, { steps: 12 }); await page.mouse.up();
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").customOrder === 3);
+  await card("Order-11.jpg").getByRole("textbox").fill("1"); await card("Order-11.jpg").getByRole("textbox").press("Enter");
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").customOrder === 1);
+  report.checks.push("Dragging immediately after an uncommitted numeric edit uses the current position");
+  await inspect("Order-11.jpg");
+  await page.getByRole("button", { name: "Hero", exact: true }).click();
+  for (const label of ["temple", "night", "favourite place"]) {
+    await page.getByRole("combobox", { name: "Add a label" }).fill(label); await page.getByRole("combobox", { name: "Add a label" }).press("Enter");
+  }
+  assert.equal(await page.getByRole("button", { name: "Hero", exact: true }).getAttribute("aria-pressed"), "true");
+  for (const viewport of [{ width: 1180, height: 820 }, { width: 820, height: 1180 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport); await page.waitForTimeout(150);
+    const sidebar = await page.getByRole("complementary", { name: "Photo categories" }).boundingBox();
+    const photo = await page.locator(".library-inspector-image").boundingBox();
+    assert(sidebar.width > 100 && sidebar.height > 80);
+    if (viewport.width >= 820) assert(sidebar.x >= photo.x + photo.width - 2, "categories must be on the right on iPad sizes");
+    assert(sidebar.x >= 0 && sidebar.x + sidebar.width <= viewport.width + 1);
+    await page.screenshot({ path: path.join(output, `categories-${viewport.width}.png`) });
+  }
+  report.checks.push("Direct rank and multiple label edits; responsive sidebar at desktop, iPad and phone dimensions");
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await page.getByRole("button", { name: "Hide controls", exact: true }).click();
+  assert.equal(await page.getByRole("complementary", { name: "Photo categories" }).count(), 0);
+  await page.getByRole("button", { name: "Show controls", exact: true }).click();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await page.getByRole("button", { name: "Add label temple", exact: true }).click();
+  await page.getByRole("button", { name: "Remove label temple", exact: true }).click();
+  await page.getByRole("button", { name: "Back to photos", exact: true }).click();
+  const labelled = card("Order-11.jpg");
+  assert.equal(await labelled.locator(".library-photo-rank").textContent(), "Hero");
+  for (const label of ["temple", "night", "favourite place"]) assert((await labelled.textContent()).includes(label));
+  await page.screenshot({ path: path.join(output, "custom-order-labels.png") });
+  report.checks.push("Reusable label toggles, clean viewer mode, rank and multiple thumbnail labels");
+  const target = labelled.locator("button").first(), hold = await target.boundingBox();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: hold.x + hold.width / 2, y: hold.y + hold.height / 2 }] });
+  await page.waitForTimeout(650);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await page.getByRole("region", { name: "Edit selected photos" }).waitFor();
+  assert.match(await page.locator(".library-selection-summary").textContent(), /1 selected/);
+  await card("Order-00.jpg").locator("button").first().click();
+  assert.match(await page.locator(".library-selection-summary").textContent(), /2 selected/);
+  await page.getByLabel("Rank selected").selectOption("good");
+  await waitSaved(p => p.photoLibrary.filter(photo => photo.rank === "good").length === 2);
+  await page.getByRole("button", { name: "Finish selecting", exact: true }).click();
+  assert.equal(await page.locator(".library-inspector").count(), 0);
+  report.checks.push("Touch long press enters selection without opening the viewer; next tap selects another photo and bulk rank saves");
+  const scrollTarget = await card("Order-11.jpg").locator("button").first().boundingBox();
+  const touch = { x: scrollTarget.x + scrollTarget.width / 2, y: scrollTarget.y + scrollTarget.height / 2 };
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [touch] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: touch.x, y: touch.y - 90 }] });
+  await page.waitForTimeout(650);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  assert.equal(await page.locator(".library-bulk-edit").count(), 0);
+  await page.locator(".library-gallery-scroll").evaluate(el => { el.scrollTop = 0; }); await page.waitForTimeout(250);
+  const touchHandle = await card("Order-11.jpg").getByRole("button", { name: /Drag/ }).boundingBox();
+  const touchDestination = await card("Order-00.jpg").boundingBox();
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchHandle.x + 22, y: touchHandle.y + 22 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: touchDestination.x + touchDestination.width * .8, y: touchDestination.y + touchDestination.height / 2 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").customOrder === 2);
+  await card("Order-11.jpg").getByRole("textbox").fill("1"); await card("Order-11.jpg").getByRole("textbox").press("Enter");
+  await waitSaved(p => p.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").customOrder === 1);
+  report.checks.push("Touch scrolling cancels long press; dedicated touch dragging still reorders");
+  const beforeReload = await saved();
+  assert.deepEqual(beforeReload.pages, initial.pages, "photo controls must preserve page placements/crops");
+  await page.reload();
+  await page.locator(".project-library-open").first().click();
+  await page.getByRole("button", { name: "Open Project photos", exact: true }).click();
+  await page.getByRole("button", { name: "Custom order", exact: true }).click();
+  assert.equal((await names())[0], "Order-11.jpg");
+  const afterReload = await saved();
+  assert.deepEqual(afterReload.photoLibrary, beforeReload.photoLibrary);
+  assert.equal(afterReload.photoLibrary.find(photo => photo.sourceName === "Order-11.jpg").labels.length, 3);
+  report.checks.push("Reload retains custom order, ranks, labels and all original library identities");
+  assert.deepEqual(errors, []); assert.deepEqual(external, []);
+  report.errors = errors; report.externalRequests = external;
+  await writeFile(path.join(output, "report.json"), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(report, null, 2));
+} catch (error) {
+  await page.screenshot({ path: path.join(output, "failure.png") }).catch(() => {});
+  console.error(error); console.error({ errors, external }); process.exitCode = 1;
+} finally { await browser.close(); }

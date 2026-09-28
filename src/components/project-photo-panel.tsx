@@ -33,6 +33,7 @@ interface Props {
   onImport: (sources: PhotoImportSource[]) => void; onApply: (proposal: ArrangementProposal) => void;
   onChoose?: (photo: ProjectPhoto) => void; onOverride: (key: string, value: ProjectPhoto["colourOverride"]) => void;
   onMetadata: (keys: string[], edit: PhotoMetadataEdit) => void;
+  onReorder: (key: string, position: number) => void;
   onCombineDuplicates: (scan: DuplicateScan, groups: DuplicateGroup[]) => void;
   open: boolean; onOpen: () => void; onClose: () => void; targetLabel?: string; compact?: boolean;
   imports: readonly PhotoImportItem[]; onRetryImport: (id?: string) => void;
@@ -44,7 +45,7 @@ const toolLabels = { filters: "Filters", view: "View", actions: "Library actions
 async function idle() { await new Promise(resolve => setTimeout(resolve, 30)); }
 
 export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision, busy, getVolatileBlob, getDriveToken, onImport, onApply, onChoose,
-  onCombineDuplicates, onOverride, onMetadata, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, backupActivity, onRetryBackup, onReconnectDrive, initiallyImport, compact = false }: Props) {
+  onCombineDuplicates, onOverride, onMetadata, onReorder, open, onOpen, onClose, targetLabel, imports, onRetryImport, backupStatus, backupActivity, onRetryBackup, onReconnectDrive, initiallyImport, compact = false }: Props) {
   const { session: previewSession } = usePhotoPreviewSession(), previewCache = previewSession?.cache;
   const photos = projectPhotoGroups(project).map(group => group.photo);
   const projectImports = imports.filter(item => item.projectId === project.id);
@@ -182,6 +183,7 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       }} />
       <input type="search" aria-label="Search photo filenames" placeholder="Search filenames" value={view.search} onChange={event => changeView({ ...view, search: event.target.value, scrollTop: 0, anchor: undefined })} />
       <button className="small-button" type="button" aria-haspopup="dialog" onClick={() => setTool("view")}>View</button>
+      <button className="small-button" type="button" aria-pressed={view.sort === "custom"} onClick={() => changeView({ ...view, sort: view.sort === "custom" ? "import" : "custom", scrollTop: 0, anchor: undefined })}>Custom order</button>
       <button className="small-button" type="button" aria-haspopup="dialog" onClick={() => setTool("actions")}>Actions</button>
       {!onChoose ? <button className="small-button" type="button" aria-pressed={selecting} disabled={!photos.length} onClick={() => {
         setSelecting(value => !value); setSelectedKeys([]); setEditMessage("");
@@ -197,6 +199,8 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
       {filterCount || view.search ? <button className="text-button" type="button" onClick={clearFilters}>Clear filters</button> : null}
       {projectImports.length && importFinished < projectImports.length ? <button className="text-button" type="button" onClick={() => setTool("activity")}>Import progress: {importFinished}/{projectImports.length} finished</button> : null}
     </div>
+    {view.sort === "custom" ? <p className="library-edit-message">Drag a photo’s handle or enter its position from 1 to {rows.length}. Positions refer to all project photos, including filtered photos.</p> : null}
+    {!selecting && !onChoose && photos.length ? <p className="library-edit-message">Long-press a photo to select several, then apply ranks or labels together.</p> : null}
     {selecting ? <section className="library-bulk-edit" aria-label="Edit selected photos">
       <div className="library-selection-summary"><strong>{selection.length} selected</strong>
         <button className="text-button" type="button" disabled={!filtered.length} onClick={() => setSelectedKeys(filtered.map(row => row.photo.blobKey))}>Select all shown</button>
@@ -234,14 +238,14 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
               <button key={rank} type="button" className="library-filter" aria-pressed={view.ranks.includes(rank)} onClick={() => toggleRank(rank)}>{PHOTO_RANK_LABELS[rank]}</button>)}</div></fieldset>
             <fieldset><legend>Labels · match all selected</legend><div>{[...new Set([...labelSuggestions, ...view.labels])].map(label =>
               <button key={label} type="button" className="library-filter" aria-pressed={view.labels.includes(label)} onClick={() => toggleLabel(label)}>{label}</button>)}</div>
-              {!labelSuggestions.length && !view.labels.length ? <p>Add labels in Photo info or select photos to label them together.</p> : null}</fieldset>
+              {!labelSuggestions.length && !view.labels.length ? <p>Open a photo to add labels, or select photos to label them together.</p> : null}</fieldset>
             <fieldset><legend>Photo proportions</legend><div>{(Object.keys(labels) as Orientation[]).map(key => <button key={key} type="button" className="library-filter" aria-pressed={view.orientations.includes(key)} onClick={() => toggleOrientation(key)}>{labels[key]}</button>)}</div></fieldset>
             <fieldset><legend>Photo colour</legend><div>{(Object.keys(colourLabels) as ColourClass[]).map(key => <button key={key} type="button" className="library-filter" aria-pressed={view.colours.includes(key)} onClick={() => toggleColour(key)}>{colourLabels[key]}</button>)}</div></fieldset>
             <label>Usage <select value={view.usage} onChange={event => changeView({ ...view, usage: event.target.value as LibraryView["usage"], scrollTop: 0, anchor: undefined })}><option value="all">All</option><option value="unused">Unused</option><option value="used">Used</option></select></label>
             <div className="library-tool-footer"><button className="text-button" type="button" onClick={clearFilters}>Clear filters</button><button className="primary-button" type="button" onClick={() => setTool(null)}>Show {filtered.length} photos</button></div>
           </div> : null}
           {tool === "view" ? <div className="library-view-options">
-            <label>Sort <select value={view.sort} onChange={event => changeView({ ...view, sort: event.target.value as LibraryView["sort"], scrollTop: 0, anchor: undefined })}><option value="import">Import order</option><option value="filename">Filename</option></select></label>
+            <label>Sort <select value={view.sort} onChange={event => changeView({ ...view, sort: event.target.value as LibraryView["sort"], scrollTop: 0, anchor: undefined })}><option value="import">Import order</option><option value="filename">Filename</option><option value="custom">Custom order</option></select></label>
             <label>Thumbnails <select value={view.size} onChange={event => changeView({ ...view, size: event.target.value as LibraryView["size"] })}><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
           </div> : null}
           {tool === "actions" ? <div className="library-view-options">
@@ -295,6 +299,8 @@ export function ProjectPhotoPanel({ project, templates, ownerId, accessRevision,
             labelSuggestions={labelSuggestions} onMetadata={edit => onMetadata([inspectedRow.photo.blobKey], edit)}
             onUse={onChoose ? () => choose(inspectedRow.photo) : undefined} onOverride={value => onOverride(inspectedRow.photo.blobKey, value)} /> :
           <PhotoLibraryGallery rows={filtered} view={view} onView={value => { setReturnFocusKey(undefined); changeView(value); }} focusPhotoKey={returnFocusKey}
+            totalPhotos={rows.length} onReorder={onReorder}
+            onStartSelecting={!onChoose ? key => { setSelecting(true); setSelectedKeys(current => current.includes(key) ? current : [...current, key]); setEditMessage(""); } : undefined}
             selectedKeys={selecting ? new Set(selection) : undefined}
             onToggleSelected={selecting ? key => setSelectedKeys(current => current.includes(key) ? current.filter(item => item !== key) : [...current, key]) : undefined}
             header={toolbar} empty={!photos.length ? <div className="library-empty"><h3>Add your candidate photos once</h3><p>Choose Photos, Files or a connected source above. You can choose layouts later.</p></div> : undefined}

@@ -100,7 +100,7 @@ import { createProjectBackup, inspectProjectBackup, materializeProjectBackup, ty
 import { BackupReview } from "./backup-review";
 import { ProjectPhotoPanel } from "./project-photo-panel";
 import { ActionDialog } from "./action-dialog";
-import { editProjectPhotoMetadata, getProjectPhotos, mergePhotoLibraries, projectPhotoGroups } from "@/lib/project-photo-library";
+import { editProjectPhotoMetadata, getProjectPhotos, mergePhotoLibraries, projectPhotoGroups, reorderProjectPhotos } from "@/lib/project-photo-library";
 import type { PhotoMetadataEdit } from "@/lib/photo-metadata";
 import { applyArrangementAsCopy, type ArrangementProposal } from "@/lib/arrangements";
 import { DEFAULT_TEMPLATE_FILTERS, filterTemplates, getTemplate, getTemplatesForFormat, TEMPLATES, type TemplateLibraryFilters } from "@/lib/templates";
@@ -1212,6 +1212,16 @@ export function LayoutsApp() {
   const setPhotoMetadata = (keys: string[], edit: PhotoMetadataEdit) => {
     const current = buildStoredProject(); if (!current) return;
     const updated = editProjectPhotoMetadata(current, keys, edit);
+    if (updated === current) return;
+    historyGroupRef.current = undefined;
+    historyRef.current.observe(current);
+    const next = projectsRef.current.map(item => item.id === updated.id ? updated : item);
+    saveWorkspaceProjects(next); projectsRef.current = next; setProjects(next); adoptActiveProject(updated, true);
+  };
+
+  const setPhotoOrder = (key: string, position: number) => {
+    const current = buildStoredProject(); if (!current) return;
+    const updated = reorderProjectPhotos(current, key, position);
     if (updated === current) return;
     historyGroupRef.current = undefined;
     historyRef.current.observe(current);
@@ -2622,7 +2632,7 @@ export function LayoutsApp() {
             onImport={sources => importLibraryPhotos(sources, projectId, templateUser?.id ?? null)} onApply={applySuggestedArrangement} onCombineDuplicates={combineLibraryDuplicates}
             open={showPhotoLibrary} onOpen={() => { photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(true); }}
             onClose={closePhotoLibrary} targetLabel={photoPickerIntent ? `Page ${pages.findIndex(page => page.id === photoPickerIntent.pageId) + 1} · frame ${photoPickerIntent.frameId}` : undefined}
-            onOverride={setPhotoColour} onMetadata={setPhotoMetadata} imports={importItems} onRetryImport={id => importQueueRef.current?.retry(id)} initiallyImport={initiallyImport}
+            onOverride={setPhotoColour} onMetadata={setPhotoMetadata} onReorder={setPhotoOrder} imports={importItems} onRetryImport={id => importQueueRef.current?.retry(id)} initiallyImport={initiallyImport}
             backupStatus={Object.entries(photoBackupStatus).filter(([key]) => key.startsWith(projectId + ":")).map(([, status]) => status)}
             backupActivity={backupActivity}
             onRetryBackup={() => void retryPhotoBackup()}
