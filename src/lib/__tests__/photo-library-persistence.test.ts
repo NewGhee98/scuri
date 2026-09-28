@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSupabaseClient } from "../supabase-client";
 import { acknowledgeProjectPush, getProjectBackupCounts, isProjectDirty, mergeCloudProjectLibrary, preserveProtectedLocalEdits, pushProjectToCloud, rowsToStoredProject } from "../project-sync";
-import { editProjectPhotoMetadata, getProjectPhotos, getVisibleProjectPhotos, mergePhotoLibraries } from "../project-photo-library";
+import { editProjectPhotoMetadata, getProjectPhotos, getVisibleProjectPhotos, mergePhotoLibraries, reorderProjectPhotos } from "../project-photo-library";
+import { DEFAULT_LIBRARY_VIEW, filterLibraryRows, libraryRows } from "../photo-library-view";
+import { ProjectHistory } from "../project-history";
 import { consolidateLibraryDuplicates, scanExactDuplicates } from "../photo-duplicates";
 import { reconcileProjectPages, serializePage } from "../project-photos";
 import { loadProjects, saveProjects } from "../storage";
@@ -148,6 +150,96 @@ describe("rank and label persistence and sync", () => {
   });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe("custom order persistence and sync", () => {
+  const order = (p: StoredProject) => filterLibraryRows(libraryRows(p), { ...DEFAULT_LIBRARY_VIEW, sort: "custom" }).map(row => row.photo.blobKey);
+  const metadata = (p: StoredProject) => getProjectPhotos(p).map(({ blobKey, customOrder }) => ({ blobKey, customOrder })).sort((a, b) => a.blobKey.localeCompare(b.blobKey));
+  const reordered = () => reorderProjectPhotos(source(), loose.blobKey, 1, edit);
+
+  it("round-trips custom order through local storage and cloud JSON while preserving crop and original records", async () => {
+    const fixture = cloud(), original = reordered();
+    saveProjects([original], "synthetic-owner");
+    const [reloaded] = loadProjects("synthetic-owner");
+    expect(order(reloaded)).toEqual([loose.blobKey, assigned.blobKey]);
+    const result = await pushProjectToCloud(reloaded);
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(metadata(fixture.stored())).toEqual(metadata(original));
+    expect(order(fixture.stored())).toEqual(order(original));
+    expect(fixture.rows.project_assets[0]).toMatchObject({ id: "synthetic-row", blob_key: assigned.blobKey, crop: source().pages[0].photos["photo-1"].crop });
+    expect(getProjectBackupCounts(fixture.stored())).toEqual(getProjectBackupCounts(source()));
+    expect(fixture.writes.some(write => write.includes("delete"))).toBe(false);
+  });
+
+  it("persists Undo's explicit cleared order and accepts it from another device", async () => {
+    const initial = source(), history = new ProjectHistory(); history.observe(initial);
+    const original = reordered(); history.observe(original);
+    const cleared = history.travel("undo", original, ack)!;
+    const fixture = cloud(true, getProjectPhotos(original));
+    expect(await pushProjectToCloud(cleared)).toMatchObject({ conflict: false, partial: false });
+    const remote = fixture.stored();
+    expect(getProjectPhotos(remote).every(photo => photo.customOrder === null)).toBe(true);
+    const [pulled] = mergeCloudProjectLibrary([{ ...original, updatedAt: timestamp }], [remote], () => "unused").projects;
+    expect(order(pulled)).toEqual([assigned.blobKey, loose.blobKey]);
+    expect(metadata(pulled)).toEqual(metadata(cleared));
+    expect(isProjectDirty(pulled)).toBe(false);
+  });
+
+  it("retains order omitted by an older client and queues the retained metadata for cloud restoration", async () => {
+    const original = reordered(), fixture = cloud(true, getProjectPhotos(original));
+    await pushProjectToCloud(source());
+    expect(metadata(fixture.stored())).toEqual(metadata(original));
+    const local = { ...original, updatedAt: timestamp }, olderClient = { ...source(), updatedAt: ack, cloudSyncedAt: ack, revision: 2 };
+    const merged = mergeCloudProjectLibrary([local], [olderClient], () => "unused");
+    expect(metadata(merged.projects[0])).toEqual(metadata(original));
+    expect(isProjectDirty(merged.projects[0])).toBe(true);
+    expect(merged.metadataRecoveredIds).toEqual([original.id]);
+  });
+
+  it("retains newer reordering on a late save acknowledgement and stale pull alongside byte checkpoints", () => {
+    const sent = reordered(), latest = reorderProjectPhotos(sent, assigned.blobKey, 1, ack);
+    const checkpoint = applyPhotoBackupCheckpoint(sent, { blobKey: loose.blobKey, driveOriginalId: "backed-original",
+      drivePreviewId: "backed-preview", driveFolderId: "folder" }, ack);
+    const acknowledged = acknowledgeProjectPush(latest, sent, { conflict: false, partial: false,
+      project: { ...checkpoint, revision: 2, cloudSyncedAt: ack } });
+    expect(metadata(acknowledged)).toEqual(metadata(latest));
+    expect(order(acknowledged)).toEqual([assigned.blobKey, loose.blobKey]);
+    expect(getProjectPhotos(acknowledged)[1].drivePreviewId).toBe("backed-preview");
+    expect(isProjectDirty(acknowledged)).toBe(true);
+    const [pulled] = mergeCloudProjectLibrary([acknowledged], [sent], () => "unused").projects;
+    expect(metadata(pulled)).toEqual(metadata(latest));
+    expect(pulled.pages[0].photos["photo-1"].crop).toEqual(sent.pages[0].photos["photo-1"].crop);
+  });
+
+  it("preserves custom order as meaningful local work when missing placements trigger protected recovery", () => {
+    const original = reordered();
+    const missing = { ...original, pages: original.pages.map(page => ({ ...page, photos: {} })) };
+    const recovered = preserveProtectedLocalEdits(missing, source(), "recovered")!;
+    expect(recovered.id).toBe("recovered");
+    expect(metadata(recovered)).toEqual(metadata(original));
+    expect(recovered.revision).toBeUndefined();
+  });
+
+  it.each([1, null])("fails before child writes rather than losing custom order %s on an older schema", async customOrder => {
+    const fixture = cloud(false), original = source();
+    original.photoLibrary = [{ ...assigned, customOrder }];
+    await expect(pushProjectToCloud(original)).rejects.toThrow("Cloud photo library setup is required");
+    expect(fixture.writes).toEqual([]);
+  });
+
+  it("retains custom order through portable backup restoration with new identities and unchanged original bytes", async () => {
+    const original = reordered();
+    const backup = await createProjectBackup(original, async key => new Blob([`synthetic-${key}`], { type: "image/jpeg" }));
+    const inspected = await inspectProjectBackup(backup.blob);
+    expect(metadata(inspected.project)).toEqual(metadata(original));
+    let id = 0; const restored = materializeProjectBackup(inspected, () => `restored-${id++}`);
+    expect(restored.project.id).not.toBe(original.id);
+    const restoredOrder = filterLibraryRows(libraryRows(restored.project), { ...DEFAULT_LIBRARY_VIEW, sort: "custom" });
+    expect(await restored.originals.get(restoredOrder[0].photo.blobKey)!.text()).toBe(`synthetic-${loose.blobKey}`);
+    expect(await restored.originals.get(restoredOrder[1].photo.blobKey)!.text()).toBe(`synthetic-${assigned.blobKey}`);
+    expect(restoredOrder.map(row => row.photo.customOrder)).toEqual([1, 2]);
+    expect(restored.project.pages[0].photos["photo-1"].crop).toEqual(original.pages[0].photos["photo-1"].crop);
+  });
+});
 
 describe("library membership and below-baseline crop persistence", () => {
   it("round-trips explicit duplicate grouping in cloud JSON without deleting or reconfiguring a placed asset", async () => {
