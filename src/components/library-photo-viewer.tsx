@@ -10,9 +10,9 @@ import type { ProjectPhoto } from "@/lib/types";
 import { usePhotoPreviewSession } from "./photo-preview-context";
 import { ActionDialog } from "./action-dialog";
 import { inspectionGesture } from "@/lib/photo-inspection";
-import { PHOTO_RANKS, PHOTO_RANK_LABELS, type PhotoMetadataEdit } from "@/lib/photo-metadata";
+import { PHOTO_RANKS, PHOTO_RANK_LABELS, normalizePhotoLabels, type PhotoMetadataEdit } from "@/lib/photo-metadata";
 import { PhotoLabelInput } from "./photo-label-input";
-import type { PhotoRank } from "@/lib/types";
+import "./library-photo-categories.css";
 
 export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevious, onNext, onUse, onOverride, onMetadata, labelSuggestions, controlsHidden, onToggleControls }: {
   row: LibraryRow; ownerId?: string | null; index: number; count: number; onBack: () => void; onPrevious: () => void; onNext: () => void;
@@ -88,6 +88,7 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
   const reset = () => { setDetail(false); setView({ zoom: 1, x: 0, y: 0 }); };
   const points = () => [...pointers.current.values()];
   const url = image?.url ?? snapshot.get(photo.blobKey)?.previewUrl;
+  const labels = normalizePhotoLabels([...labelSuggestions, ...row.labels]);
   return <section className="library-inspector" data-controls-hidden={controlsHidden} aria-label={`Inspect ${photo.sourceName ?? "photo"}`}>
     <div className="library-inspector-tools">
       <button type="button" className="secondary-button" onClick={onBack}>Back to photos</button>
@@ -95,6 +96,7 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
       <button type="button" className="small-button" aria-haspopup="dialog" onClick={() => setInfo(true)}>Info</button>
       {onUse ? <button className="primary-button" type="button" onClick={onUse}>Use this photo</button> : null}
     </div>
+    <div className="library-inspector-body">
     <div ref={area} className="library-inspector-image" tabIndex={0} aria-label="Photo inspection. Pinch to zoom, drag to pan; swipe at Fit to navigate."
       onKeyDown={event => { if (event.key === "ArrowRight") onNext(); if (event.key === "ArrowLeft") onPrevious(); if (event.key === "0") reset(); if (event.key === "h") onToggleControls(); }}
       onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -123,6 +125,35 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
       {!controlsHidden || loading ? <span className="library-image-label" role="status">{image?.original ? "Original" : "Preview"}{loading ? " · Loading…" : ""}</span> : null}
       {error ? <div className="library-image-error" role="status">{error} <button type="button" className="text-button" onPointerDown={event => event.stopPropagation()} onClick={() => setRetry(value => value + 1)}>Retry</button></div> : null}
     </div>
+    {!controlsHidden ? <aside className="library-photo-categories" aria-label="Photo categories">
+      <h2>Categorise photo</h2>
+      <fieldset>
+        <legend>Rank</legend>
+        <div className="library-category-ranks">
+          {PHOTO_RANKS.map(rank => <button key={rank} type="button" className="library-category-rank"
+            data-rank={rank} aria-pressed={photo.rank === rank} onClick={() => onMetadata({ rank })}>
+            {PHOTO_RANK_LABELS[rank]}
+          </button>)}
+          <button type="button" className="library-category-rank" aria-pressed={!photo.rank} onClick={() => onMetadata({ rank: null })}>Unranked</button>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Labels{row.labels.length ? ` · ${row.labels.length} selected` : ""}</legend>
+        <PhotoLabelInput key={photo.blobKey} title="Add a label" suggestions={labelSuggestions} applied={row.labels}
+          onAdd={label => onMetadata({ addLabels: [label] })} />
+        {labels.length ? <div className="library-category-labels" aria-label="Project labels">
+          {labels.map(label => {
+            const applied = row.labels.includes(label);
+            return <button key={label} type="button" className="library-category-label" aria-pressed={applied}
+              aria-label={`${applied ? "Remove" : "Add"} label ${label}`}
+              onClick={() => onMetadata(applied ? { removeLabel: label } : { addLabels: [label] })}>
+              <span aria-hidden="true">{applied ? "✓" : "+"}</span><span>{label}</span>
+            </button>;
+          })}
+        </div> : <p className="library-category-hint">Add labels to organise and filter your photos.</p>}
+      </fieldset>
+    </aside> : null}
+    </div>
     {controlsHidden ? <button className="library-show-controls small-button" type="button" onClick={onToggleControls}>Show controls</button> : null}
     <div className="library-inspector-navigation">
       <button type="button" className="small-button" disabled={index <= 0} onClick={onPrevious}>Previous</button>
@@ -135,18 +166,6 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
       <header><h2>Photo info</h2><button type="button" className="small-button" onClick={() => setInfo(false)}>Close</button></header>
       <div><strong>{photo.sourceName ?? "Photo"}</strong><p>{photo.sourceWidth} × {photo.sourceHeight} · {row.uses ? `Used ${row.uses} times` : "Unused"}</p>
         <p>{row.pages.map(page => `Page ${page.pageNumber}${page.count > 1 ? ` (${page.count})` : ""}`).join(" · ")}</p></div>
-      <div className="photo-metadata-controls">
-        <label className="photo-rank-control">Rank <select value={photo.rank ?? ""}
-          onChange={event => onMetadata({ rank: (event.target.value || null) as PhotoRank | null })}>
-          <option value="">Unranked</option>
-          {PHOTO_RANKS.map(rank => <option key={rank} value={rank}>{PHOTO_RANK_LABELS[rank]}</option>)}
-        </select></label>
-        <PhotoLabelInput title="Labels" suggestions={labelSuggestions} applied={row.labels} onAdd={label => onMetadata({ addLabels: [label] })} />
-      </div>
-      {row.labels.length ? <div className="photo-label-chips" aria-label="Applied labels">{row.labels.map(label =>
-        <button key={label} type="button" className="photo-label-chip" aria-label={`Remove label ${label}`} onClick={() => onMetadata({ removeLabel: label })}>
-          <span>{label}</span><span aria-hidden="true">×</span>
-        </button>)}</div> : null}
       <label>Classification <select value={photo.colourOverride ?? "auto"} onChange={event => onOverride(event.target.value === "auto" ? null : event.target.value as "bw" | "colour")}>
         <option value="auto">Auto ({row.colour === "bw" ? "black & white" : row.colour})</option><option value="bw">Black & white</option><option value="colour">Colour</option>
       </select></label>

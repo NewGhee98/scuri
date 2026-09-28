@@ -1,0 +1,25 @@
+.library-inspector-body { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.library-inspector-body > .library-inspector-image { min-width: 0; }
+.library-photo-categories { flex: 0 0 clamp(240px, 25vw, 300px); min-width: 0; min-height: 0; padding: 1rem; overflow-y: auto; overscroll-behavior: contain; border-left: 1px solid #d8dcd4; background: #fff; }
+.library-photo-categories h2 { margin: 0 0 1.1rem; font-size: 1rem; font-weight: 600; letter-spacing: -.02em; }
+.library-photo-categories fieldset { min-width: 0; margin: 0 0 1.25rem; }
+.library-photo-categories legend { margin-bottom: .6rem; font-size: .85rem; font-weight: 600; }
+.library-category-ranks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
+.library-category-rank { min-height: 44px; padding: .5rem .6rem; border: 1px solid #c8ccc6; border-radius: 8px; background: #f7f7f4; font-size: .85rem; }
+.library-category-rank[aria-pressed=true] { color: white; background: #315a41; border-color: #315a41; }
+.library-category-rank[data-rank=hero][aria-pressed=true] { color: #5c4010; background: #fff2ce; border-color: #bd903c; }
+.library-category-labels { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .75rem; }
+.library-category-label { display: flex; align-items: center; gap: .4rem; max-width: 100%; min-height: 44px; padding: .4rem .6rem; border: 1px solid #c8ccc6; border-radius: 9px; background: #fff; text-align: left; font-size: .85rem; }
+.library-category-label span:first-child { flex: 0 0 1em; text-align: center; }
+.library-category-label span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.library-category-label[aria-pressed=true] { color: #244b34; background: #edf1eb; border-color: #315a41; }
+.library-category-hint { margin-top: .75rem; font-size: .8rem; color: #626961; }
+@media (max-width: 699px) {
+  .library-inspector-body { flex-direction: column; overflow-y: auto; }
+  .library-inspector-body > .library-inspector-image { flex: 1 0 160px; }
+  .library-photo-categories { flex: 0 1 42%; min-height: 160px; padding: .75rem; border-top: 1px solid #d8dcd4; border-left: 0; }
+  .library-photo-categories h2 { margin-bottom: .65rem; }
+  .library-category-ranks { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .library-category-rank { padding-left: .25rem; padding-right: .25rem; font-size: .8rem; }
+  .library-inspector[data-controls-hidden=true] .library-inspector-image { flex-basis: 0; min-height: 0; }
+}
