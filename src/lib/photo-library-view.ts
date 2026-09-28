@@ -1,12 +1,12 @@
 import type { PhotoRank, ProjectPhoto, StoredProject } from "./types";
 import { normalizePhotoLabel, projectPhotoLabels } from "./photo-metadata";
 import type { PhotoAnalysis } from "./photo-palette";
-import { projectPhotoGroups } from "./project-photo-library";
+import { customOrderedPhotoGroups, projectPhotoGroups } from "./project-photo-library";
 
 export type Orientation = "portrait" | "square" | "landscape" | "panorama" | "awaiting";
 export type ColourClass = "bw" | "colour" | "uncertain" | "awaiting";
 export interface LibraryView {
-  search: string; sort: "import" | "filename"; size: "small" | "medium" | "large";
+  search: string; sort: "import" | "filename" | "custom"; size: "small" | "medium" | "large";
   orientations: Orientation[]; colours: ColourClass[]; usage: "all" | "used" | "unused";
   ranks: Array<PhotoRank | "unranked">; labels: string[];
   scrollTop: number; anchor?: string; anchorOffset?: number;
@@ -22,13 +22,14 @@ export function photoColour(photo: ProjectPhoto, analysis?: PhotoAnalysis): Colo
   return photo.colourOverride ?? analysis?.colourClass ?? "awaiting";
 }
 export function libraryRows(project: Pick<StoredProject, "photoLibrary" | "pages">, analyses: ReadonlyMap<string, PhotoAnalysis> = new Map()) {
+  const customPositions = new Map(customOrderedPhotoGroups(project).map((group, index) => [group.photo.blobKey, index + 1]));
   return projectPhotoGroups(project).map((group, index) => {
     const keys = new Set(group.members.map(photo => photo.blobKey));
     const pages = project.pages.flatMap((page, position) => {
       const count = Object.values(page.photos).filter(photo => keys.has(photo.blobKey)).length;
       return count ? [{ pageId: page.id, pageNumber: position + 1, count }] : [];
     });
-    return { ...group, index, labels: projectPhotoLabels(group.members), orientation: photoOrientation(group.photo),
+    return { ...group, index, customPosition: customPositions.get(group.photo.blobKey)!, labels: projectPhotoLabels(group.members), orientation: photoOrientation(group.photo),
       colour: photoColour(group.photo, group.members.map(photo => analyses.get(photo.blobKey)).find(Boolean)),
       uses: pages.reduce((sum, page) => sum + page.count, 0), pages };
   });
@@ -42,7 +43,7 @@ export function filterLibraryRows(rows: LibraryRow[], view: LibraryView): Librar
     (!view.ranks.length || view.ranks.includes(row.photo.rank ?? "unranked")) &&
     view.labels.every(label => row.labels.includes(normalizePhotoLabel(label))) &&
     (view.usage === "all" || (view.usage === "used" ? row.uses > 0 : row.uses === 0)))
-    .sort((a, b) => (view.sort === "filename" ? collator.compare(a.photo.sourceName ?? "", b.photo.sourceName ?? "") :
+    .sort((a, b) => (view.sort === "custom" ? a.customPosition - b.customPosition : view.sort === "filename" ? collator.compare(a.photo.sourceName ?? "", b.photo.sourceName ?? "") :
       (a.photo.importOrder ?? a.index) - (b.photo.importOrder ?? b.index)) || a.index - b.index || a.photo.blobKey.localeCompare(b.photo.blobKey));
 }
 

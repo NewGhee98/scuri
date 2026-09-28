@@ -23,6 +23,7 @@ export function isProjectPhoto(value: unknown): boolean {
     (value.fingerprint === undefined || (typeof value.fingerprint === "string" && /^sha256:\d+:[a-f0-9]{64}$/.test(value.fingerprint))) &&
     (value.importedAt === undefined || date(value.importedAt)) &&
     (value.importOrder === undefined || (finite(value.importOrder) && value.importOrder >= 0)) &&
+    (value.customOrder === undefined || value.customOrder === null || (finite(value.customOrder) && Number.isSafeInteger(value.customOrder) && value.customOrder > 0)) &&
     (value.colourOverride === undefined || value.colourOverride === null || value.colourOverride === "bw" || value.colourOverride === "colour") &&
     (value.rank === undefined || value.rank === null || isPhotoRank(value.rank)) &&
     (value.labels === undefined || (Array.isArray(value.labels) && value.labels.every(label => typeof label === "string"))) &&

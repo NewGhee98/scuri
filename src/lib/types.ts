@@ -149,6 +149,8 @@ export type ProjectPhoto = Omit<StoredPhotoAsset, "cloudAssetId" | "frameId" | "
   fingerprint?: string;
   importedAt?: string;
   importOrder?: number;
+  /** One-based project library order. null explicitly restores import-order fallback. */
+  customOrder?: number | null;
   colourOverride?: "bw" | "colour" | null;
   /** Absent on imports/legacy photos; null explicitly clears a saved rank. */
   rank?: PhotoRank | null;
