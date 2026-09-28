@@ -28,6 +28,16 @@ export class PhotoImportQueue {
   private controller = new AbortController();
   constructor(private dependencies: Dependencies) {}
   getSnapshot = () => this.items;
+  isImporting(projectId: string): boolean {
+    return this.items.some(item => item.projectId === projectId && ["queued", "reading", "checking", "saving"].includes(item.state));
+  }
+  /** Called only after the entire active batch has settled and its conflict
+   * copy has been saved. Failed/paused retries then follow that same copy. */
+  retargetProject(from: string, to: string): void {
+    if (this.isImporting(from)) throw new Error("Finish the active import before switching its destination.");
+    this.items = this.items.map(item => item.projectId === from ? { ...item, projectId: to } : item);
+    this.listeners.forEach(fn => fn());
+  }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(id: string, patch: Partial<PhotoImportItem>) { this.items = this.items.map(item => item.id === id ? { ...item, ...patch } : item); this.listeners.forEach(fn => fn()); }
   add(projectId: string, sources: PhotoImportSource[]) {

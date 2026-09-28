@@ -19,7 +19,7 @@ export async function createProjectBackup(
   loadOriginal: (key: string) => Promise<Blob | null>,
   resolveTemplate: (page: StoredProjectPage) => TemplateDefinition = page => getTemplate(page.templateId),
 ): Promise<{ blob: Blob; filename: string; missingOriginals: number }> {
-  const snapshot: StoredProject = { ...project, pages: project.pages.map(page => ({ ...page,
+  const snapshot: StoredProject = { ...project, pendingCloudSaveId: undefined, pages: project.pages.map(page => ({ ...page,
     templateSnapshot: page.templateSnapshot ?? resolveTemplate(page) })) };
   if (!isStoredProject(snapshot)) throw new Error("Project data must be valid before it can be backed up.");
   const entries: Record<string, Uint8Array> = {};

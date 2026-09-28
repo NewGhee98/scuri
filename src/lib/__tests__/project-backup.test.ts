@@ -35,9 +35,10 @@ describe("portable project packages", () => {
     expect(source).toEqual(before);
   });
   it("round-trips originals, layout snapshots and crops, restoring entirely fresh identities", async () => {
-    const source = project(); const original = structuredClone(source);
+    const source = { ...project(), pendingCloudSaveId: "private-local-save-receipt" }; const original = structuredClone(source);
     const backup = await createProjectBackup(source, async () => bytes());
     const preview = await inspectProjectBackup(backup.blob);
+    expect(preview.project.pendingCloudSaveId).toBeUndefined();
     expect(preview.missingOriginals).toBe(0);
     expect(await preview.originals.get("synthetic-blob")!.text()).toBe(await bytes().text());
     expect(preview.project.pages[0].templateSnapshot).toEqual(template);

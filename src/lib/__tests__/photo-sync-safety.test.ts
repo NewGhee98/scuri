@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { getSupabaseClient } from "../supabase-client";
 import { downloadGoogleDrivePhoto } from "../google-drive";
 import { preparePhotoAsset } from "../image";
@@ -14,7 +16,7 @@ import { applyHydratedPhotos, hydrateProjectPhotos, isPhotoReferencedByAnotherPr
 import { centreCrop, coverPlacement, moveCrop } from "../crop";
 import { displayPagePhotos } from "../photo-preview-cache";
 import { ProjectHistory } from "../project-history";
-import { moveLayoutPhoto } from "../project";
+import { moveLayoutPhoto, sortProjectsByLastEdited } from "../project";
 import { createTextBox } from "../text";
 import { getTemplate } from "../templates";
 import type { StoredPhotoAsset, StoredProject } from "../types";
@@ -142,7 +144,7 @@ beforeEach(() => {
   // Any accidental real transport in a test fails immediately.
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Network forbidden in sync safety tests"); }));
   const values = new Map<string, string>();
-  vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) });
+  vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) });
   const sessionValues = new Map<string, string>();
   vi.stubGlobal("sessionStorage", { getItem: (key: string) => sessionValues.get(key) ?? null,
     setItem: (key: string, value: string) => sessionValues.set(key, value), removeItem: (key: string) => sessionValues.delete(key) });
@@ -155,7 +157,190 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+// Exercise the actual app save handler, including its synchronous cache/ref
+// updates and conflict decision, alongside the real intake and cloud modules.
+const appSource = readFileSync(new URL("../../components/layouts-app.tsx", import.meta.url), "utf8");
+const appAst = ts.createSourceFile("layouts-app.tsx", appSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let appPush = "";
+function collectPush(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(appAst) === "pushProjectNow" && node.initializer && ts.isCallExpression(node.initializer)) {
+    appPush = node.initializer.arguments[0].getText(appAst);
+  }
+  ts.forEachChild(node, collectPush);
+}
+collectPush(appAst);
+const compiledAppPush = ts.transpileModule(`const push = ${appPush};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+function appHarness(initial: StoredProject) {
+  const scope = {
+    workspaceRef: { current: { ownerId: "test-owner", capture: () => () => true } },
+    templateUserRef: { current: { id: "test-owner" } }, isProjectCloudConfigured: () => true,
+    syncQueueRef: { current: { isBlocked: () => false } }, importQueueRef: { current: null as PhotoImportQueue | null },
+    projectPushInFlightRef: { current: new Set<string>() }, pendingPullRef: { current: false }, syncProjectsFromCloud: vi.fn(),
+    projectsRef: { current: [structuredClone(initial)] }, activeProjectRef: { current: structuredClone(initial) },
+    pagesRef: { current: [] }, retainedPhotosRef: { current: new Map() }, retainVolatileForOwner: vi.fn(),
+    setSyncingProjectIds: vi.fn(), setProjectSyncErrors: vi.fn(), setBackupFeedback: vi.fn(), setNotice: vi.fn(), setProjects: vi.fn(),
+    saveWorkspaceProjects: vi.fn((projects: StoredProject[], ownerId: string) => saveProjects(projects, ownerId)),
+    adoptActiveProject: (project: StoredProject) => { scope.activeProjectRef.current = project; },
+    isProjectDirty, pushProjectToCloud, acknowledgeProjectPush, clearProjectSaveAttempt, reconcileProtectedProject, resolveProjectConflict, sortProjectsByLastEdited,
+  };
+  const push = new Function("scope", `with(scope) { ${compiledAppPush}; return push; }`)(scope) as (project: StoredProject, context: { signal: AbortSignal; heartbeat: () => void }) => Promise<boolean>;
+  const commit = (project: StoredProject) => {
+    scope.projectsRef.current = [...scope.projectsRef.current.filter(item => item.id !== project.id), project];
+    saveProjects(scope.projectsRef.current, "test-owner");
+    if (scope.activeProjectRef.current.id === project.id) scope.adoptActiveProject(project);
+  };
+  return { scope, commit, push: () => push(scope.activeProjectRef.current, { signal: new AbortController().signal, heartbeat: () => {} }) };
+}
+
+describe("app save and import coordination", () => {
+  it("finishes all files before switching to a conflict copy, then retries failed files in that copy", async () => {
+    const cloud = fakeCloud(); cloud.rows.project_pages = []; cloud.rows.project_assets = [];
+    cloud.rows.projects[0].active_page_id = null; cloud.rows.projects[0].revision = 8; cloud.rows.projects[0].name = "Remote edit";
+    const h = appHarness({ ...cloud.initial, activePageId: null, pages: [], photoLibrary: [], updatedAt: edited });
+    let release!: (file: File) => void, fail = true;
+    const queue = new PhotoImportQueue({ current: () => true, project: id => h.scope.projectsRef.current.find(item => item.id === id),
+      validate: () => {}, fingerprint: fingerprintOriginal,
+      prepare: async (file, blobKey) => ({ blobKey, sourceName: file.name, sourceWidth: 1200, sourceHeight: 800 }),
+      saveOriginal: async () => {}, commit: h.commit });
+    h.scope.importQueueRef.current = queue;
+    try {
+      queue.add(cloud.initial.id, [
+        ...fileImportSources([new File(["first"], "first.jpg", { type: "image/jpeg" })]),
+        { id: "slow", name: "slow.jpg", file: () => new Promise(resolve => { release = resolve; }) },
+        { id: "retry", name: "retry.jpg", file: async () => { if (fail) { fail = false; throw new Error("Temporary picker failure"); } return new File(["retry"], "retry.jpg", { type: "image/jpeg" }); } },
+      ]);
+      await vi.waitFor(() => expect(queue.getSnapshot()[1].state).toBe("reading"));
+      expect(await h.push()).toBe(false);
+      expect(h.scope.projectsRef.current).toHaveLength(1); expect(h.scope.activeProjectRef.current.id).toBe(cloud.initial.id);
+      expect(cloud.mutations).toEqual([]);
+      expect(() => queue.retargetProject(cloud.initial.id, "unsafe-mid-import-copy")).toThrow("Finish the active import");
+      release(new File(["second"], "second.jpg", { type: "image/jpeg" }));
+      await vi.waitFor(() => expect(queue.getSnapshot().map(item => item.state)).toEqual(["imported", "imported", "failed"]));
+      expect(await h.push()).toBe(true);
+      const copyId = h.scope.activeProjectRef.current.id;
+      expect(copyId).not.toBe(cloud.initial.id); expect(h.scope.projectsRef.current).toHaveLength(2);
+      expect(getProjectPhotos(h.scope.activeProjectRef.current)).toHaveLength(2);
+      expect(queue.getSnapshot().every(item => item.projectId === copyId)).toBe(true);
+      queue.retry(); await vi.waitFor(() => expect(queue.getSnapshot().every(item => item.state === "imported")).toBe(true));
+      expect(getProjectPhotos(h.scope.activeProjectRef.current)).toHaveLength(3);
+      expect(getProjectPhotos(h.scope.projectsRef.current.find(item => item.id === cloud.initial.id)!)).toHaveLength(0);
+      expect(cloud.rows.projects[0].name).toBe("Remote edit"); expect(cloud.mutations).toEqual([]);
+    } finally { queue.stop(); }
+  });
+
+  it("keeps the receipt and pending in-memory snapshot when saving the acknowledgement fails", async () => {
+    const cloud = fakeCloud(), h = appHarness({ ...cloud.initial, name: "Latest local work", updatedAt: edited });
+    const persist = h.scope.saveWorkspaceProjects.getMockImplementation()!;
+    h.scope.saveWorkspaceProjects.mockImplementation((projects, owner) => {
+      if (!projects[0].pendingCloudSaveId) throw new Error("Acknowledgement storage failed");
+      persist(projects, owner);
+    });
+    expect(await h.push()).toBe(false);
+    const pending = h.scope.activeProjectRef.current;
+    expect(pending.pendingCloudSaveId).toBeTruthy(); expect(pending.revision).toBe(7);
+    expect(readProjectSaveAttempt("test-owner", pending.id, pending.pendingCloudSaveId)).not.toBeNull();
+    expect(loadProjects("test-owner")[0]).toEqual(pending);
+    h.scope.saveWorkspaceProjects.mockImplementation(persist);
+    vi.stubGlobal("sessionStorage", { getItem: () => null });
+    expect(await h.push()).toBe(true);
+    expect(h.scope.activeProjectRef.current.pendingCloudSaveId).toBeUndefined();
+    expect(h.scope.activeProjectRef.current.revision).toBe(8);
+    expect(cloud.mutations.filter(item => item.table === "projects")).toHaveLength(1);
+    expect(readProjectSaveAttempt("test-owner", pending.id, pending.pendingCloudSaveId)).toBeNull();
+  });
+});
+
 describe("fresh-device load -> hydrate -> autosave -> push", () => {
+  function durablePush(initial: StoredProject) {
+    let latest = structuredClone(initial);
+    const options = { ownerId: "test-owner", isCurrent: () => true, persistSaveAttempt: (sent: StoredProject) => {
+      const pending = { ...latest, revision: sent.revision, pendingCloudSaveId: sent.pendingCloudSaveId };
+      saveProjects([pending], "test-owner"); latest = pending;
+    } };
+    return { options, get latest() { return latest; }, set latest(value: StoredProject) { latest = value; },
+      push: () => pushProjectToCloud(latest, options) };
+  }
+
+  it("recovers a new project's own save after a completely new browser session with newer imports", async () => {
+    const cloud = fakeCloud();
+    cloud.rows.projects = []; cloud.rows.project_pages = []; cloud.rows.project_assets = [];
+    const h = durablePush({ ...cloud.initial, revision: undefined, cloudSyncedAt: undefined, activePageId: null, pages: [],
+      photoLibrary: [{ blobKey: "first-import", sourceWidth: 1200, sourceHeight: 800 }], updatedAt: edited });
+    cloud.loseNextUpdateResponse(); await expect(h.push()).rejects.toThrow("Load failed");
+    h.latest = { ...h.latest, photoLibrary: getProjectPhotos(h.latest).concat({ blobKey: "second-import", sourceWidth: 1200, sourceHeight: 800 }) };
+    saveProjects([h.latest], "test-owner");
+    vi.stubGlobal("sessionStorage", { getItem: () => { throw new Error("Old session is gone"); }, setItem: () => { throw new Error("Session storage unavailable"); } });
+    h.latest = loadProjects("test-owner")[0];
+    const result = await h.push();
+    expect(result).toMatchObject({ conflict: false, partial: false });
+    expect(cloud.rows.projects).toHaveLength(1); expect(cloud.rows.projects[0].photo_library).toHaveLength(2);
+    expect(cloud.rows.projects[0]).not.toHaveProperty("pendingCloudSaveId");
+    if (!("project" in result)) throw new Error("Expected successful recovery");
+    const acknowledged = acknowledgeProjectPush(h.latest, h.latest, result);
+    expect(acknowledged.pendingCloudSaveId).toBeUndefined();
+    saveProjects([acknowledged], "test-owner");
+    clearProjectSaveAttempt("test-owner", acknowledged.id, result.project.pendingCloudSaveId);
+    expect(readProjectSaveAttempt("test-owner", acknowledged.id, result.project.pendingCloudSaveId)).toBeNull();
+  });
+
+  it("retains the recovered base when the next write fails before committing", async () => {
+    const cloud = fakeCloud(), h = durablePush({ ...cloud.initial, name: "First edit", updatedAt: edited });
+    cloud.loseNextUpdateResponse(); await expect(h.push()).rejects.toThrow("Load failed");
+    const firstReceipt = h.latest.pendingCloudSaveId;
+    h.latest = { ...h.latest, name: "Newer edit" };
+    cloud.failNext("projects", "update"); await expect(h.push()).rejects.toThrow("Synthetic transport failure");
+    expect(h.latest.revision).toBe(8);
+    expect(h.latest.pendingCloudSaveId).not.toBe(firstReceipt);
+    h.latest = loadProjects("test-owner")[0];
+    expect(await h.push()).toMatchObject({ conflict: false, partial: false, project: { revision: 9, name: "Newer edit" } });
+  });
+
+  it("recovers consecutive durable lost confirmations while preserving newer crops and backup references", async () => {
+    const cloud = fakeCloud(), h = durablePush({ ...cloud.initial, name: "First edit", updatedAt: edited });
+    for (const name of ["First edit", "Second edit"]) {
+      h.latest = { ...h.latest, name }; cloud.loseNextUpdateResponse();
+      await expect(h.push()).rejects.toThrow("Load failed");
+      h.latest = loadProjects("test-owner")[0];
+    }
+    h.latest.pages[0].photos["frame-1"].crop.zoom = 3;
+    h.latest = applyPhotoBackupCheckpoint(h.latest, { blobKey: "test-blob-1", driveFolderId: "test-folder", pendingUpload: { thumbnailId: "saved-reservation" } }, edited);
+    const result = await h.push();
+    expect(result).toMatchObject({ conflict: false, partial: false, project: { revision: 10 } });
+    expect(cloud.rows.project_assets[0].crop).toMatchObject({ zoom: 3 });
+    expect((cloud.rows.projects[0].photo_library as Array<{ pendingUpload?: { thumbnailId: string } }>)[0].pendingUpload?.thumbnailId).toBe("saved-reservation");
+  });
+
+  it("does not let a stale tab or another account claim a durable save without its snapshot reference", async () => {
+    const cloud = fakeCloud(), stale = { ...cloud.initial, name: "Other tab", updatedAt: edited };
+    const h = durablePush({ ...cloud.initial, name: "This tab", updatedAt: edited });
+    cloud.loseNextUpdateResponse(); await expect(h.push()).rejects.toThrow("Load failed");
+    expect(readProjectSaveAttempt("other-owner", h.latest.id, h.latest.pendingCloudSaveId)).toBeNull();
+    expect(readProjectSaveAttempt("test-owner", "another-project", h.latest.pendingCloudSaveId)).toBeNull();
+    expect(await pushProjectToCloud(stale)).toMatchObject({ conflict: true });
+    expect(cloud.mutations).toHaveLength(1);
+    const copy = resolveProjectConflict(h.latest, cloud.initial, "conflicted").duplicate;
+    expect(copy.pendingCloudSaveId).toBeUndefined();
+  });
+
+  it.each(["receipt", "project cache"])("fails before cloud writes when durable %s storage fails", async stage => {
+    const cloud = fakeCloud(), h = durablePush({ ...cloud.initial, updatedAt: edited });
+    const save = localStorage.setItem.bind(localStorage);
+    vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      if (stage === "receipt" ? key.includes(".attempt.") : key.startsWith("layouts.projects")) throw new Error("Storage full");
+      save(key, value);
+    });
+    await expect(h.push()).rejects.toThrow();
+    expect(cloud.mutations).toEqual([]); expect(h.latest.pendingCloudSaveId).toBeUndefined();
+  });
+
+  it("retains real remote edits despite a valid durable save receipt", async () => {
+    const cloud = fakeCloud(), h = durablePush({ ...cloud.initial, updatedAt: edited });
+    cloud.loseNextUpdateResponse(); await expect(h.push()).rejects.toThrow("Load failed");
+    cloud.rows.project_assets[0].crop = { positionX: 0, positionY: 0, zoom: 5 };
+    expect(await h.push()).toMatchObject({ conflict: true });
+    expect(cloud.mutations).toHaveLength(1);
+  });
+
   it("cancels expired metadata attempts and prevents a late sign-in response from writing over their retry", async () => {
     vi.useFakeTimers();
     const cloud = fakeCloud(), client = getSupabaseClient()!;
@@ -186,7 +371,7 @@ describe("fresh-device load -> hydrate -> autosave -> push", () => {
       expect(new Set(cloud.signals).size).toBe(1);
     } finally { queue.stop(); vi.useRealTimers(); vi.restoreAllMocks(); }
   });
-  it("finishes a 100-file intake in one project while its first cloud confirmation is interrupted", async () => {
+  it("finishes a 100-file intake in one project after a lost confirmation and a fresh browser session", async () => {
     const cloud = fakeCloud();
     cloud.rows.projects = []; cloud.rows.project_pages = []; cloud.rows.project_assets = [];
     let latest: StoredProject = { ...cloud.initial, revision: undefined, cloudSyncedAt: undefined,
@@ -197,10 +382,16 @@ describe("fresh-device load -> hydrate -> autosave -> push", () => {
     const sync = new ProjectSyncQueue(async () => {
       const sent = latest;
       try {
-        const result = await pushProjectToCloud(sent);
+        const result = await pushProjectToCloud(sent, { ownerId: "test-owner", isCurrent: () => true,
+          persistSaveAttempt: pending => {
+            latest = { ...latest, revision: pending.revision, pendingCloudSaveId: pending.pendingCloudSaveId };
+            saveProjects([latest], "test-owner");
+          } });
         if ("assetProtection" in result) throw new Error("Unexpected asset protection");
         if (result.conflict) { conflicts.push(resolveProjectConflict(latest, result.remote, "unexpected-copy").duplicate); return true; }
         latest = acknowledgeProjectPush(latest, sent, result);
+        saveProjects([latest], "test-owner");
+        clearProjectSaveAttempt("test-owner", latest.id, result.project.pendingCloudSaveId);
         return !result.partial;
       } catch { await interrupted; return false; }
     }, 0);
@@ -217,6 +408,9 @@ describe("fresh-device load -> hydrate -> autosave -> push", () => {
       // first save while the metadata queue is still waiting for its result.
       latest = applyPhotoBackupCheckpoint(latest, { blobKey: latest.photoLibrary![0].blobKey,
         driveFolderId: "test-folder", pendingUpload: { originalId: "reserved-original" } }, committed);
+      saveProjects([latest], "test-owner");
+      vi.stubGlobal("sessionStorage", { getItem: () => null });
+      latest = loadProjects("test-owner")[0];
       resume();
       expect(await sync.flush(latest.id, latest.updatedAt)).toBe(false); // first interrupted request
       expect(await sync.flush(latest.id, latest.updatedAt)).toBe(true);
@@ -568,7 +762,7 @@ describe("cloud deletion protection and explicit intent", () => {
 
   it("stops child writes if a save is cancelled after the parent request commits", async () => {
     const cloud = fakeCloud();
-    const isCurrent = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false);
+    const isCurrent = () => cloud.rows.projects[0].revision === cloud.initial.revision;
     const result = await pushProjectToCloud(cloud.initial, { ownerId: "test-owner", isCurrent });
     expect(result).toMatchObject({ conflict: false, partial: true });
     expect(cloud.mutations.every(item => item.table === "projects")).toBe(true);
