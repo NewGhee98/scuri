@@ -713,11 +713,25 @@ export function LayoutsApp() {
         setProjectSyncErrors(current => ({ ...current, [project.id]: false }));
         return true;
       }
-      const result = await pushProjectToCloud(working, { ownerId, isCurrent, ...context });
+      const result = await pushProjectToCloud(working, { ownerId, isCurrent, ...context,
+        persistSaveAttempt: sent => {
+          if (!isCurrent()) throw new Error("The workspace or save attempt changed.");
+          const latest = activeProjectRef.current?.id === working.id ? activeProjectRef.current : projectsRef.current.find(item => item.id === working.id);
+          if (!latest) throw new Error("The project is no longer available.");
+          const pending = { ...latest, revision: sent.revision, pendingCloudSaveId: sent.pendingCloudSaveId };
+          const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== working.id), pending]);
+          saveWorkspaceProjects(next, ownerId);
+          projectsRef.current = next; setProjects(next);
+          if (activeProjectRef.current?.id === working.id) adoptActiveProject(pending, true);
+        } });
       if (!isCurrent()) return true;
       const latest = activeProjectRef.current?.id === working.id ? activeProjectRef.current : projectsRef.current.find(item => item.id === working.id);
       if (!latest) return true;
       if ("assetProtection" in result) {
+        if (importQueueRef.current?.isImporting(working.id)) {
+          setBackupFeedback(current => ({ ...current, [working.id]: "Finishing this photo import before reconciling the cloud project. Your photos are saved on this device." }));
+          return false;
+        }
         const { canonical, copy } = reconcileProtectedProject(latest, result.remote, crypto.randomUUID());
         const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== working.id), canonical, ...(copy ? [copy] : [])]);
         // Copy runtime-only originals before changing the active project.
@@ -726,29 +740,39 @@ export function LayoutsApp() {
         saveWorkspaceProjects(next, ownerId);
         projectsRef.current = next;
         setProjects(next);
+        if (copy) importQueueRef.current?.retargetProject(working.id, copy.id);
         if (activeProjectRef.current?.id === working.id) adoptActiveProject(copy ?? canonical);
         setNotice({ kind: "info", text: copy ? "Cloud photos were protected. Your local edits were kept in a separate recovered project." : "Cloud photo assignments restored. Unavailable photos will load when Drive is connected." });
         setProjectSyncErrors(current => ({ ...current, [working.id]: false }));
         return true;
       }
       if (result.conflict) {
+        // Switching identity mid-batch strands the remaining files in the
+        // original. Finish intake locally first; the queue will retry this
+        // save and preserve both versions with the whole batch in one copy.
+        if (importQueueRef.current?.isImporting(working.id)) {
+          setBackupFeedback(current => ({ ...current, [working.id]: "Finishing this photo import before keeping both project versions. Your photos are saved on this device." }));
+          return false;
+        }
         const duplicate = resolveProjectConflict(latest, result.remote, crypto.randomUUID()).duplicate;
         for (const page of pagesRef.current) for (const photo of Object.values(page.photos)) retainVolatileForOwner(ownerId, photo.blobKey, photo.sourceBlob);
         const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== working.id), result.remote, duplicate]);
         saveWorkspaceProjects(next, ownerId);
         projectsRef.current = next;
         setProjects(next);
+        importQueueRef.current?.retargetProject(working.id, duplicate.id);
+        clearProjectSaveAttempt(ownerId, working.id, latest.pendingCloudSaveId);
         if (activeProjectRef.current?.id === working.id) adoptActiveProject(duplicate);
-        setNotice({ kind: "info", text: "This project changed elsewhere. Both versions have been kept; open the conflicted copy to review your edits." });
+        setNotice({ kind: "info", text: "The cloud and local versions differ. Both have been kept, with your imported photos together in the conflicted copy." });
         return true;
       }
       const acknowledged = acknowledgeProjectPush(latest, working, result);
       const next = sortProjectsByLastEdited([...projectsRef.current.filter(item => item.id !== acknowledged.id), acknowledged]);
+      saveWorkspaceProjects(next, ownerId);
       projectsRef.current = next;
       setProjects(next);
       if (activeProjectRef.current?.id === acknowledged.id) adoptActiveProject(acknowledged, true);
-      saveWorkspaceProjects(next, ownerId);
-      clearProjectSaveAttempt(ownerId, acknowledged.id);
+      clearProjectSaveAttempt(ownerId, acknowledged.id, result.project.pendingCloudSaveId);
       setProjectSyncErrors(current => ({ ...current, [working.id]: result.partial }));
       return !result.partial;
     } catch (error) {
@@ -878,6 +902,7 @@ export function LayoutsApp() {
       photoLibrary: getProjectPhotos({ photoLibrary: mergePhotoLibraries(existing?.photoLibrary, projectPhotoLibrary), pages: pages.map(serializePage) }),
       revision: existing?.revision,
       cloudSyncedAt: existing?.cloudSyncedAt,
+      pendingCloudSaveId: existing?.pendingCloudSaveId,
       driveFolderId: existing?.driveFolderId,
       pendingDeletions,
       createdAt: projectCreatedAt || now(),
