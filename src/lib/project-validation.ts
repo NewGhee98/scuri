@@ -59,6 +59,7 @@ export function isStoredProject(value: unknown): value is StoredProject {
       !date(value.createdAt) || !date(value.updatedAt)) return false;
   if (value.revision !== undefined && (!finite(value.revision) || !Number.isInteger(value.revision) || value.revision < 1)) return false;
   if (value.cloudSyncedAt !== undefined && !date(value.cloudSyncedAt)) return false;
+  if (value.pendingCloudSaveId !== undefined && !identifier(value.pendingCloudSaveId)) return false;
   if (value.photoLibrary !== undefined && (!Array.isArray(value.photoLibrary) || !value.photoLibrary.every(isProjectPhoto) ||
       new Set(value.photoLibrary.map(photo => photo.blobKey)).size !== value.photoLibrary.length)) return false;
   if (!optionalText(value.driveFolderId)) return false;

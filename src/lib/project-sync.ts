@@ -323,7 +323,8 @@ export async function pullProjectsFromCloud(): Promise<StoredProject[]> {
  * retains deletion intent and the committed revision for a checked retry.
  * See CloudConflict / resolveProjectConflict for what happens next.
  */
-export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean; signal?: AbortSignal; heartbeat?: () => void }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
+export async function pushProjectToCloud(project: StoredProject, options?: { ownerId: string; isCurrent: () => boolean; signal?: AbortSignal; heartbeat?: () => void;
+  persistSaveAttempt?: (project: StoredProject) => void }): Promise<CloudConflict | CloudPushResult | CloudAssetProtection> {
   const requestedRevision = project.revision;
   const assertCurrent = () => {
     if (options && (!options.isCurrent() || options.signal?.aborted)) throw new Error("The workspace or save attempt changed; this save was stopped.");
@@ -350,7 +351,7 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
     if (samePersistedContent(project, remote, ownerId)) return { conflict: false, partial: false,
       project: { ...project, pages: remote.pages, photoLibrary: remote.photoLibrary,
         revision: remote.revision, cloudSyncedAt: remote.cloudSyncedAt } };
-    const attempt = readProjectSaveAttempt(ownerId, project.id);
+    const attempt = readProjectSaveAttempt(ownerId, project.id, project.pendingCloudSaveId);
     // Imports and backup checkpoints keep advancing while a response is lost.
     // Compare cloud with the exact earlier request, not those newer edits. A
     // failed parent response also means its child writes never started.
@@ -368,7 +369,8 @@ export async function pushProjectToCloud(project: StoredProject, options?: { own
 
   // Persist before any mutation, and retain through errors/reloads until the
   // caller durably acknowledges the result. Do not write if this fails.
-  rememberProjectSaveAttempt(ownerId, { version: 1, requestedRevision, sent: project, before: remote });
+  project = rememberProjectSaveAttempt(ownerId, { version: 1, requestedRevision, sent: project, before: remote }, options?.persistSaveAttempt);
+  assertCurrent();
 
   const projectRowInput = {
     id: project.id,
@@ -528,6 +530,7 @@ export function resolveProjectConflict(
     name: `${local.name} (conflicted copy)`,
     revision: undefined,
     cloudSyncedAt: undefined,
+    pendingCloudSaveId: undefined,
     driveFolderId: undefined,
     pendingDeletions: undefined,
     photoLibrary: getProjectPhotos(local).map(photo => ({ ...photo, pendingUpload: undefined })),
@@ -616,6 +619,7 @@ export function acknowledgeProjectPush(latest: StoredProject, sent: StoredProjec
     photoLibrary: mergePhotoLibraries(getProjectPhotos(result.project), getProjectPhotos(latest)),
     revision: result.project.revision,
     cloudSyncedAt: result.project.cloudSyncedAt,
+    pendingCloudSaveId: latest.pendingCloudSaveId === result.project.pendingCloudSaveId ? undefined : latest.pendingCloudSaveId,
     driveFolderId: result.project.driveFolderId,
     pendingDeletions: pendingDeletions?.photos.length || pendingDeletions?.pageIds.length ? pendingDeletions : undefined,
     // Server time can be later than an edit made during the request.
@@ -637,6 +641,7 @@ export function projectHasUnbackedAssets(project: StoredProject): boolean {
 }
 
 export function isProjectDirty(project: StoredProject): boolean {
+  if (project.pendingCloudSaveId) return true;
   if (project.pendingDeletions?.photos.length || project.pendingDeletions?.pageIds.length) return true;
   if (!project.cloudSyncedAt) return true;
   return Date.parse(project.updatedAt) > Date.parse(project.cloudSyncedAt);

@@ -230,6 +230,9 @@ export interface StoredProject {
   revision?: number;
   /** ISO timestamp of the last confirmed successful push to or pull from Supabase. */
   cloudSyncedAt?: string;
+  /** Local-only reference to this snapshot's durable, unacknowledged save.
+   * Never sent to Supabase or inherited by a new/conflicted project. */
+  pendingCloudSaveId?: string;
   /** Google Drive folder holding this project's originals/previews/exports. */
   driveFolderId?: string;
   /** Local-only, durable intent from explicit remove/replace/page/layout actions.
