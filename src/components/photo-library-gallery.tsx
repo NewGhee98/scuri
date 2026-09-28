@@ -51,9 +51,10 @@ function PhotoPositionInput({ position, total, name, onCommit }: { position: num
   </label>;
 }
 
-export function PhotoLibraryGallery({ rows, view, onView, onInspect, selectedKeys, onToggleSelected, onStartSelecting, onReorder, totalPhotos, focusPhotoKey, header, empty }: { rows: LibraryRow[]; view: LibraryView;
+export function PhotoLibraryGallery({ rows, view, onView, onInspect, selectedKeys, selectionOrder, showPreviewButtons = false, onToggleSelected, onStartSelecting, onReorder, totalPhotos, focusPhotoKey, header, empty }: { rows: LibraryRow[]; view: LibraryView;
   onView: (value: LibraryView) => void; onInspect: (key: string) => void; focusPhotoKey?: string; header?: ReactNode; empty?: ReactNode;
-  selectedKeys?: ReadonlySet<string>; onToggleSelected?: (key: string) => void; onStartSelecting?: (key: string) => void;
+  selectedKeys?: ReadonlySet<string>; selectionOrder?: ReadonlyMap<string, number>; showPreviewButtons?: boolean;
+  onToggleSelected?: (key: string) => void; onStartSelecting?: (key: string) => void;
   onReorder?: (key: string, position: number) => void; totalPhotos?: number }) {
   const container = useRef<HTMLDivElement>(null), { session, snapshot } = usePhotoPreviewSession();
   const heading = useRef<HTMLDivElement>(null);
@@ -76,7 +77,7 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, selectedKey
   const range = visibleGalleryRange(view.scrollTop, bounds.height, geometry.rowHeight, packed.length, bounds.header);
   const visible = packed.slice(range.start, range.end);
   const sourcesKey = JSON.stringify(visible.flatMap(row => row.map(item => item.row.photo)));
-  const filterKey = JSON.stringify([view.search, view.orientations, view.colours, view.usage, view.ranks, view.labels, view.sort]);
+  const filterKey = JSON.stringify([view.search, view.orientations, view.colours, view.usage, view.ranks, view.labels, view.untagged, view.sort]);
   const cancelDrag = () => {
     const active = drag.current; drag.current = null; setDrop(null);
     if (active && container.current?.hasPointerCapture(active.pointerId)) container.current.releasePointerCapture(active.pointerId);
@@ -244,11 +245,13 @@ export function PhotoLibraryGallery({ rows, view, onView, onInspect, selectedKey
           alt={row.photo.sourceName ?? "Project photo"} width={640} height={640} draggable={false} /> : <span>Awaiting preview</span>}
           {row.photo.rank ? <span className="library-photo-rank" data-rank={row.photo.rank}>{PHOTO_RANK_LABELS[row.photo.rank]}</span> : null}
           {row.labels?.length ? <PhotoLabelBadges labels={row.labels} /> : null}
-          {onToggleSelected ? <span className="library-photo-selection" aria-hidden="true">{selectedKeys?.has(row.photo.blobKey) ? "✓" : ""}</span> : null}
+          {onToggleSelected ? <span className="library-photo-selection" aria-hidden="true">{selectedKeys?.has(row.photo.blobKey) ? selectionOrder?.get(row.photo.blobKey) ?? "✓" : ""}</span> : null}
         </span>
         <span className="library-photo-caption"><span className="library-photo-name" title={row.photo.sourceName}>{row.photo.sourceName ?? "Photo"}</span>
           <span className="library-photo-usage">{row.uses ? `Used ${row.uses}×` : "Unused"}</span></span>
         </button>
+        {showPreviewButtons ? <button type="button" className="library-photo-preview" aria-label={`Preview ${row.photo.sourceName ?? "photo"}`}
+          onClick={() => onInspect(row.photo.blobKey)}>Preview</button> : null}
         {customOrder ? <div className="library-photo-order-controls">
           <button type="button" className="library-photo-drag" aria-label={`Drag to reorder ${row.photo.sourceName ?? "photo"}`}
             title="Drag to reorder. You can also type a position." onPointerDown={event => {

@@ -1,6 +1,7 @@
 .library-photo-card-controls { position: relative; }
 .library-photo-open { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; width: 100%; padding: 0; text-align: left; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .library-photo-open .library-photo-caption { width: 100%; }
+.library-photo-preview { flex: 0 0 auto; align-self: flex-end; min-height: 44px; padding: .35rem .65rem; color: #315a41; font-size: .8rem; text-decoration: underline; text-underline-offset: 3px; }
 .library-photo-card-controls[data-selected=true] { border-color: #315a41; box-shadow: inset 0 0 0 2px #315a41; background: #f0f5ee; }
 .library-photo-card-controls[data-selected=true] .library-photo-selection { background: #315a41; }
 .library-photo-label-overlay { position: absolute; bottom: 8px; left: 8px; right: 8px; display: flex; flex-direction: column; align-items: flex-start; max-height: calc(100% - 48px); gap: 4px; pointer-events: none; }
