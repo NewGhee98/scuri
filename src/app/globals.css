@@ -1103,7 +1103,7 @@ input:disabled {
 /* The workspace uses the remaining viewport; view zoom never changes the design. */
 .editor-app-shell { height: 100dvh; min-height: 0; overflow: hidden; }
 .editor-workspace { display: grid; grid-template: auto minmax(0, 1fr) / minmax(0, 1fr); width: 100%; height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background: #e8e8e4; }
-.editor-workspace.panel-open { grid-template-columns: minmax(0, 1fr) 320px; }
+.editor-workspace.panel-open { grid-template-columns: minmax(0, 1fr) clamp(280px, 30vw, 360px); }
 .editor-toolbar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #d5d5cf; background: #f8f8f5; }
 .editor-toolbar .small-button { padding-inline: 10px; white-space: nowrap; }
 .editor-page-number { margin: 0 4px; font-size: 12px; font-weight: 650; white-space: nowrap; }
@@ -1111,16 +1111,22 @@ input:disabled {
 .editor-status-button[data-attention] { background: #fff3dc; color: #854711; border-color: #e5c995; }
 .editor-canvas-workspace { min-width: 0; min-height: 0; padding: 4px 0 0; }
 .editor-canvas-workspace .canvas-viewport { height: 100%; min-height: 0; }
-.editor-workspace .small-button, .editor-controls-drawer .small-button, .editor-info-content .small-button, .page-preview-dialog .small-button { min-height: 44px; }
-.editor-side-panel { min-width: 0; min-height: 0; overflow: auto; border-left: 1px solid #d5d5cf; background: #fff; }
-.editor-side-panel > header, .editor-controls-content > header, .editor-info-content > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e6e6df; }
-.editor-side-panel h2, .editor-controls-content h2, .editor-info-content h2 { font-size: 15px; font-weight: 650; }
-.editor-side-panel .control-panel, .editor-controls-content .control-panel { position: static; min-height: 0; max-height: none; padding: 12px; border: 0; border-radius: 0; }
-.editor-side-panel .control-section, .editor-controls-content .control-section { margin-top: 12px; padding-top: 12px; }
-.editor-side-panel input, .editor-controls-content input, .editor-side-panel select, .editor-controls-content select { min-height: 44px; }
-.editor-side-panel .colour-chip, .editor-controls-content .colour-chip, .editor-side-panel .colour-picker, .editor-controls-content .colour-picker { min-width: 44px; min-height: 44px; }
-.editor-controls-drawer { position: fixed; inset: 0 0 0 auto; width: min(380px, 100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) 0; border: 0; border-left: 1px solid #d5d5cf; background: white; color: #11110f; overflow: auto; overscroll-behavior: contain; }
-.editor-controls-drawer::backdrop { background: #0004; }
+.editor-workspace .small-button, .editor-info-content .small-button, .page-preview-dialog .small-button { min-height: 44px; }
+.editor-side-panel { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; border-left: 1px solid #d5d5cf; background: #fff; }
+.editor-side-panel > header, .editor-info-content > header { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 8px 12px; border-bottom: 1px solid #e6e6df; }
+.editor-side-panel > header { position: sticky; top: 0; z-index: 2; flex-wrap: wrap; background: #fff; }
+.editor-side-panel h2, .editor-info-content h2 { font-size: 15px; font-weight: 650; }
+.editor-panel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.editor-panel-actions [aria-pressed="true"] { background: #315e44; border-color: #315e44; color: #fff; }
+.editor-side-panel > header > p { flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.4; color: #62625b; }
+.editor-side-panel .control-panel { position: static; min-height: 0; max-height: none; padding: 12px; border: 0; border-radius: 0; }
+.editor-side-panel .control-section { margin-top: 12px; padding-top: 12px; }
+.editor-side-panel input, .editor-side-panel select { min-height: 44px; }
+.editor-side-panel .colour-chip, .editor-side-panel .colour-picker { min-width: 44px; min-height: 44px; }
+@media (max-width: 699px) {
+  .editor-workspace.panel-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(0, 42%); }
+  .editor-side-panel { border-left: 0; border-top: 1px solid #d5d5cf; }
+}
 .editor-info-content { display: grid; gap: 14px; }
 .editor-info-content > header { padding: 0 0 12px; }
 .editor-info-content p { font-size: 14px; line-height: 1.5; }

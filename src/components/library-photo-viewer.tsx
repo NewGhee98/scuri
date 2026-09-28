@@ -14,9 +14,9 @@ import { PHOTO_RANKS, PHOTO_RANK_LABELS, normalizePhotoLabels, type PhotoMetadat
 import { PhotoLabelInput } from "./photo-label-input";
 import "./library-photo-categories.css";
 
-export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevious, onNext, onUse, onOverride, onMetadata, labelSuggestions, controlsHidden, onToggleControls }: {
+export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevious, onNext, onUse, useLabel = "Use this photo", useDisabled = false, onOverride, onMetadata, labelSuggestions, controlsHidden, onToggleControls }: {
   row: LibraryRow; ownerId?: string | null; index: number; count: number; onBack: () => void; onPrevious: () => void; onNext: () => void;
-  onUse?: () => void; onOverride: (value: ProjectPhoto["colourOverride"]) => void;
+  onUse?: () => void; useLabel?: string; useDisabled?: boolean; onOverride: (value: ProjectPhoto["colourOverride"]) => void;
   onMetadata: (edit: PhotoMetadataEdit) => void; labelSuggestions: string[];
   controlsHidden: boolean; onToggleControls: () => void;
 }) {
@@ -94,7 +94,7 @@ export function LibraryPhotoViewer({ row, ownerId, index, count, onBack, onPrevi
       <button type="button" className="secondary-button" onClick={onBack}>Back to photos</button>
       <span className="library-inspector-count" aria-label={index < 0 ? undefined : `Photo ${index + 1} of ${count}`}>{index < 0 ? "Outside current filters" : `${index + 1} / ${count}`}</span>
       <button type="button" className="small-button" aria-haspopup="dialog" onClick={() => setInfo(true)}>Info</button>
-      {onUse ? <button className="primary-button" type="button" onClick={onUse}>Use this photo</button> : null}
+      {onUse ? <button className="primary-button" type="button" disabled={useDisabled} onClick={onUse}>{useLabel}</button> : null}
     </div>
     <div className="library-inspector-body">
     <div ref={area} className="library-inspector-image" tabIndex={0} aria-label="Photo inspection. Pinch to zoom, drag to pan; swipe at Fit to navigate."

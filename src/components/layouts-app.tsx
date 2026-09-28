@@ -34,7 +34,7 @@ import { fingerprintOriginal } from "@/lib/photo-fingerprint";
 import { fingerprintCacheKey } from "@/lib/photo-duplicates";
 import { previewStorageKey } from "@/lib/photo-preview-cache";
 import { listPhotoJobs, removePhotoJob, writePhotoJob, writeDerived } from "@/lib/photo-cache-storage";
-import { openPhotoPicker, placeLibraryPhoto, type PhotoPickerIntent } from "@/lib/photo-picker";
+import { openPhotoPicker, photoPickerTargets, placeLibraryPhotos, type PhotoPickerIntent } from "@/lib/photo-picker";
 import { clearLibraryViews } from "@/lib/photo-library-view";
 import { photosImportConfigured } from "@/lib/google-photo-import";
 import {
@@ -322,6 +322,11 @@ export function LayoutsApp() {
     page.templateSnapshot ?? getTemplate(page.templateId, customTemplates)
   ), [customTemplates]);
   const template = activePage ? resolvePageTemplate(activePage) : null;
+  const photoDestinationPage = photoPickerIntent ? pages.find(page => page.id === photoPickerIntent.pageId) : undefined;
+  const photoPickerLimit = photoPickerIntent && photoDestinationPage && projectId ? photoPickerTargets(
+    { id: projectId, pages: pages.map(serializePage) }, photoPickerIntent,
+    resolvePageTemplate(photoDestinationPage).frames.map(frame => frame.id),
+  ).length : 0;
   const selectedFrameId = editorSelectedFrameId && template?.frames.some(frame => frame.id === editorSelectedFrameId)
     ? editorSelectedFrameId : activePage?.selectedFrameId ?? null;
   const libraryPhotos = getProjectPhotos({ photoLibrary: projectPhotoLibrary, pages: pages.map(serializePage) });
@@ -1185,19 +1190,21 @@ export function LayoutsApp() {
   const closePhotoLibrary = () => {
     photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(false); setChoosePhotoSource(false);
   };
-  const chooseLibraryPhoto = (photo: ProjectPhoto) => {
+  const chooseLibraryPhotos = (photos: ProjectPhoto[]) => {
     const intent = photoPickerRef.current, current = buildStoredProject();
     if (!intent || !current || !photoPickerWorkspaceRef.current?.()) return;
     const page = current.pages.find(page => page.id === intent.pageId);
     try {
-      const updated = placeLibraryPhoto(current, intent, photo, page ? resolvePageTemplate(page).frames.map(frame => frame.id) : []);
+      const updated = placeLibraryPhotos(current, intent, photos, page ? resolvePageTemplate(page).frames.map(frame => frame.id) : []);
       photoPickerRef.current = null; setPhotoPickerIntent(null); setShowPhotoLibrary(false);
       if (updated === current) return;
+      historyGroupRef.current = undefined;
       historyRef.current.observe(current);
       const next = projectsRef.current.map(item => item.id === updated.id ? updated : item);
       saveWorkspaceProjects(next); projectsRef.current = next; setProjects(next); adoptActiveProject(updated, true);
-    } catch (error) { closePhotoLibrary(); setNotice({ kind: "error", text: error instanceof Error ? error.message : "The photo could not be placed." }); }
+    } catch (error) { closePhotoLibrary(); setNotice({ kind: "error", text: error instanceof Error ? error.message : "The photos could not be placed." }); }
   };
+  const chooseLibraryPhoto = (photo: ProjectPhoto) => chooseLibraryPhotos([photo]);
   const setPhotoColour = (key: string, colourOverride: ProjectPhoto["colourOverride"]) => {
     const current = buildStoredProject(); if (!current) return;
     const group = projectPhotoGroups(current).find(group => group.photo.blobKey === key); if (!group) return;
@@ -2637,7 +2644,10 @@ export function LayoutsApp() {
             backupActivity={backupActivity}
             onRetryBackup={() => void retryPhotoBackup()}
             onReconnectDrive={() => void connectGoogleDrive()}
-            onChoose={photoPickerIntent ? chooseLibraryPhoto : undefined} />
+            onChoose={photoPickerIntent ? chooseLibraryPhoto : undefined}
+            onChooseMultiple={photoPickerIntent ? chooseLibraryPhotos : undefined}
+            chooseSessionKey={photoPickerIntent?.nonce}
+            chooseLimit={photoPickerLimit} />
         </div>
       ) : null}
 
