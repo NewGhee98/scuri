@@ -1,6 +1,6 @@
 # Start here — Scuri
 
-Canonical current-status handoff. Updated **26 September 2026** for local text tools; production was last verified on 20 September. A new session needs this repository, not the originating conversation or a particular computer. Recheck live release evidence before a later release or service change.
+Canonical current-status handoff. Updated **26 September 2026** for the verified text-tools release and repository/Drive documentation refresh. A new session needs this repository, not the originating conversation or a particular computer. Recheck live release evidence before a later release or service change.
 
 ## Product and workflow
 
@@ -20,27 +20,28 @@ Create/open a fixed-format project → import photos into its independent librar
 
 ## Verified production
 
-Fresh GitHub and authenticated Vercel inspection on **20 September 2026, 20:07–20:11 UTC** confirmed:
+GitHub, authenticated Vercel and public-site release checks on **26 September 2026, 09:47–09:50 UTC** confirmed the release below. The documentation refresh rechecked GitHub and Vercel at **10:14–10:18 UTC**: the same application remained current; no new production deployment was made.
 
-- [PR #29 — Project photos scrolling and documentation](https://github.com/NewGhee98/scuri/pull/29) is merged.
-- Production source: [`24075d1e4c8cd6dfc2936d77332f8cd3793bf268`](https://github.com/NewGhee98/scuri/commit/24075d1e4c8cd6dfc2936d77332f8cd3793bf268).
-- [Vercel deployment G6GijpLztNtqiQNT966cjQms2S7Z](https://vercel.com/nugee/scuri/G6GijpLztNtqiQNT966cjQms2S7Z): **Ready / Production / Current**, serving [scuri.vercel.app](https://scuri.vercel.app).
+- [PR #30 — Movable text and consistent export typography](https://github.com/NewGhee98/scuri/pull/30) is merged.
+- Application release source: [`5446dd3706ef2b206d141c9ef06dfa8bc2e1689f`](https://github.com/NewGhee98/scuri/commit/5446dd3706ef2b206d141c9ef06dfa8bc2e1689f).
+- [Vercel deployment 8KQocDzx1muqMTuVCzoJVkGWthk6](https://vercel.com/nugee/scuri/8KQocDzx1muqMTuVCzoJVkGWthk6): **Ready / Production / Current at verification**, serving [scuri.vercel.app](https://scuri.vercel.app). Subsequent publication of this release record changes documentation only.
 
-This includes PR #28's coordinated template tools and PR #29's native-scrolling fix. The full release tree matches the previously tested source. **512 tests / 39 files, typecheck, lint and build are recorded release results.** A public GitHub read on **25 September at 16:54:34 UTC** still returned this main commit/tree; Vercel was not rechecked in the text task. See the [portable production record](docs/evidence/2026-09-20-production.md) and [verification guide](VERIFICATION.md) for separate local text results.
+This includes Cinzel, Cormorant Garamond and Inter text tools, PR #28's coordinated template tools and PR #29's native-scrolling fix. The complete merged tree matched tested local commit `c4b7bd7`. **533 tests / 41 files, typecheck, lint and build passed earlier on 26 September**; the release task verified exact source equality, successful Vercel builds, HTTP 200, 11 JS/CSS assets and byte equality for all five font files. The additive `templates.text_layers` migration was applied and read back; existing composition/asset fingerprints and template policies/grants stayed unchanged. See the [release record](docs/evidence/2026-09-26-text-release.md). The [PR #29 record](docs/evidence/2026-09-20-production.md) remains historical evidence.
 
 ## Work outside production
 
-- `feat/page-text`: locally implemented movable text boxes and reusable template defaults, with Cinzel, Cormorant Garamond and Inter. See [text handoff](docs/TEXT_TOOLS.md) and [local verification](docs/evidence/2026-09-26-text-tools.md). **Not pushed, no PR, not deployed.** The additive reusable-template text migration is prepared for review and has not run.
-- `docs/portable-handoff`: prior documentation-only commit `b206a1e` remains preserved and is the text branch's base. Its publication question remains unresolved because a branch push can trigger Vercel Preview. **No documentation PR has been published.** See the [documentation audit](docs/evidence/2026-09-20-documentation-audit.md). A future release must include/reconcile this documentation ancestry as well as the text feature.
+- [PR #31 — documentation refresh](https://github.com/NewGhee98/scuri/pull/31), branch `docs/text-release-record`, is **open and unmerged**. It records PR #30, the migration and the four updated Drive summaries. Until merge, use this branch's handoff for current release wording. Publishing this documentation branch can create an automatic Vercel Preview; it does not replace production or change application code.
+- `feat/page-text` is released through PR #30. See [text handoff](docs/TEXT_TOOLS.md), [implementation checks](docs/evidence/2026-09-26-text-tools.md) and [release verification](docs/evidence/2026-09-26-text-release.md). Local and browser-published commit IDs differ; complete tree equality establishes source equivalence.
+- `docs/portable-handoff`: prior documentation commit `b206a1e` and branch remain preserved locally; their content was included in PR #30. The user's release authorization resolved the previous publication hold. The [20 September audit](docs/evidence/2026-09-20-documentation-audit.md) remains history. All four Drive summaries were updated and read back on **26 September**, with historical content and private sharing retained; see the [documentation refresh record](docs/evidence/2026-09-26-documentation-refresh.md).
 - Before the documentation work, local application HEAD `3639dd3` had the **same full tree** as production. The pre-existing publication/release narrative was incorporated in [dated history](docs/history/PROJECT_CONTEXT_THROUGH_2026-09-20.md), not discarded.
-- [PR #14 — Add client safety backups and undo](https://github.com/NewGhee98/scuri/pull/14) was still open at inspection. It is older branch work, **not approved for merging or assumed to add missing features**. Compare it with current main before any future decision. No other open PR was returned before this documentation PR was prepared.
+- [PR #14 — Add client safety backups and undo](https://github.com/NewGhee98/scuri/pull/14) was still open at release inspection. It is older branch work, **not approved for merging or assumed to add missing features**. Compare it with current main before any future decision.
 - Other machines, private drafts and uninspected branches have not been audited by the text task.
 
 ## Limitations and next priorities
 
 1. **Cross-device save limitation:** parent revision checks and a per-app queue do not make separate project/page/asset REST writes atomic. Interrupted or interleaved child writes and inconsistent reads remain possible. Transactional save/consistent-read work requires a separate design and approval.
-2. **Acceptance still outstanding:** physical iPad Safari scrolling, touch/Pencil/pinch, memory, virtual keyboard, share sheets; real two-device saves, OAuth, direct Google pickers and interrupted backup resume. New text controls also need [physical-device acceptance and migration review](docs/TEXT_TOOLS.md). Deployment and desktop tests do not certify these. Use the [release checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md).
-3. **Unknown live configuration:** Supabase schema/RLS/grants, Google API/consent/origin settings and secret/environment hygiene were not inspected in this task. The user previously reported `photo_library` applied with a different migration timestamp; [do not rerun SQL to align its filename](PHOTO_LIBRARY_MIGRATION_REVIEW.md).
+2. **Acceptance still outstanding:** physical iPad Safari scrolling, touch/Pencil/pinch, memory, virtual keyboard, share sheets; real two-device saves, OAuth, direct Google pickers and interrupted backup resume. New text controls also need [physical-device and two-device acceptance](docs/TEXT_TOOLS.md). Deployment and desktop tests do not certify these. Use the [release checklist](docs/PROJECT_PHOTOS_RELEASE_CHECKLIST.md).
+3. **Live configuration scope:** this release verified only the new template text column/constraint/default, its migration record and unchanged template policies/grants. Other Supabase configuration, Google API/consent/origin settings and secret/environment hygiene remain unverified. The user previously reported `photo_library` applied with a different migration timestamp; [do not rerun SQL to align its filename](PHOTO_LIBRARY_MIGRATION_REVIEW.md).
 4. **Historical Islands loss:** prevention is shipped; exact lost assignments/crops cannot be inferred from original bytes or new Drive upload hints. No recovery is established. Follow the [separate recovery procedure](ISLANDS_RECOVERY.md) only with explicit live-data authorization.
 5. Larger pixel exports are available; colour-managed print preparation is not certified. Streaming backups, persistent history, landscape formats and screenshot-to-template assistance remain ideas for separate review, not approved implementation scope.
 
